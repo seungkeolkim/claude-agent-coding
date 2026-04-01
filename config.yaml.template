@@ -5,11 +5,15 @@
 # ═══════════════════════════════════════════════════════════
 
 # ─── 프로젝트 (공통) ───
+# description: 자연어로 프로젝트의 목적, 기술 스택, 선호사항 등을 자유롭게 기술.
+#   agent가 이 내용을 참고하여 코드 작성/리뷰/테스트 방식을 판단합니다.
 project:
-  name: "my-web-app"
+  name: "my-project"
   default_branch: "main"
-  language: "typescript"
-  framework: "next.js"
+  description: |
+    이 프로젝트가 무엇인지, 어떤 기술 스택을 사용하는지 자유롭게 기술하세요.
+    예) Python 기반 데이터 파이프라인. Kafka, Flink 사용. 필요 시 Go도 가능하지만 강제는 아님.
+    예) TypeScript + Next.js 웹 서비스. Tailwind CSS 사용. PostgreSQL + Prisma ORM.
 
 # ─── Git (공통) ───
 # enabled: false면 branch 생성, commit, PR 등 모든 git 작업을 건너뜀
@@ -67,7 +71,7 @@ testing:
   integration_test:
     enabled: true
     suites: ["integration", "api"]
-    include_e2e: true
+    include_e2e: true    # integration test 실행 시 e2e도 포함할지 여부. e2e_test.enabled=false면 이 값도 무시됨
 
 # ─── Claude Code (공통) ───
 claude:
@@ -90,17 +94,18 @@ logging:
 # ─── 실행장비 (executor) ───
 executor:
   codebase_path: "/home/user/projects/my-web-app"
-  workspace_dir: "/home/user/agent-hub/workspaces/my-web-app"
+  # workspace_dir: "workspaces/my-web-app"
+  # 미설정 시 기본값: {agent-hub 루트}/workspaces/{codebase_path의 디렉토리명}
   git_credential_helper: "store"
   ssh_key: "~/.ssh/id_rsa"
   service_bind_address: "0.0.0.0"
   service_port: 3000
-  sub_executor:
-    enabled: false
-    host: "192.168.1.200"
-    user: "user"
-    ssh_key: "~/.ssh/id_rsa_machine4"
-    codebase_path: "/home/user/projects/my-web-app"
+  # sub_executor:
+  #   enabled: false
+  #   host: "192.168.1.200"
+  #   user: "user"
+  #   ssh_key: "~/.ssh/id_rsa_machine4"
+  #   codebase_path: "/home/user/projects/my-web-app"
 
 # ─── 테스트장비 (tester) ───
 tester:
