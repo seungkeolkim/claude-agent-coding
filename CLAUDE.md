@@ -6,7 +6,7 @@ Claude Code 기반 자동 개발 시스템.
 - `config.yaml` — 시스템 전체 설정 (단일 진입점)
 - `scripts/` — Task Manager, Workflow Controller, agent 기동 래퍼
 - `config/agent_prompts/` — agent별 역할 프롬프트
-- `docs/agent-system-spec.md` — 전체 아키텍처 명세
+- `docs/000-agent-system-spec.md` — 전체 아키텍처 명세
 
 ## 코딩 컨벤션
 - 변수/함수/파일명: 축약 금지, 이름만 보고 알 수 있게
@@ -24,4 +24,4 @@ Claude Code 기반 자동 개발 시스템.
 - 각 agent는 subtask 단위로 새 세션 생성
 
 ## 상세 명세가 필요하면
-`docs/agent-system-spec.md`를 읽으세요.
+`docs/000-agent-system-spec.md`를 읽으세요.

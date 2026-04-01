@@ -138,4 +138,4 @@ pip install -r requirements.txt
 
 ## 상세 명세
 
-전체 아키텍처 명세는 [`docs/agent-system-spec.md`](docs/agent-system-spec.md)를 참고하세요.
+전체 아키텍처 명세는 [`docs/000-agent-system-spec.md`](docs/000-agent-system-spec.md)를 참고하세요.
