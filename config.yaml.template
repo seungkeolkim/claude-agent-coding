@@ -1,0 +1,126 @@
+# ═══════════════════════════════════════════════════════════
+# Agent Hub — 단일 설정 파일
+# 모든 agent와 프로세스가 이 파일을 참조합니다.
+# task별 override는 tasks/TASK-{id}.json에서 가능합니다.
+# ═══════════════════════════════════════════════════════════
+
+# ─── 프로젝트 (공통) ───
+project:
+  name: "my-web-app"
+  default_branch: "main"
+  language: "typescript"
+  framework: "next.js"
+
+# ─── Git (공통) ───
+# enabled: false면 branch 생성, commit, PR 등 모든 git 작업을 건너뜀
+# 로컬 전용 프로젝트나 테스트 시 유용
+git:
+  enabled: true
+  remote: "origin"
+  author_name: "agent-bot"
+  author_email: "agent@example.com"
+  auto_merge: false
+  pr_target_branch: "develop"
+
+# ─── 알림 (공통 — Phase 1.4에서 구체화) ───
+notification:
+  channel: "cli"      # Phase 1.0~1.3: "cli", Phase 1.4: "slack" | "telegram" 등
+
+# ─── 사람 개입 정책 (공통, task별 override 가능) ───
+human_review_policy:
+  review_plan: true
+  review_replan: true
+  review_before_merge: false
+  auto_approve_timeout_hours: 24
+
+# ─── 안전 제한 (공통, task별 override 가능) ───
+limits:
+  max_subtask_count: 5
+  max_retry_per_subtask: 3
+  max_replan_count: 2
+  max_total_agent_invocations: 30
+  max_task_duration_hours: 4
+
+# ─── 테스트 (공통, task별 override 가능) ───
+testing:
+  unit_test:
+    enabled: true
+    available_suites:
+      - name: "model"
+        command: "pytest tests/models/"
+        description: "ORM 모델 CRUD 테스트"
+      - name: "api"
+        command: "pytest tests/api/"
+        description: "API 엔드포인트 테스트"
+      - name: "service"
+        command: "pytest tests/services/"
+        description: "비즈니스 로직 테스트"
+      - name: "integration"
+        command: "pytest tests/integration/"
+        description: "서비스 간 연동 테스트"
+    default_suites: ["model", "api", "service"]
+
+  e2e_test:
+    enabled: true
+    tool: "playwright"
+
+  integration_test:
+    enabled: true
+    suites: ["integration", "api"]
+    include_e2e: true
+
+# ─── Claude Code (공통) ───
+claude:
+  planner_model: "opus"
+  coder_model: "sonnet"
+  reviewer_model: "opus"
+  e2e_tester_model: "sonnet"
+  max_turns_per_session: 50
+
+# ─── 로깅 (공통) ───
+logging:
+  level: "info"
+  archive_completed_tasks: true
+  keep_session_logs: true
+
+# ═══════════════════════════════════════════════════════════
+# 역할별 설정 — 기동 시 role argument에 따라 해당 섹션만 활성화
+# ═══════════════════════════════════════════════════════════
+
+# ─── 실행장비 (executor) ───
+executor:
+  codebase_path: "/home/user/projects/my-web-app"
+  workspace_dir: "/home/user/agent-hub/workspaces/my-web-app"
+  git_credential_helper: "store"
+  ssh_key: "~/.ssh/id_rsa"
+  service_bind_address: "0.0.0.0"
+  service_port: 3000
+  sub_executor:
+    enabled: false
+    host: "192.168.1.200"
+    user: "user"
+    ssh_key: "~/.ssh/id_rsa_machine4"
+    codebase_path: "/home/user/projects/my-web-app"
+
+# ─── 테스트장비 (tester) ───
+tester:
+  executor_host: "192.168.1.100"
+  executor_user: "user"
+  executor_ssh_key: "~/.ssh/id_rsa_server"
+  remote_workspace_dir: "/home/user/agent-hub/workspaces/my-web-app"
+  test_base_url: "http://192.168.1.100:3000"
+  local_work_dir: "C:\\Users\\user\\agent-hub\\work"
+  browser: "chromium"
+  viewport:
+    width: 1280
+    height: 720
+  test_accounts:
+    - email: "test@example.com"
+      password: "password123"
+      role: "user"
+    - email: "admin@example.com"
+      password: "admin123"
+      role: "admin"
+  ssh_reconnect_interval_seconds: 5
+  watch_path: "handoffs/"
+  watch_pattern: "-e2e\\.ready$"
