@@ -1,0 +1,68 @@
+# ═══════════════════════════════════════════════════════════
+# Agent Hub — 프로젝트 설정 (project.yaml)
+# projects/{프로젝트명}/project.yaml 에 위치합니다.
+# 프로젝트 생성 시 한 번 작성하고, 이후 큰 변경이 없는 항목들.
+# 시스템 기본값(config.yaml)을 override하고 싶은 항목만 작성하면 됩니다.
+# ═══════════════════════════════════════════════════════════
+
+project:
+  name: "my-project"              # 프로젝트명 (디렉토리명과 일치)
+  description: |
+    이 프로젝트가 무엇인지, 어떤 기술 스택을 사용하는지 자유롭게 기술하세요.
+    예) TypeScript + Next.js 웹 서비스. Tailwind CSS 사용. PostgreSQL + Prisma ORM.
+    예) Python 기반 데이터 파이프라인. Kafka, Flink 사용.
+  default_branch: "main"
+
+# ─── 코드베이스 ───
+codebase:
+  path: "/home/user/projects/my-project"    # 절대경로 필수
+  service_bind_address: "0.0.0.0"
+  service_port: 3000
+
+# ─── Git ───
+# enabled: false면 branch/commit/PR 등 모든 git 작업을 건너뜀
+git:
+  enabled: true
+  remote: "origin"
+  author_name: "agent-bot"
+  author_email: "agent@example.com"
+  auto_merge: false
+  pr_target_branch: "develop"
+
+# ─── 테스트 ───
+# 각 항목의 enabled 값은 project_state.json에서 동적으로 변경 가능
+testing:
+  unit_test:
+    enabled: false
+    available_suites: []
+    #   - name: "model"
+    #     command: "pytest tests/models/"
+    #     description: "ORM 모델 CRUD 테스트"
+    #   - name: "api"
+    #     command: "pytest tests/api/"
+    #     description: "API 엔드포인트 테스트"
+    default_suites: []
+
+  e2e_test:
+    enabled: false
+    tool: "playwright"
+    test_accounts: []
+    #   - email: "test@example.com"
+    #     password: "password123"
+    #     role: "user"
+
+  integration_test:
+    enabled: false
+    suites: []
+    include_e2e: false    # e2e_test.enabled=false면 이 값도 무시됨
+
+# ─── 시스템 기본값 override (선택적, 필요한 항목만 작성) ───
+# limits:
+#   max_subtask_count: 10
+# claude:
+#   coder_model: "opus"
+# human_review_policy:
+#   review_plan: false
+# notification:
+#   channel: "telegram"
+#   telegram_chat_id: "-100123456789"

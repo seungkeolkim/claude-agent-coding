@@ -1,11 +1,25 @@
 # ═══════════════════════════════════════════════════════════
-# Agent Hub — Runtime 데이터 (git 미관리)
+# Agent Hub — 시스템 설정 (credential 포함)
 # ═══════════════════════════════════════════════════════════
-workspaces/
+config.yaml
+.env
+
+# ═══════════════════════════════════════════════════════════
+# Agent Hub — 프로젝트 runtime 데이터 (project.yaml만 git 관리)
+# ═══════════════════════════════════════════════════════════
+projects/*/project_state.json
+projects/*/tasks/
+projects/*/handoffs/
+projects/*/commands/
+projects/*/attachments/
+projects/*/logs/
+projects/*/archive/
+
+# ═══════════════════════════════════════════════════════════
+# Agent Hub — 프로세스 관리
+# ═══════════════════════════════════════════════════════════
 .pids/
 *.log
-.env
-config.yaml
 
 # ═══════════════════════════════════════════════════════════
 # Python

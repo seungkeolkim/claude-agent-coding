@@ -1,115 +1,275 @@
 #!/usr/bin/env bash
-# run_claude_agent.sh — Claude Code 세션 기동 래퍼
+# run_claude_agent.sh — Claude Code 세션 기동 래퍼 (v2)
 #
 # 사용법:
-#   ./scripts/run_claude_agent.sh <agent_type> <task_id> [subtask_id]
+#   ./scripts/run_claude_agent.sh <agent_type> \
+#       --config <config.yaml 경로> \
+#       --project-yaml <project.yaml 경로> \
+#       --task-file <task JSON 경로> \
+#       [--subtask-file <subtask JSON 경로>] \
+#       [--dry-run]
 #
 # agent_type: planner | coder | reviewer | setup | unit_tester | e2e_tester | reporter
-# 각 agent는 config/agent_prompts/{agent_type}.md 프롬프트를 사용한다.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+AGENT_HUB_ROOT="$(dirname "$SCRIPT_DIR")"
 
+# ─── 유효한 agent 목록 ───
+VALID_AGENTS="planner coder reviewer setup unit_tester e2e_tester reporter"
+
+# ─── 인자 파싱 ───
 AGENT_TYPE="${1:?agent_type을 지정하세요 (planner|coder|reviewer|setup|unit_tester|e2e_tester|reporter)}"
-TASK_ID="${2:?task_id를 지정하세요}"
-SUBTASK_ID="${3:-}"
+shift
 
-# 설정 로드
-CONFIG_FILE="${PROJECT_ROOT}/config.yaml"
-PROMPT_FILE="${PROJECT_ROOT}/config/agent_prompts/${AGENT_TYPE}.md"
+CONFIG_FILE=""
+PROJECT_YAML=""
+TASK_FILE=""
+SUBTASK_FILE=""
+DRY_RUN=false
 
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --config)
+            CONFIG_FILE="$2"
+            shift 2
+            ;;
+        --project-yaml)
+            PROJECT_YAML="$2"
+            shift 2
+            ;;
+        --task-file)
+            TASK_FILE="$2"
+            shift 2
+            ;;
+        --subtask-file)
+            SUBTASK_FILE="$2"
+            shift 2
+            ;;
+        --dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        *)
+            echo "[ERROR] 알 수 없는 옵션: $1" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# ─── 필수 인자 검증 ───
+if [[ -z "$CONFIG_FILE" ]]; then
+    echo "[ERROR] --config 옵션이 필요합니다." >&2
+    exit 1
+fi
+if [[ -z "$PROJECT_YAML" ]]; then
+    echo "[ERROR] --project-yaml 옵션이 필요합니다." >&2
+    exit 1
+fi
+if [[ -z "$TASK_FILE" ]]; then
+    echo "[ERROR] --task-file 옵션이 필요합니다." >&2
+    exit 1
+fi
+
+# agent_type 유효성 검증
+if ! echo "$VALID_AGENTS" | grep -qw "$AGENT_TYPE"; then
+    echo "[ERROR] 유효하지 않은 agent_type: ${AGENT_TYPE}" >&2
+    echo "[ERROR] 가능한 값: ${VALID_AGENTS}" >&2
+    exit 1
+fi
+
+# 파일 존재 검증
+for check_file in "$CONFIG_FILE" "$PROJECT_YAML" "$TASK_FILE"; do
+    if [[ ! -f "$check_file" ]]; then
+        echo "[ERROR] 파일을 찾을 수 없음: ${check_file}" >&2
+        exit 1
+    fi
+done
+if [[ -n "$SUBTASK_FILE" && ! -f "$SUBTASK_FILE" ]]; then
+    echo "[ERROR] subtask 파일을 찾을 수 없음: ${SUBTASK_FILE}" >&2
+    exit 1
+fi
+
+# 프롬프트 파일 검증
+PROMPT_FILE="${AGENT_HUB_ROOT}/config/agent_prompts/${AGENT_TYPE}.md"
 if [[ ! -f "$PROMPT_FILE" ]]; then
     echo "[ERROR] 프롬프트 파일 없음: ${PROMPT_FILE}" >&2
     exit 1
 fi
 
-# agent별 모델 결정
-get_model_for_agent() {
-    local agent="$1"
-    case "$agent" in
-        planner)    echo "opus" ;;
-        coder)      echo "sonnet" ;;
-        reviewer)   echo "opus" ;;
-        e2e_tester) echo "sonnet" ;;
-        *)          echo "sonnet" ;;
-    esac
-}
-
-MODEL=$(get_model_for_agent "$AGENT_TYPE")
-
-# config.yaml에서 경로 읽기 (python으로 yaml 파싱)
-read_config_value() {
+# ─── YAML 값 읽기 헬퍼 ───
+# 점 표기법으로 nested key에 접근. 키가 없으면 빈 문자열 반환.
+read_yaml_value() {
+    local yaml_file="$1"
+    local key_path="$2"
     python3 -c "
-import yaml, sys
-with open('${CONFIG_FILE}') as f:
+import yaml
+with open('${yaml_file}') as f:
     config = yaml.safe_load(f)
-keys = '$1'.split('.')
+keys = '${key_path}'.split('.')
 val = config
 for k in keys:
-    val = val[k]
-print(val)
+    if val is None or not isinstance(val, dict):
+        val = None
+        break
+    val = val.get(k)
+print(val if val is not None else '')
 "
 }
 
-# 대상 프로젝트 경로 (agent가 실제 코드를 작성/수정하는 곳)
-CODEBASE_PATH=$(read_config_value "executor.codebase_path")
+# ─── 모델 결정 (config.yaml → project.yaml override) ───
+# 1차: config.yaml에서 claude.{agent_type}_model 읽기
+MODEL=$(read_yaml_value "$CONFIG_FILE" "claude.${AGENT_TYPE}_model")
 
-# runtime 데이터 경로 (tasks, logs, handoffs)
-WORKSPACE_DIR=$(read_config_value "executor.workspace_dir")
+# fallback: config.yaml의 claude.coder_model
+if [[ -z "$MODEL" ]]; then
+    MODEL=$(read_yaml_value "$CONFIG_FILE" "claude.coder_model")
+fi
 
+# 2차: project.yaml에서 claude.{agent_type}_model override 확인
+PROJECT_MODEL=$(read_yaml_value "$PROJECT_YAML" "claude.${AGENT_TYPE}_model")
+if [[ -n "$PROJECT_MODEL" ]]; then
+    MODEL="$PROJECT_MODEL"
+fi
+
+# 최종 fallback
+if [[ -z "$MODEL" ]]; then
+    MODEL="sonnet"
+fi
+
+# ─── 코드베이스 경로 ───
+CODEBASE_PATH=$(read_yaml_value "$PROJECT_YAML" "codebase.path")
+if [[ -z "$CODEBASE_PATH" ]]; then
+    echo "[ERROR] project.yaml에 codebase.path가 설정되지 않았습니다." >&2
+    exit 1
+fi
 if [[ ! -d "$CODEBASE_PATH" ]]; then
-    echo "[ERROR] 대상 프로젝트 경로가 존재하지 않음: ${CODEBASE_PATH}" >&2
-    echo "[ERROR] config.yaml의 executor.codebase_path를 확인하세요." >&2
+    echo "[ERROR] 코드베이스 경로가 존재하지 않음: ${CODEBASE_PATH}" >&2
     exit 1
 fi
 
-# 로그 디렉토리 생성
-LOG_DIR="${WORKSPACE_DIR}/logs/${TASK_ID}"
+# ─── task ID 추출 (task JSON에서) ───
+TASK_ID=$(python3 -c "
+import json
+with open('${TASK_FILE}') as f:
+    print(json.load(f).get('task_id', 'UNKNOWN'))
+")
+
+# ─── 프로젝트 디렉토리 (project.yaml의 상위) ───
+PROJECT_DIR="$(dirname "$PROJECT_YAML")"
+
+# ─── 로그 디렉토리 ───
+LOG_DIR="${PROJECT_DIR}/logs/${TASK_ID}"
 mkdir -p "$LOG_DIR"
 
 # 로그 파일명 결정
-if [[ -n "$SUBTASK_ID" ]]; then
-    LOG_FILE="${LOG_DIR}/${AGENT_TYPE}_${SUBTASK_ID}.log"
+if [[ -n "$SUBTASK_FILE" ]]; then
+    SUBTASK_ID=$(python3 -c "
+import json
+with open('${SUBTASK_FILE}') as f:
+    print(json.load(f).get('subtask_id', 'UNKNOWN'))
+")
+    # retry_count 추출해서 attempt 번호로 사용
+    RETRY_COUNT=$(python3 -c "
+import json
+with open('${SUBTASK_FILE}') as f:
+    print(json.load(f).get('retry_count', 0))
+")
+    ATTEMPT=$((RETRY_COUNT + 1))
+    LOG_FILE="${LOG_DIR}/${AGENT_TYPE}_${SUBTASK_ID}_attempt-${ATTEMPT}.log"
 else
-    LOG_FILE="${LOG_DIR}/${AGENT_TYPE}.log"
+    SUBTASK_ID=""
+    LOG_FILE="${LOG_DIR}/${AGENT_TYPE}_${TASK_ID}.log"
 fi
 
-# 프롬프트 조합
+# ─── 프로젝트 설명 추출 ───
+PROJECT_DESCRIPTION=$(read_yaml_value "$PROJECT_YAML" "project.description")
+
+# ─── 첨부 이미지 참조 지시 생성 ───
+ATTACHMENT_INSTRUCTIONS=$(python3 -c "
+import json
+with open('${TASK_FILE}') as f:
+    task = json.load(f)
+attachments = task.get('attachments', [])
+if attachments:
+    print('## 첨부 자료')
+    print('다음 첨부 파일을 Read 도구로 확인하세요:')
+    for att in attachments:
+        path = att.get('path', '')
+        desc = att.get('description', '')
+        print(f'- {path}: {desc}')
+")
+
+# ─── 프롬프트 조합 ───
 PROMPT="$(cat "$PROMPT_FILE")"
 
-# task 컨텍스트 추가
-TASK_FILE="${WORKSPACE_DIR}/tasks/${TASK_ID}.json"
-if [[ -f "$TASK_FILE" ]]; then
+# 프로젝트 설명 추가
+if [[ -n "$PROJECT_DESCRIPTION" ]]; then
     PROMPT="${PROMPT}
+
+---
+## 프로젝트 정보
+${PROJECT_DESCRIPTION}"
+fi
+
+# 첨부 자료 참조 추가
+if [[ -n "$ATTACHMENT_INSTRUCTIONS" ]]; then
+    PROMPT="${PROMPT}
+
+${ATTACHMENT_INSTRUCTIONS}"
+fi
+
+# task 컨텍스트 추가
+PROMPT="${PROMPT}
 
 ---
 ## Task Context
 \`\`\`json
 $(cat "$TASK_FILE")
 \`\`\`"
-fi
 
 # subtask 컨텍스트 추가
-if [[ -n "$SUBTASK_ID" ]]; then
-    SUBTASK_FILE="${WORKSPACE_DIR}/tasks/${SUBTASK_ID}.json"
-    if [[ -f "$SUBTASK_FILE" ]]; then
-        PROMPT="${PROMPT}
+if [[ -n "$SUBTASK_FILE" ]]; then
+    PROMPT="${PROMPT}
 
 ## Subtask Context
 \`\`\`json
 $(cat "$SUBTASK_FILE")
 \`\`\`"
-    fi
 fi
 
+# plan 컨텍스트 추가 (존재하면)
+PLAN_FILE="${PROJECT_DIR}/tasks/${TASK_ID}-plan.json"
+if [[ -f "$PLAN_FILE" ]]; then
+    PROMPT="${PROMPT}
+
+## Plan Context
+\`\`\`json
+$(cat "$PLAN_FILE")
+\`\`\`"
+fi
+
+# ─── 실행 정보 출력 ───
 echo "[run_claude_agent] agent=${AGENT_TYPE} task=${TASK_ID} subtask=${SUBTASK_ID:-none} model=${MODEL}"
+echo "[run_claude_agent] 코드베이스: ${CODEBASE_PATH}"
 echo "[run_claude_agent] 로그: ${LOG_FILE}"
 
-# Claude Code CLI 실행
-# 대상 프로젝트 디렉토리에서 claude를 실행해야 해당 코드베이스를 인식한다
-echo "[run_claude_agent] 대상 프로젝트: ${CODEBASE_PATH}"
+# ─── dry-run 모드: claude 호출 대신 프롬프트 출력 ───
+if [[ "$DRY_RUN" == "true" ]]; then
+    echo ""
+    echo "========== DRY RUN 모드 =========="
+    echo "모델: ${MODEL}"
+    echo "실행 디렉토리: ${CODEBASE_PATH}"
+    echo "로그 경로: ${LOG_FILE}"
+    echo "프롬프트 길이: $(echo -n "$PROMPT" | wc -c) bytes"
+    echo ""
+    echo "────── 조합된 프롬프트 ──────"
+    echo "$PROMPT"
+    echo "────── 프롬프트 끝 ──────"
+    exit 0
+fi
 
+# ─── Claude Code CLI 실행 ───
 cd "$CODEBASE_PATH"
-claude -p "${PROMPT}" --model "${MODEL}" 2>&1 | tee "$LOG_FILE"
+claude --model "$MODEL" -p "${PROMPT}" --output-format json 2>&1 | tee "$LOG_FILE"

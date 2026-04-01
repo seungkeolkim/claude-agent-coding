@@ -1,131 +1,65 @@
 # ═══════════════════════════════════════════════════════════
-# Agent Hub — 단일 설정 파일
-# 모든 agent와 프로세스가 이 파일을 참조합니다.
-# task별 override는 tasks/TASK-{id}.json에서 가능합니다.
+# Agent Hub — 시스템 설정 (config.yaml)
+# 시스템 전체에 적용되는 장비 정보, Claude 모델, 안전 제한 기본값.
+# 프로젝트별 설정은 projects/{name}/project.yaml에 작성합니다.
 # ═══════════════════════════════════════════════════════════
 
-# ─── 프로젝트 (공통) ───
-# description: 자연어로 프로젝트의 목적, 기술 스택, 선호사항 등을 자유롭게 기술.
-#   agent가 이 내용을 참고하여 코드 작성/리뷰/테스트 방식을 판단합니다.
-project:
-  name: "my-project"
-  default_branch: "main"
-  description: |
-    이 프로젝트가 무엇인지, 어떤 기술 스택을 사용하는지 자유롭게 기술하세요.
-    예) Python 기반 데이터 파이프라인. Kafka, Flink 사용. 필요 시 Go도 가능하지만 강제는 아님.
-    예) TypeScript + Next.js 웹 서비스. Tailwind CSS 사용. PostgreSQL + Prisma ORM.
+# ─── 장비 / 인프라 ───
+machines:
+  executor:
+    ssh_key: "~/.ssh/id_rsa"
+    git_credential_helper: "store"
+    service_bind_address: "0.0.0.0"
+  tester:
+    host: "192.168.1.100"
+    user: "user"
+    ssh_key: "~/.ssh/id_rsa_server"
+    browser: "chromium"
+    viewport:
+      width: 1280
+      height: 720
+    ssh_reconnect_interval_seconds: 5
 
-# ─── Git (공통) ───
-# enabled: false면 branch 생성, commit, PR 등 모든 git 작업을 건너뜀
-# 로컬 전용 프로젝트나 테스트 시 유용
-git:
-  enabled: true
-  remote: "origin"
-  author_name: "agent-bot"
-  author_email: "agent@example.com"
-  auto_merge: false
-  pr_target_branch: "develop"
+# ─── Claude Code ───
+claude:
+  planner_model: "opus"
+  coder_model: "sonnet"
+  reviewer_model: "opus"
+  setup_model: "sonnet"
+  unit_tester_model: "sonnet"
+  e2e_tester_model: "sonnet"
+  reporter_model: "sonnet"
+  max_turns_per_session: 50
 
-# ─── 알림 (공통 — Phase 1.4에서 구체화) ───
-notification:
-  channel: "cli"      # Phase 1.0~1.3: "cli", Phase 1.4: "slack" | "telegram" 등
+  # Usage 기반 실행 제어
+  # 5시간 세션 사용량이 이 threshold 이상이면 해당 레벨의 실행을 대기
+  usage_thresholds:
+    new_task: 0.70            # 새 task 시작 허용 기준
+    new_subtask: 0.80         # 새 subtask 시작 허용 기준
+    new_agent_stage: 0.90     # pipeline 내 다음 agent 호출 허용 기준
+  usage_check_interval_seconds: 60   # threshold 초과 시 재확인 주기
 
-# ─── 사람 개입 정책 (공통, task별 override 가능) ───
-human_review_policy:
-  review_plan: true
-  review_replan: true
-  review_before_merge: false
-  auto_approve_timeout_hours: 24
-
-# ─── 안전 제한 (공통, task별 override 가능) ───
-limits:
+# ─── 안전 제한 기본값 (프로젝트별 override 가능) ───
+default_limits:
   max_subtask_count: 5
   max_retry_per_subtask: 3
   max_replan_count: 2
   max_total_agent_invocations: 30
   max_task_duration_hours: 4
 
-# ─── 테스트 (공통, task별 override 가능) ───
-testing:
-  unit_test:
-    enabled: true
-    available_suites:
-      - name: "model"
-        command: "pytest tests/models/"
-        description: "ORM 모델 CRUD 테스트"
-      - name: "api"
-        command: "pytest tests/api/"
-        description: "API 엔드포인트 테스트"
-      - name: "service"
-        command: "pytest tests/services/"
-        description: "비즈니스 로직 테스트"
-      - name: "integration"
-        command: "pytest tests/integration/"
-        description: "서비스 간 연동 테스트"
-    default_suites: ["model", "api", "service"]
+# ─── 사람 개입 정책 기본값 (프로젝트별 override 가능) ───
+default_human_review_policy:
+  review_plan: true
+  review_replan: true
+  review_before_merge: false
+  auto_approve_timeout_hours: 24
 
-  e2e_test:
-    enabled: true
-    tool: "playwright"
-
-  integration_test:
-    enabled: true
-    suites: ["integration", "api"]
-    include_e2e: true    # integration test 실행 시 e2e도 포함할지 여부. e2e_test.enabled=false면 이 값도 무시됨
-
-# ─── Claude Code (공통) ───
-claude:
-  planner_model: "opus"
-  coder_model: "sonnet"
-  reviewer_model: "opus"
-  e2e_tester_model: "sonnet"
-  max_turns_per_session: 50
-
-# ─── 로깅 (공통) ───
+# ─── 로깅 ───
 logging:
   level: "info"
   archive_completed_tasks: true
   keep_session_logs: true
 
-# ═══════════════════════════════════════════════════════════
-# 역할별 설정 — 기동 시 role argument에 따라 해당 섹션만 활성화
-# ═══════════════════════════════════════════════════════════
-
-# ─── 실행장비 (executor) ───
-executor:
-  codebase_path: "/home/user/projects/my-web-app"
-  # workspace_dir: "workspaces/my-web-app"
-  # 미설정 시 기본값: {agent-hub 루트}/workspaces/{codebase_path의 디렉토리명}
-  git_credential_helper: "store"
-  ssh_key: "~/.ssh/id_rsa"
-  service_bind_address: "0.0.0.0"
-  service_port: 3000
-  # sub_executor:
-  #   enabled: false
-  #   host: "192.168.1.200"
-  #   user: "user"
-  #   ssh_key: "~/.ssh/id_rsa_machine4"
-  #   codebase_path: "/home/user/projects/my-web-app"
-
-# ─── 테스트장비 (tester) ───
-tester:
-  executor_host: "192.168.1.100"
-  executor_user: "user"
-  executor_ssh_key: "~/.ssh/id_rsa_server"
-  remote_workspace_dir: "/home/user/agent-hub/workspaces/my-web-app"
-  test_base_url: "http://192.168.1.100:3000"
-  local_work_dir: "C:\\Users\\user\\agent-hub\\work"
-  browser: "chromium"
-  viewport:
-    width: 1280
-    height: 720
-  test_accounts:
-    - email: "test@example.com"
-      password: "password123"
-      role: "user"
-    - email: "admin@example.com"
-      password: "admin123"
-      role: "admin"
-  ssh_reconnect_interval_seconds: 5
-  watch_path: "handoffs/"
-  watch_pattern: "-e2e\\.ready$"
+# ─── 알림 기본값 (프로젝트별 override 가능) ───
+notification:
+  channel: "cli"      # Phase 1.0~1.3: "cli", Phase 1.4: "slack" | "telegram" 등
