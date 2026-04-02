@@ -4,15 +4,11 @@
 config.yaml
 
 # ═══════════════════════════════════════════════════════════
-# Agent Hub — 프로젝트 runtime 데이터 (project.yaml만 git 관리)
+# Agent Hub — projects 폴더 전체 (runtime 데이터, 프로젝트별 설정 포함)
+# project.yaml, project_state.json, tasks/ 등 모두 런타임 생성물
 # ═══════════════════════════════════════════════════════════
-projects/*/project_state.json
-projects/*/tasks/
-projects/*/handoffs/
-projects/*/commands/
-projects/*/attachments/
-projects/*/logs/
-projects/*/archive/
+projects/*
+!projects/.gitkeep
 
 # ═══════════════════════════════════════════════════════════
 # Agent Hub — 프로세스 관리
