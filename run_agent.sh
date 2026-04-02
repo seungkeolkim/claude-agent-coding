@@ -37,9 +37,10 @@ show_help() {
     echo "  ./run_agent.sh <command> [options]"
     echo ""
     echo "명령:"
-    echo "  run <agent_type> --project <name> --task <id> [--subtask <id>] [--dry-run]"
+    echo "  run <agent_type> --project <name> --task <id> [--subtask <id>] [--dry-run] [--dummy]"
     echo "                       수동으로 agent 하나 실행"
     echo "  init-project         대화형 프로젝트 초기화"
+    echo "  kill-all             모든 agent 프로세스 종료 (claude -p 포함)"
     echo "  help                 이 도움말 표시"
     echo ""
     echo "agent_type:"
@@ -55,6 +56,85 @@ show_help() {
     echo ""
     echo "Phase 1.1+ 명령 (미구현):"
     echo "  start, stop, status, submit, pending, approve, reject, list"
+}
+
+# ═══════════════════════════════════════════════════════════
+# kill-all 명령
+# ═══════════════════════════════════════════════════════════
+cmd_kill_all() {
+    local force=false
+    if [[ "${1:-}" == "--force" ]]; then
+        force=true
+    fi
+    local pid_dir="${SCRIPT_DIR}/.pids"
+    local killed=0
+    local stale=0
+
+    echo ""
+    log_info "=== Agent Hub 프로세스 종료 ==="
+
+    # 1단계: PID 파일 기반 종료 (우리가 추적하는 프로세스)
+    if [[ -d "$pid_dir" ]] && ls "$pid_dir"/*.pid &>/dev/null; then
+        for pid_file in "$pid_dir"/*.pid; do
+            local pid
+            pid=$(python3 -c "import json; print(json.load(open('${pid_file}'))['pid'])" 2>/dev/null || echo "")
+            local agent_type
+            agent_type=$(python3 -c "import json; print(json.load(open('${pid_file}'))['agent_type'])" 2>/dev/null || echo "unknown")
+            local task_id
+            task_id=$(python3 -c "import json; print(json.load(open('${pid_file}'))['task_id'])" 2>/dev/null || echo "unknown")
+
+            if [[ -z "$pid" ]]; then
+                rm -f "$pid_file"
+                continue
+            fi
+
+            # 프로세스가 실제로 살아있는지 확인
+            if kill -0 "$pid" 2>/dev/null; then
+                # 프로세스 그룹 전체를 종료 (자식 프로세스 포함)
+                kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+                log_info "종료: PID=${pid} agent=${agent_type} task=${task_id}"
+                killed=$((killed + 1))
+            else
+                stale=$((stale + 1))
+            fi
+            rm -f "$pid_file"
+        done
+    fi
+
+    # 2단계: 잔여 claude -p 프로세스 정리 (PID 파일 없이 남은 것들)
+    local orphan_pids
+    orphan_pids=$(pgrep -f "claude.*--dangerously-skip-permissions" 2>/dev/null || true)
+    if [[ -n "$orphan_pids" ]]; then
+        echo ""
+        log_warn "PID 파일 없는 잔여 claude 프로세스 발견:"
+        echo "$orphan_pids" | while read -r opid; do
+            local cmd
+            cmd=$(ps -p "$opid" -o args= 2>/dev/null || echo "unknown")
+            log_warn "  PID=${opid}: ${cmd:0:80}"
+        done
+
+        echo ""
+        local answer="Y"
+        if [[ "$force" != "true" ]]; then
+            read -rp "잔여 프로세스도 종료할까요? (Y/n) " answer
+        fi
+        if [[ "${answer:-Y}" =~ ^[Yy]?$ ]]; then
+            echo "$orphan_pids" | while read -r opid; do
+                kill "$opid" 2>/dev/null || true
+                killed=$((killed + 1))
+            done
+            log_info "잔여 프로세스 종료 완료"
+        fi
+    fi
+
+    # 3단계: PID 디렉토리 정리
+    if [[ -d "$pid_dir" ]]; then
+        rm -f "$pid_dir"/*.pid 2>/dev/null
+    fi
+
+    echo ""
+    log_info "결과: ${killed}개 종료, ${stale}개 이미 종료된 PID 정리"
+    echo ""
 }
 
 # ═══════════════════════════════════════════════════════════
@@ -231,9 +311,13 @@ case "$COMMAND" in
     help|--help|-h)
         show_help
         ;;
+    kill-all)
+        shift
+        cmd_kill_all "$@"
+        ;;
     start|stop|status|submit|pending|approve|reject|list)
         log_warn "'${COMMAND}' 명령은 Phase 1.1+에서 구현 예정입니다."
-        log_warn "현재 Phase 1.0에서는 run과 init-project만 사용 가능합니다."
+        log_warn "현재 Phase 1.0에서는 run, init-project, kill-all만 사용 가능합니다."
         exit 1
         ;;
     *)

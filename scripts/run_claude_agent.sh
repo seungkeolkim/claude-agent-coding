@@ -260,6 +260,20 @@ echo "[run_claude_agent] agent=${AGENT_TYPE} task=${TASK_ID} subtask=${SUBTASK_I
 echo "[run_claude_agent] 코드베이스: ${CODEBASE_PATH}"
 echo "[run_claude_agent] 로그: ${LOG_FILE}"
 
+# ─── safety limit 체크 (dry-run, dummy 모드에서는 건너뜀) ───
+if [[ "$DRY_RUN" != "true" && "$DUMMY" != "true" ]]; then
+    python3 "${SCRIPT_DIR}/check_safety_limits.py" \
+        --config "$CONFIG_FILE" \
+        --project-yaml "$PROJECT_YAML" \
+        --task-file "$TASK_FILE" \
+        --agent-type "$AGENT_TYPE"
+
+    if [[ $? -ne 0 ]]; then
+        echo "[run_claude_agent] safety limit 초과로 실행 중단" >&2
+        exit 1
+    fi
+fi
+
 # ─── dry-run 모드: claude 호출 대신 프롬프트 출력 ───
 if [[ "$DRY_RUN" == "true" ]]; then
     echo ""
@@ -395,6 +409,40 @@ EOJSON
     exit 0
 fi
 
+# ─── PID 관리 디렉토리 ───
+PID_DIR="${AGENT_HUB_ROOT}/.pids"
+mkdir -p "$PID_DIR"
+
 # ─── Claude Code CLI 실행 ───
 cd "$CODEBASE_PATH"
-claude --model "$MODEL" -p "${PROMPT}" --output-format json --dangerously-skip-permissions 2>&1 | tee "$LOG_FILE"
+
+# claude를 백그라운드로 실행하고 PID를 기록한다
+# 종료 시 PID 파일을 자동 삭제하기 위해 trap을 설정한다
+claude --model "$MODEL" -p "${PROMPT}" --output-format json --dangerously-skip-permissions 2>&1 | tee "$LOG_FILE" &
+CLAUDE_PID=$!
+
+# PID 파일 생성 (agent 정보 포함)
+PID_FILE="${PID_DIR}/${CLAUDE_PID}.pid"
+cat > "$PID_FILE" <<EOPID
+{
+  "pid": ${CLAUDE_PID},
+  "agent_type": "${AGENT_TYPE}",
+  "task_id": "${TASK_ID}",
+  "subtask_id": "${SUBTASK_ID:-none}",
+  "project_dir": "${PROJECT_DIR}",
+  "started_at": "$(date -Iseconds)",
+  "log_file": "${LOG_FILE}"
+}
+EOPID
+
+echo "[run_claude_agent] PID ${CLAUDE_PID} 기록됨: ${PID_FILE}"
+
+# 프로세스 종료 시 PID 파일 정리
+cleanup_pid() {
+    rm -f "$PID_FILE"
+    echo "[run_claude_agent] PID 파일 정리됨: ${PID_FILE}"
+}
+trap cleanup_pid EXIT
+
+# claude 프로세스가 끝날 때까지 대기
+wait $CLAUDE_PID
