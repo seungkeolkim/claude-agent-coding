@@ -173,32 +173,71 @@ PROJECT_DIR="$(dirname "$PROJECT_YAML")"
 LOG_DIR="${PROJECT_DIR}/logs/${TASK_ID}"
 mkdir -p "$LOG_DIR"
 
+# ─── 파이프라인 단계 넘버링 ───
+# 전체 파이프라인 순서에 맞게 번호를 부여한다.
+# 테스트가 비활성화되어 실행되지 않아도 번호는 고정이다.
+get_step_number() {
+    case "$1" in
+        planner)      echo "01" ;;
+        coder)        echo "02" ;;
+        reviewer)     echo "03" ;;
+        setup)        echo "04" ;;
+        unit_tester)  echo "05" ;;
+        e2e_tester)   echo "06" ;;
+        reporter)     echo "07" ;;
+        *)            echo "99" ;;
+    esac
+}
+
+# agent 이름을 로그용 표기로 변환 (snake_case → kebab-case)
+get_step_name() {
+    case "$1" in
+        planner)      echo "planner" ;;
+        coder)        echo "coder" ;;
+        reviewer)     echo "reviewer" ;;
+        setup)        echo "setup" ;;
+        unit_tester)  echo "unit-tester" ;;
+        e2e_tester)   echo "e2e-tester" ;;
+        reporter)     echo "reporter" ;;
+        *)            echo "$1" ;;
+    esac
+}
+
+STEP_NUM=$(get_step_number "$AGENT_TYPE")
+STEP_NAME=$(get_step_name "$AGENT_TYPE")
+
 # 로그 파일명 결정
+# 형식:
+#   task-level:    {task_id}_{step}-{name}.json
+#   subtask-level: {task_id}_{subtask_num}_{step}-{name}_attempt-{N}.json
 if [[ -n "$SUBTASK_FILE" ]]; then
     SUBTASK_ID=$(python3 -c "
 import json
 with open('${SUBTASK_FILE}') as f:
     print(json.load(f).get('subtask_id', 'UNKNOWN'))
 ")
+    # subtask_id에서 순번 추출 (예: 00001-2 → 02)
+    SUBTASK_SEQ=$(python3 -c "
+sid = '${SUBTASK_ID}'
+num = sid.split('-')[-1]
+print(num.zfill(2))
+")
     # retry_count 추출해서 attempt 번호로 사용
-    # task JSON의 current_subtask_retry를 우선 사용 (WFC가 관리)
     RETRY_COUNT=$(python3 -c "
 import json
-# task JSON에서 current_subtask_retry 읽기
 with open('${TASK_FILE}') as f:
     task = json.load(f)
 retry = task.get('counters', {}).get('current_subtask_retry', 0)
-# fallback: subtask JSON의 retry_count
 if retry == 0:
     with open('${SUBTASK_FILE}') as f:
         retry = json.load(f).get('retry_count', 0)
 print(retry)
 ")
     ATTEMPT=$((RETRY_COUNT + 1))
-    LOG_FILE="${LOG_DIR}/${AGENT_TYPE}_${SUBTASK_ID}_attempt-${ATTEMPT}.json"
+    LOG_FILE="${LOG_DIR}/${TASK_ID}_${SUBTASK_SEQ}_${STEP_NUM}-${STEP_NAME}_attempt-${ATTEMPT}.json"
 else
     SUBTASK_ID=""
-    LOG_FILE="${LOG_DIR}/${AGENT_TYPE}_${TASK_ID}.json"
+    LOG_FILE="${LOG_DIR}/${TASK_ID}_${STEP_NUM}-${STEP_NAME}.json"
 fi
 
 # ─── 프로젝트 설명 추출 ───

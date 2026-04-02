@@ -53,6 +53,28 @@ def log_step(msg):
     print(f"{CYAN}{'═' * 60}{NC}\n")
 
 
+# ─── 파이프라인 단계 넘버링 (run_claude_agent.sh와 동일) ───
+STEP_NUMBER = {
+    "planner": "01",
+    "coder": "02",
+    "reviewer": "03",
+    "setup": "04",
+    "unit_tester": "05",
+    "e2e_tester": "06",
+    "reporter": "07",
+}
+
+STEP_NAME = {
+    "planner": "planner",
+    "coder": "coder",
+    "reviewer": "reviewer",
+    "setup": "setup",
+    "unit_tester": "unit-tester",
+    "e2e_tester": "e2e-tester",
+    "reporter": "reporter",
+}
+
+
 def load_json(path):
     """JSON 파일을 읽어 dict로 반환한다."""
     with open(path) as f:
@@ -138,11 +160,19 @@ def run_agent(agent_hub_root, agent_type, project_name, task_id,
         return False, None
 
     # 로그 파일에서 결과 JSON 읽기
+    # 파일명 형식: run_claude_agent.sh와 동일
+    #   task-level:    {task_id}_{step}-{name}.json
+    #   subtask-level: {task_id}_{subtask_num}_{step}-{name}_attempt-{N}.json
     project_dir = os.path.join(agent_hub_root, "projects", project_name)
     log_dir = os.path.join(project_dir, "logs", task_id)
 
+    step_num = STEP_NUMBER.get(agent_type, "99")
+    step_name = STEP_NAME.get(agent_type, agent_type)
+
     if subtask_id:
-        # subtask가 있으면 task JSON에서 retry count 읽기
+        # subtask_id에서 순번 추출 (예: 00001-2 → 02)
+        subtask_seq = subtask_id.split("-")[-1].zfill(2)
+        # task JSON에서 retry count 읽기
         task_file = find_task_file(os.path.join(project_dir, "tasks"), task_id)
         if task_file:
             task_data = load_json(task_file)
@@ -150,9 +180,9 @@ def run_agent(agent_hub_root, agent_type, project_name, task_id,
             attempt = retry + 1
         else:
             attempt = 1
-        log_file = os.path.join(log_dir, f"{agent_type}_{subtask_id}_attempt-{attempt}.json")
+        log_file = os.path.join(log_dir, f"{task_id}_{subtask_seq}_{step_num}-{step_name}_attempt-{attempt}.json")
     else:
-        log_file = os.path.join(log_dir, f"{agent_type}_{task_id}.json")
+        log_file = os.path.join(log_dir, f"{task_id}_{step_num}-{step_name}.json")
 
     if not os.path.exists(log_file):
         log_error(f"로그 파일을 찾을 수 없음: {log_file}")
