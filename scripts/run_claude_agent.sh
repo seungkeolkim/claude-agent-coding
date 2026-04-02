@@ -29,6 +29,7 @@ TASK_FILE=""
 SUBTASK_FILE=""
 DRY_RUN=false
 DUMMY=false
+FORCE_RESULT=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -55,6 +56,10 @@ while [[ $# -gt 0 ]]; do
         --dummy)
             DUMMY=true
             shift
+            ;;
+        --force-result)
+            FORCE_RESULT="$2"
+            shift 2
             ;;
         *)
             echo "[ERROR] 알 수 없는 옵션: $1" >&2
@@ -176,10 +181,18 @@ with open('${SUBTASK_FILE}') as f:
     print(json.load(f).get('subtask_id', 'UNKNOWN'))
 ")
     # retry_count 추출해서 attempt 번호로 사용
+    # task JSON의 current_subtask_retry를 우선 사용 (WFC가 관리)
     RETRY_COUNT=$(python3 -c "
 import json
-with open('${SUBTASK_FILE}') as f:
-    print(json.load(f).get('retry_count', 0))
+# task JSON에서 current_subtask_retry 읽기
+with open('${TASK_FILE}') as f:
+    task = json.load(f)
+retry = task.get('counters', {}).get('current_subtask_retry', 0)
+# fallback: subtask JSON의 retry_count
+if retry == 0:
+    with open('${SUBTASK_FILE}') as f:
+        retry = json.load(f).get('retry_count', 0)
+print(retry)
 ")
     ATTEMPT=$((RETRY_COUNT + 1))
     LOG_FILE="${LOG_DIR}/${AGENT_TYPE}_${SUBTASK_ID}_attempt-${ATTEMPT}.json"
@@ -272,6 +285,148 @@ if [[ "$DRY_RUN" != "true" && "$DUMMY" != "true" ]]; then
         echo "[run_claude_agent] safety limit 초과로 실행 중단" >&2
         exit 1
     fi
+fi
+
+# ─── task JSON의 test_scenario에서 force_result 확인 ───
+# CLI --force-result가 없을 때만 task JSON에서 읽는다
+if [[ -z "$FORCE_RESULT" ]]; then
+    FORCE_RESULT=$(python3 -c "
+import json
+with open('${TASK_FILE}') as f:
+    task = json.load(f)
+scenario = task.get('test_scenario', {})
+agent_scenario = scenario.get('${AGENT_TYPE}', {})
+force = agent_scenario.get('force_result', '')
+at_attempt = agent_scenario.get('at_attempt', None)
+if force and at_attempt is not None:
+    # retry_count 기반으로 현재 attempt 계산
+    counters = task.get('counters', {})
+    current_attempt = counters.get('current_subtask_retry', 0) + 1
+    if current_attempt != at_attempt:
+        force = ''  # at_attempt와 현재 attempt가 다르면 정상 실행
+print(force)
+" 2>/dev/null || echo "")
+fi
+
+# ─── force-result 모드: claude 호출 없이 강제 결과 출력 ───
+if [[ -n "$FORCE_RESULT" ]]; then
+    echo ""
+    echo "========== FORCE RESULT 모드: ${FORCE_RESULT} =========="
+
+    case "${AGENT_TYPE}:${FORCE_RESULT}" in
+        planner:approve)
+            FORCED_JSON=$(cat <<EOJSON
+{
+  "action": "plan_created",
+  "task_id": "${TASK_ID}",
+  "forced": true,
+  "subtasks": [
+    {
+      "subtask_id": "${TASK_ID}-1",
+      "title": "[forced] 기본 구조 작성",
+      "primary_responsibility": "기본 파일 구조와 설정 생성",
+      "guidance": "프로젝트 초기 구조를 잡는다"
+    }
+  ]
+}
+EOJSON
+)
+            ;;
+        coder:approve)
+            FORCED_JSON=$(cat <<EOJSON
+{
+  "action": "code_complete",
+  "task_id": "${TASK_ID}",
+  "subtask_id": "${SUBTASK_ID:-none}",
+  "forced": true,
+  "changes_made": [
+    {"file": "forced_file.txt", "change_type": "created", "summary": "[forced] 강제 완료"}
+  ]
+}
+EOJSON
+)
+            ;;
+        reviewer:approve)
+            FORCED_JSON=$(cat <<EOJSON
+{
+  "action": "approved",
+  "task_id": "${TASK_ID}",
+  "subtask_id": "${SUBTASK_ID:-none}",
+  "forced": true,
+  "summary": "[forced] 강제 승인"
+}
+EOJSON
+)
+            ;;
+        reviewer:reject)
+            FORCED_JSON=$(cat <<EOJSON
+{
+  "action": "rejected",
+  "task_id": "${TASK_ID}",
+  "subtask_id": "${SUBTASK_ID:-none}",
+  "forced": true,
+  "feedback": "[forced] 강제 거절 — 루프백 테스트",
+  "issues": ["강제 거절 트리거"]
+}
+EOJSON
+)
+            ;;
+        reporter:pass)
+            FORCED_JSON=$(cat <<EOJSON
+{
+  "action": "report_complete",
+  "task_id": "${TASK_ID}",
+  "subtask_id": "${SUBTASK_ID:-none}",
+  "forced": true,
+  "verdict": "pass",
+  "needs_replan": false,
+  "summary": "[forced] 강제 통과"
+}
+EOJSON
+)
+            ;;
+        reporter:fail)
+            FORCED_JSON=$(cat <<EOJSON
+{
+  "action": "report_complete",
+  "task_id": "${TASK_ID}",
+  "subtask_id": "${SUBTASK_ID:-none}",
+  "forced": true,
+  "verdict": "fail",
+  "needs_replan": false,
+  "summary": "[forced] 강제 실패"
+}
+EOJSON
+)
+            ;;
+        reporter:replan)
+            FORCED_JSON=$(cat <<EOJSON
+{
+  "action": "report_complete",
+  "task_id": "${TASK_ID}",
+  "subtask_id": "${SUBTASK_ID:-none}",
+  "forced": true,
+  "verdict": "fail",
+  "needs_replan": true,
+  "summary": "[forced] 강제 replan 요청"
+}
+EOJSON
+)
+            ;;
+        *)
+            echo "[ERROR] 지원하지 않는 force-result 조합: ${AGENT_TYPE}:${FORCE_RESULT}" >&2
+            echo "가능한 조합:" >&2
+            echo "  planner:approve, coder:approve" >&2
+            echo "  reviewer:approve, reviewer:reject" >&2
+            echo "  reporter:pass, reporter:fail, reporter:replan" >&2
+            exit 1
+            ;;
+    esac
+
+    echo "$FORCED_JSON" | tee "$LOG_FILE"
+    echo ""
+    echo "[run_claude_agent] force-result 저장됨: ${LOG_FILE}"
+    exit 0
 fi
 
 # ─── dry-run 모드: claude 호출 대신 프롬프트 출력 ───

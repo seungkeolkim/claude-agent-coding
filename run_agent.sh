@@ -39,8 +39,10 @@ show_help() {
     echo "명령:"
     echo "  run <agent_type> --project <name> --task <id> [--subtask <id>] [--dry-run] [--dummy]"
     echo "                       수동으로 agent 하나 실행"
+    echo "  pipeline --project <name> --task <id> [--dummy] [--dry-run]"
+    echo "                       전체 파이프라인 자동 실행 (Planner → Subtask Loop)"
     echo "  init-project         대화형 프로젝트 초기화"
-    echo "  kill-all             모든 agent 프로세스 종료 (claude -p 포함)"
+    echo "  kill-all [--force]   모든 agent 프로세스 종료 (claude -p 포함)"
     echo "  help                 이 도움말 표시"
     echo ""
     echo "agent_type:"
@@ -170,6 +172,7 @@ cmd_run() {
     local subtask_id=""
     local dry_run=false
     local dummy=false
+    local force_result=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -192,6 +195,10 @@ cmd_run() {
             --dummy)
                 dummy=true
                 shift
+                ;;
+            --force-result)
+                force_result="$2"
+                shift 2
                 ;;
             *)
                 log_error "알 수 없는 옵션: $1"
@@ -264,6 +271,9 @@ cmd_run() {
     if [[ "$dummy" == "true" ]]; then
         log_warn "  DUMMY 모드 (claude 호출 없이 더미 JSON 출력)"
     fi
+    if [[ -n "$force_result" ]]; then
+        log_warn "  FORCE-RESULT: ${force_result}"
+    fi
     echo ""
 
     # venv 활성화 (PyYAML 필요)
@@ -292,7 +302,76 @@ cmd_run() {
         run_args+=(--dummy)
     fi
 
+    if [[ -n "$force_result" ]]; then
+        run_args+=(--force-result "$force_result")
+    fi
+
     exec "${run_args[@]}"
+}
+
+# ═══════════════════════════════════════════════════════════
+# pipeline 명령
+# ═══════════════════════════════════════════════════════════
+cmd_pipeline() {
+    local project_name=""
+    local task_id=""
+    local dummy=false
+    local dry_run=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --project)
+                project_name="$2"
+                shift 2
+                ;;
+            --task)
+                task_id="$2"
+                shift 2
+                ;;
+            --dummy)
+                dummy=true
+                shift
+                ;;
+            --dry-run)
+                dry_run=true
+                shift
+                ;;
+            *)
+                log_error "알 수 없는 옵션: $1"
+                exit 1
+                ;;
+        esac
+    done
+
+    if [[ -z "$project_name" ]]; then
+        log_error "--project 옵션이 필요합니다."
+        exit 1
+    fi
+    if [[ -z "$task_id" ]]; then
+        log_error "--task 옵션이 필요합니다."
+        exit 1
+    fi
+
+    # venv 활성화 (PyYAML 필요)
+    if [[ -f "${SCRIPT_DIR}/activate_venv.sh" ]]; then
+        source "${SCRIPT_DIR}/activate_venv.sh"
+    fi
+
+    local pipeline_args=(
+        python3 "${SCRIPT_DIR}/scripts/workflow_controller.py"
+        --project "$project_name"
+        --task "$task_id"
+    )
+
+    if [[ "$dummy" == "true" ]]; then
+        pipeline_args+=(--dummy)
+    fi
+
+    if [[ "$dry_run" == "true" ]]; then
+        pipeline_args+=(--dry-run)
+    fi
+
+    exec "${pipeline_args[@]}"
 }
 
 # ═══════════════════════════════════════════════════════════
@@ -310,6 +389,10 @@ case "$COMMAND" in
         ;;
     help|--help|-h)
         show_help
+        ;;
+    pipeline)
+        shift
+        cmd_pipeline "$@"
         ;;
     kill-all)
         shift
