@@ -47,9 +47,11 @@ show_help() {
     echo ""
     echo "예시:"
     echo "  ./run_agent.sh init-project"
-    echo "  ./run_agent.sh run coder --project my-app --task TASK-001"
-    echo "  ./run_agent.sh run coder --project my-app --task TASK-001 --subtask TASK-001-1"
-    echo "  ./run_agent.sh run coder --project my-app --task TASK-001 --dry-run"
+    echo "  ./run_agent.sh run coder --project my-app --task 00001"
+    echo "  ./run_agent.sh run coder --project my-app --task 00001 --subtask 00001-1"
+    echo "  ./run_agent.sh run coder --project my-app --task 00001 --dry-run"
+    echo ""
+    echo "task 파일명 규칙: 00001-간단한-설명.json (--task에는 00001만 지정)"
     echo ""
     echo "Phase 1.1+ 명령 (미구현):"
     echo "  start, stop, status, submit, pending, approve, reject, list"
@@ -87,6 +89,7 @@ cmd_run() {
     local task_id=""
     local subtask_id=""
     local dry_run=false
+    local dummy=false
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -104,6 +107,10 @@ cmd_run() {
                 ;;
             --dry-run)
                 dry_run=true
+                shift
+                ;;
+            --dummy)
+                dummy=true
                 shift
                 ;;
             *)
@@ -126,7 +133,7 @@ cmd_run() {
     # config.yaml 존재 확인
     if [[ ! -f "$CONFIG_FILE" ]]; then
         log_error "시스템 설정 파일이 없습니다: ${CONFIG_FILE}"
-        log_error "./create_config_and_env.sh 를 먼저 실행하세요."
+        log_error "./create_config.sh 를 먼저 실행하세요."
         exit 1
     fi
 
@@ -144,20 +151,21 @@ cmd_run() {
         exit 1
     fi
 
-    # task JSON 확인
-    local task_file="${project_dir}/tasks/${task_id}.json"
-    if [[ ! -f "$task_file" ]]; then
-        log_error "task 파일이 없습니다: ${task_file}"
+    # task JSON 확인 (00001-*.json 패턴 지원)
+    local task_file
+    task_file=$(find "${project_dir}/tasks" -maxdepth 1 -name "${task_id}-*.json" -o -name "${task_id}.json" 2>/dev/null | head -1)
+    if [[ -z "$task_file" || ! -f "$task_file" ]]; then
+        log_error "task 파일이 없습니다: ${project_dir}/tasks/${task_id}[-*].json"
         log_error "task JSON을 수동으로 작성해서 넣어주세요."
         exit 1
     fi
 
-    # subtask JSON 확인 (지정된 경우)
+    # subtask JSON 확인 (지정된 경우, 00001-1-*.json 패턴 지원)
     local subtask_file=""
     if [[ -n "$subtask_id" ]]; then
-        subtask_file="${project_dir}/tasks/${subtask_id}.json"
-        if [[ ! -f "$subtask_file" ]]; then
-            log_error "subtask 파일이 없습니다: ${subtask_file}"
+        subtask_file=$(find "${project_dir}/tasks" -maxdepth 1 -name "${subtask_id}-*.json" -o -name "${subtask_id}.json" 2>/dev/null | head -1)
+        if [[ -z "$subtask_file" || ! -f "$subtask_file" ]]; then
+            log_error "subtask 파일이 없습니다: ${project_dir}/tasks/${subtask_id}[-*].json"
             exit 1
         fi
     fi
@@ -172,6 +180,9 @@ cmd_run() {
     fi
     if [[ "$dry_run" == "true" ]]; then
         log_warn "  DRY-RUN 모드 (claude 호출 없이 프롬프트만 출력)"
+    fi
+    if [[ "$dummy" == "true" ]]; then
+        log_warn "  DUMMY 모드 (claude 호출 없이 더미 JSON 출력)"
     fi
     echo ""
 
@@ -195,6 +206,10 @@ cmd_run() {
 
     if [[ "$dry_run" == "true" ]]; then
         run_args+=(--dry-run)
+    fi
+
+    if [[ "$dummy" == "true" ]]; then
+        run_args+=(--dummy)
     fi
 
     exec "${run_args[@]}"

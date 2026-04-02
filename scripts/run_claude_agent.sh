@@ -28,6 +28,7 @@ PROJECT_YAML=""
 TASK_FILE=""
 SUBTASK_FILE=""
 DRY_RUN=false
+DUMMY=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -49,6 +50,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --dry-run)
             DRY_RUN=true
+            shift
+            ;;
+        --dummy)
+            DUMMY=true
             shift
             ;;
         *)
@@ -177,10 +182,10 @@ with open('${SUBTASK_FILE}') as f:
     print(json.load(f).get('retry_count', 0))
 ")
     ATTEMPT=$((RETRY_COUNT + 1))
-    LOG_FILE="${LOG_DIR}/${AGENT_TYPE}_${SUBTASK_ID}_attempt-${ATTEMPT}.log"
+    LOG_FILE="${LOG_DIR}/${AGENT_TYPE}_${SUBTASK_ID}_attempt-${ATTEMPT}.json"
 else
     SUBTASK_ID=""
-    LOG_FILE="${LOG_DIR}/${AGENT_TYPE}_${TASK_ID}.log"
+    LOG_FILE="${LOG_DIR}/${AGENT_TYPE}_${TASK_ID}.json"
 fi
 
 # ─── 프로젝트 설명 추출 ───
@@ -270,6 +275,126 @@ if [[ "$DRY_RUN" == "true" ]]; then
     exit 0
 fi
 
+# ─── dummy 모드: claude 호출 대신 agent별 더미 JSON 출력 ───
+if [[ "$DUMMY" == "true" ]]; then
+    echo ""
+    echo "========== DUMMY 모드 =========="
+
+    # agent별 더미 응답 생성
+    case "$AGENT_TYPE" in
+        planner)
+            DUMMY_RESULT=$(cat <<EOJSON
+{
+  "action": "plan_created",
+  "task_id": "${TASK_ID}",
+  "subtasks": [
+    {
+      "subtask_id": "${TASK_ID}-1",
+      "title": "[dummy] 기본 구조 작성",
+      "primary_responsibility": "기본 파일 구조와 설정 생성",
+      "guidance": "프로젝트 초기 구조를 잡는다"
+    },
+    {
+      "subtask_id": "${TASK_ID}-2",
+      "title": "[dummy] 핵심 기능 구현",
+      "primary_responsibility": "주요 비즈니스 로직 구현",
+      "guidance": "${TASK_ID}-1에서 만든 구조 위에 기능을 추가한다"
+    }
+  ]
+}
+EOJSON
+)
+            ;;
+        coder)
+            DUMMY_RESULT=$(cat <<EOJSON
+{
+  "action": "code_complete",
+  "task_id": "${TASK_ID}",
+  "subtask_id": "${SUBTASK_ID:-none}",
+  "changes_made": [
+    {
+      "file": "dummy_file.txt",
+      "change_type": "created",
+      "summary": "[dummy] 더미 파일 생성"
+    }
+  ]
+}
+EOJSON
+)
+            ;;
+        reviewer)
+            DUMMY_RESULT=$(cat <<EOJSON
+{
+  "action": "approved",
+  "task_id": "${TASK_ID}",
+  "subtask_id": "${SUBTASK_ID:-none}",
+  "summary": "[dummy] 코드 리뷰 통과. 변경사항이 적절합니다."
+}
+EOJSON
+)
+            ;;
+        setup)
+            DUMMY_RESULT=$(cat <<EOJSON
+{
+  "action": "setup_complete",
+  "task_id": "${TASK_ID}",
+  "subtask_id": "${SUBTASK_ID:-none}",
+  "service_url": "http://localhost:3000",
+  "summary": "[dummy] 환경 구성 및 서비스 기동 완료"
+}
+EOJSON
+)
+            ;;
+        unit_tester)
+            DUMMY_RESULT=$(cat <<EOJSON
+{
+  "action": "tests_passed",
+  "task_id": "${TASK_ID}",
+  "subtask_id": "${SUBTASK_ID:-none}",
+  "test_results": [
+    {"suite": "dummy_suite", "passed": 3, "failed": 0, "skipped": 0}
+  ],
+  "summary": "[dummy] 단위 테스트 전체 통과"
+}
+EOJSON
+)
+            ;;
+        e2e_tester)
+            DUMMY_RESULT=$(cat <<EOJSON
+{
+  "action": "e2e_complete",
+  "task_id": "${TASK_ID}",
+  "subtask_id": "${SUBTASK_ID:-none}",
+  "overall_result": "pass",
+  "test_results": [
+    {"name": "dummy_scenario", "result": "pass", "duration_seconds": 2.1}
+  ],
+  "summary": "[dummy] E2E 테스트 통과"
+}
+EOJSON
+)
+            ;;
+        reporter)
+            DUMMY_RESULT=$(cat <<EOJSON
+{
+  "action": "report_complete",
+  "task_id": "${TASK_ID}",
+  "subtask_id": "${SUBTASK_ID:-none}",
+  "verdict": "pass",
+  "needs_replan": false,
+  "summary": "[dummy] 모든 단계 정상 완료. 커밋 가능."
+}
+EOJSON
+)
+            ;;
+    esac
+
+    echo "$DUMMY_RESULT" | tee "$LOG_FILE"
+    echo ""
+    echo "[run_claude_agent] dummy 결과 저장됨: ${LOG_FILE}"
+    exit 0
+fi
+
 # ─── Claude Code CLI 실행 ───
 cd "$CODEBASE_PATH"
-claude --model "$MODEL" -p "${PROMPT}" --output-format json 2>&1 | tee "$LOG_FILE"
+claude --model "$MODEL" -p "${PROMPT}" --output-format json --dangerously-skip-permissions 2>&1 | tee "$LOG_FILE"

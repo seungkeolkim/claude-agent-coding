@@ -42,11 +42,11 @@
    - 예: coder → `{"action": "code_complete", "changes_made": [...]}` 형태
 2. 수동으로 pipeline 순서대로 실행하며 로그 확인:
    ```bash
-   ./run_agent.sh run planner --project demo --task TASK-001 --dummy
+   ./run_agent.sh run planner --project demo --task 00001 --dummy
    # plan JSON 생성 확인
-   ./run_agent.sh run coder --project demo --task TASK-001 --subtask TASK-001-1 --dummy
+   ./run_agent.sh run coder --project demo --task 00001 --subtask 00001-1 --dummy
    # changes_made 기록 확인
-   ./run_agent.sh run reviewer --project demo --task TASK-001 --subtask TASK-001-1 --dummy
+   ./run_agent.sh run reviewer --project demo --task 00001 --subtask 00001-1 --dummy
    # approved 확인
    ```
 3. 각 단계 사이에 JSON 파일이 올바르게 생성/갱신되는지 확인
@@ -126,8 +126,7 @@ Coder → Reviewer → (testing 전부 disabled이므로 Setup/UnitTest/E2E/Repo
 claude-agent-coding/
 ├── config.yaml.template           # v2 시스템 설정 템플릿
 ├── project.yaml.template          # 프로젝트 설정 템플릿
-├── .env.template                  # 환경 변수 템플릿
-├── create_config_and_env.sh       # 초기 설정 스크립트
+├── create_config.sh               # 초기 설정 스크립트
 ├── run_agent.sh                   # CLI 진입점 (run, init-project, help)
 ├── activate_venv.sh               # Python venv 활성화
 ├── requirements.txt               # PyYAML
@@ -166,17 +165,17 @@ claude-agent-coding/
 cat docs/004-handoff-phase1.0-pipeline-verification.md
 
 # 2. config.yaml 생성 (없으면)
-./create_config_and_env.sh
+./create_config.sh
 
 # 3. 테스트용 프로젝트 초기화
 ./run_agent.sh init-project
 # → name: demo, codebase: /tmp/demo-codebase 등
 
 # 4. task JSON 수동 작성
-# → projects/demo/tasks/TASK-001.json (예시는 README.md 참고)
+# → projects/demo/tasks/00001.json (예시는 README.md 참고)
 
 # 5. dry-run으로 프롬프트 확인
-./run_agent.sh run coder --project demo --task TASK-001 --dry-run
+./run_agent.sh run coder --project demo --task 00001 --dry-run
 
 # 6. 목표 A (더미 파이프라인) 또는 목표 B (실제 실행) 진행
 ```
@@ -185,7 +184,7 @@ cat docs/004-handoff-phase1.0-pipeline-verification.md
 
 ## 6. 주의사항
 
-- `config.yaml`은 gitignored. 새 환경에서는 `./create_config_and_env.sh`로 생성 필요.
+- `config.yaml`은 gitignored. 새 환경에서는 `./create_config.sh`로 생성 필요.
 - `projects/` 하위의 runtime 데이터(tasks/, logs/ 등)도 gitignored.
 - agent 프롬프트 수정 시 `config/agent_prompts/*.md` 직접 편집.
 - v2 명세의 상세 내용은 반드시 `docs/003-agent-system-spec-v2.md`를 참조.

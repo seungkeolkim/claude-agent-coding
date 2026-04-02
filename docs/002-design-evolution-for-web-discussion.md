@@ -74,7 +74,7 @@ Claude Code CLI(`claude -p`)를 직접 사용하므로 API key가 필요 없다.
 
 ### 2.2 템플릿 패턴
 
-`config.yaml.template` → `create_config_and_env.sh` → `config.yaml` (gitignored). 민감 정보(경로, credential)가 git에 올라가는 것을 방지. `.env.template` → `.env`도 동일 패턴.
+`config.yaml.template` → `create_config.sh` → `config.yaml` (gitignored). 민감 정보(경로, credential)가 git에 올라가는 것을 방지.
 
 ### 2.3 절대경로 필수 규칙
 

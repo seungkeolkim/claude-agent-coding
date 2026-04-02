@@ -31,16 +31,16 @@ Claude Code 기반 자동 개발 시스템.
 ## Phase 1.0 사용법
 ```bash
 # 1. 시스템 설정 생성
-./create_config_and_env.sh
+./create_config.sh
 
 # 2. 프로젝트 초기화
 ./run_agent.sh init-project
 
-# 3. task JSON 수동 작성 → projects/{name}/tasks/TASK-001.json
+# 3. task JSON 수동 작성 → projects/{name}/tasks/00001-간단한-설명.json
 
 # 4. agent 수동 실행
-./run_agent.sh run coder --project my-app --task TASK-001
-./run_agent.sh run coder --project my-app --task TASK-001 --dry-run  # 프롬프트만 확인
+./run_agent.sh run coder --project my-app --task 00001
+./run_agent.sh run coder --project my-app --task 00001 --dry-run  # 프롬프트만 확인
 ```
 
 ## 상세 명세가 필요하면
