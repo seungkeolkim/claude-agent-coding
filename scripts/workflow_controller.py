@@ -18,12 +18,14 @@ Phase 1.1 범위:
 """
 
 import argparse
+import glob as glob_module
 import json
 import logging
 import os
 import re
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -273,6 +275,111 @@ def update_project_state(project_dir, status, current_task_id=None, last_error=N
 
     save_json(state_path, state)
     log_info(f"project_state.json 갱신: status={status}, task={current_task_id}")
+
+
+# ─── human_review_policy 헬퍼 ───
+
+
+def request_human_review(task_file, task_id, review_type, plan_path, subtask_count):
+    """
+    task JSON에 human_interaction을 기록하고 status를 waiting_for_human으로 변경한다.
+    review_type: "plan_review" | "replan_review"
+    """
+    task = load_json(task_file)
+
+    task["status"] = "waiting_for_human"
+    task["human_interaction"] = {
+        "type": review_type,
+        "message": f"Plan을 확인해주세요. subtask {subtask_count}개 생성됨.",
+        "payload_path": plan_path,
+        "options": ["approve", "modify", "cancel"],
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+        "response": None,
+    }
+
+    save_json(task_file, task)
+    log_info(f"human review 요청: type={review_type}, task={task_id}")
+
+
+def wait_for_human_response(task_file, project_dir, task_id, timeout_hours,
+                            poll_interval=10):
+    """
+    task JSON의 human_interaction.response가 채워질 때까지 폴링한다.
+    timeout_hours 초과 시 자동 승인.
+    commands/ 디렉토리의 cancel 명령도 감시한다.
+
+    반환: "approve" | "modify" | "cancel" | "timeout"
+    """
+    # project_state.json에 waiting_for_human 상태 기록
+    update_project_state(project_dir, status="waiting_for_human",
+                         current_task_id=task_id)
+
+    start_time = time.time()
+    timeout_seconds = timeout_hours * 3600
+
+    log_step(f"사용자 응답 대기 중 (timeout: {timeout_hours}h)")
+    log_info("승인: ./run_agent.sh approve {task_id} --project {project}")
+    log_info("거부: ./run_agent.sh reject {task_id} --project {project} --message '사유'")
+
+    commands_dir = os.path.join(project_dir, "commands")
+
+    while True:
+        elapsed = time.time() - start_time
+
+        # 타임아웃 확인
+        if elapsed >= timeout_seconds:
+            log_warn(f"자동 승인 (timeout {timeout_hours}h 초과)")
+            # 자동 승인 기록
+            task = load_json(task_file)
+            hi = task.get("human_interaction", {})
+            if hi and not hi.get("response"):
+                hi["response"] = {
+                    "action": "approve",
+                    "message": f"자동 승인 (timeout {timeout_hours}h 초과)",
+                    "attachments": [],
+                    "responded_at": datetime.now(timezone.utc).isoformat(),
+                }
+                task["human_interaction"] = hi
+                task["status"] = "planned"
+                save_json(task_file, task)
+            return "timeout"
+
+        # cancel 명령 확인
+        if os.path.isdir(commands_dir):
+            cancel_pattern = os.path.join(commands_dir, f"cancel-{task_id}.command")
+            cancel_files = glob_module.glob(cancel_pattern)
+            if cancel_files:
+                log_warn(f"cancel 명령 감지: task {task_id}")
+                for cf in cancel_files:
+                    os.unlink(cf)
+                task = load_json(task_file)
+                task["status"] = "cancelled"
+                save_json(task_file, task)
+                return "cancel"
+
+        # 응답 확인
+        task = load_json(task_file)
+        hi = task.get("human_interaction", {})
+        response = hi.get("response") if hi else None
+
+        if response:
+            action = response.get("action", "approve")
+            log_info(f"사용자 응답 수신: action={action}")
+
+            if action == "approve":
+                # hub_api가 이미 status를 "planned"로 변경했음
+                return "approve"
+            elif action == "modify":
+                # hub_api가 이미 status를 "needs_replan"으로 변경했음
+                return "modify"
+            elif action == "cancel":
+                return "cancel"
+            else:
+                log_warn(f"알 수 없는 action: {action}, approve로 처리")
+                return "approve"
+
+        # 대기
+        time.sleep(poll_interval)
 
 
 # ─── Git 헬퍼 ───
@@ -722,6 +829,48 @@ def run_pipeline(args):
 
     log_info(f"subtask {len(subtasks)}개 생성됨")
 
+    # ─── Human Review: Plan 승인 대기 ───
+    human_review = effective.get("human_review_policy", {})
+    if human_review.get("review_plan", False) and not args.dummy:
+        plan_path = os.path.join("tasks", task_id, "plan.json")
+        request_human_review(task_file, task_id, "plan_review", plan_path, len(subtasks))
+
+        timeout_hours = human_review.get("auto_approve_timeout_hours", 24)
+        result = wait_for_human_response(
+            task_file, project_dir, task_id, timeout_hours,
+        )
+
+        if result == "cancel":
+            log_warn("사용자가 plan을 취소했습니다.")
+            update_task_field(task_file, "status", "cancelled")
+            update_project_state(project_dir, status="idle")
+            sys.exit(0)
+        elif result == "modify":
+            log_warn("사용자가 plan 수정을 요청했습니다. replan 실행.")
+            # modify 시 needs_replan으로 설정됨 — planner 재실행
+            update_task_counter(task_file, "replan_count", increment=True)
+            success, plan_data = run_agent(
+                agent_hub_root, "planner", args.project, task_id,
+                dummy=args.dummy,
+            )
+            if not success or not plan_data:
+                log_error("Re-plan 실패. 파이프라인 중단.")
+                update_task_field(task_file, "status", "failed")
+                update_project_state(project_dir, status="idle", last_error=task_id)
+                sys.exit(1)
+            save_plan_file(project_dir, task_id, plan_data)
+            subtasks = create_subtask_files(project_dir, task_id, plan_data)
+            if not subtasks:
+                log_error("Re-plan 후 subtask가 없습니다.")
+                update_task_field(task_file, "status", "failed")
+                update_project_state(project_dir, status="idle", last_error=task_id)
+                sys.exit(1)
+            log_info(f"re-plan 완료: subtask {len(subtasks)}개 재생성")
+
+        # 승인 후 running 상태로 복귀
+        update_project_state(project_dir, status="running", current_task_id=task_id)
+        update_task_field(task_file, "status", "in_progress")
+
     # ─── Git: task 브랜치 생성 (Planner 후) ───
     if git_enabled:
         log_step("Git: task 브랜치 생성")
@@ -791,6 +940,32 @@ def run_pipeline(args):
 
                 save_plan_file(project_dir, task_id, plan_data)
                 new_subtasks = create_subtask_files(project_dir, task_id, plan_data)
+
+                # ─── Human Review: Replan 승인 대기 ───
+                if human_review.get("review_replan", False) and not args.dummy:
+                    plan_path = os.path.join("tasks", task_id, "plan.json")
+                    request_human_review(
+                        task_file, task_id, "replan_review",
+                        plan_path, len(new_subtasks),
+                    )
+                    timeout_hours = human_review.get("auto_approve_timeout_hours", 24)
+                    replan_result = wait_for_human_response(
+                        task_file, project_dir, task_id, timeout_hours,
+                    )
+                    if replan_result == "cancel":
+                        log_warn("사용자가 replan을 취소했습니다.")
+                        update_task_field(task_file, "status", "cancelled")
+                        update_project_state(project_dir, status="idle")
+                        sys.exit(0)
+                    elif replan_result == "modify":
+                        log_error("replan 후 재수정 요청. 에스컬레이션이 필요합니다.")
+                        update_task_field(task_file, "status", "escalated")
+                        update_project_state(project_dir, status="idle", last_error=task_id)
+                        sys.exit(1)
+                    # approve/timeout → 계속 진행
+                    update_project_state(project_dir, status="running",
+                                         current_task_id=task_id)
+                    update_task_field(task_file, "status", "in_progress")
 
                 # 새 plan의 subtask로 루프 재시작 (재귀 대신 함수 재호출)
                 log_info(f"새 plan으로 subtask {len(new_subtasks)}개 재구성")

@@ -1502,6 +1502,10 @@ config.yaml과 project.yaml의 모든 경로는 절대경로. agent가 `cd`로 c
 | **E2E 테스트장비 연동** | e2e_watcher.sh, 크로스 머신 handoff, SSH 복구 | Phase 1.3 |
 | **메신저 연동** | Slack/Telegram 등 메시지 수신 → task 생성. Chatbot 레이어 경유 | Phase 1.4 |
 | **웹 대시보드** | Task 목록/상세/Timeline, 프로젝트별 필터링 | Phase 2 |
+| **task 순서 변경** | 큐 내 task 우선순위 변경, 새 task를 최상위로 삽입하는 기능 | TM 이후 |
+| **강제 실행 옵션** | auto_merge=false, wait_for_prev_task_done=true 상태에서도 무시하고 즉시 실행하는 force 타입 요청 | TM 이후 |
+| **재알림 (re-notification)** | waiting_for_human 상태에서 특정 시간 후 응답 없으면 사용자에게 재알림 전송 | Phase 1.4 |
+| **로컬 E2E 테스트** | 브라우저가 필요 없는 E2E 테스트(API 테스트 등)는 별도 테스트장비 없이 로컬에서 실행. e2e_test에 mode: local/remote 옵션 추가 | Phase 1.3 |
 
 ### 15.4 Phase 로드맵 (현재 시점)
 

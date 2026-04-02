@@ -201,6 +201,77 @@ class TaskManager:
 
         return task_ids
 
+    def has_incomplete_tasks(self, project_name):
+        """
+        해당 프로젝트에 아직 완료되지 않은 task가 있는지 확인한다.
+        완료되지 않은 상태: in_progress, planned, running, pending_review, waiting_for_human, needs_replan
+
+        Returns:
+            (bool, list[str]): (미완료 task 존재 여부, 미완료 task ID 목록)
+        """
+        tasks_dir = os.path.join(self._projects_dir, project_name, "tasks")
+        if not os.path.isdir(tasks_dir):
+            return False, []
+
+        incomplete_statuses = {
+            "in_progress", "planned", "running",
+            "pending_review", "waiting_for_human", "needs_replan",
+        }
+        incomplete_task_ids = []
+
+        for entry in sorted(os.listdir(tasks_dir)):
+            if not entry.endswith(".json"):
+                continue
+            # subtask 디렉토리 내 파일은 무시 (최상위 task JSON만)
+            task_path = os.path.join(tasks_dir, entry)
+            if not os.path.isfile(task_path):
+                continue
+            try:
+                task = load_json(task_path)
+                status = task.get("status", "")
+                if status in incomplete_statuses:
+                    # task ID 추출: "00042-로그인-구현.json" → "00042"
+                    task_id = entry.split("-")[0].replace(".json", "")
+                    incomplete_task_ids.append(task_id)
+            except (json.JSONDecodeError, OSError):
+                continue
+
+        return bool(incomplete_task_ids), incomplete_task_ids
+
+    def should_block_next_task(self, project_name):
+        """
+        wait_for_prev_task_done 설정에 따라 다음 task spawn을 블로킹해야 하는지 확인한다.
+        프로젝트별 설정 > 시스템 기본값 순서로 참조한다.
+
+        Returns:
+            (bool, list[str]): (블로킹 여부, 미완료 task ID 목록)
+        """
+        # 시스템 기본값
+        default_wait = self._config.get("default_task_queue", {}).get(
+            "wait_for_prev_task_done", True
+        )
+
+        # 프로젝트별 override 확인
+        project_yaml_path = os.path.join(
+            self._projects_dir, project_name, "project.yaml"
+        )
+        wait_for_prev = default_wait
+        try:
+            project_config = load_yaml(project_yaml_path)
+            project_wait = (
+                project_config.get("task_queue", {}).get("wait_for_prev_task_done")
+            )
+            if project_wait is not None:
+                wait_for_prev = project_wait
+        except (OSError, yaml.YAMLError):
+            pass
+
+        if not wait_for_prev:
+            return False, []
+
+        has_incomplete, incomplete_ids = self.has_incomplete_tasks(project_name)
+        return has_incomplete, incomplete_ids
+
     def consume_ready_sentinel(self, project_name, task_id):
         """
         .ready 파일을 삭제하여 중복 처리를 방지한다.
@@ -495,6 +566,24 @@ class TaskManager:
                     if state.get("process"):
                         self.check_workflow_controller(project_name)
                         continue
+
+                    # 미완료 task가 있으면 다음 task spawn 블로킹
+                    should_block, incomplete_ids = self.should_block_next_task(project_name)
+                    if should_block:
+                        # 첫 감지 시에만 로그 출력 (반복 로그 방지)
+                        blocked_key = f"_blocked_logged_{project_name}"
+                        if not getattr(self, blocked_key, False):
+                            log_info(
+                                f"[{project_name}] 큐 블로킹: 미완료 task {incomplete_ids} 완료 대기 중"
+                            )
+                            setattr(self, blocked_key, True)
+                        continue
+                    else:
+                        # 블로킹 해제 시 플래그 초기화
+                        blocked_key = f"_blocked_logged_{project_name}"
+                        if getattr(self, blocked_key, False):
+                            log_info(f"[{project_name}] 큐 블로킹 해제")
+                            setattr(self, blocked_key, False)
 
                     # WFC가 없으면 .ready task 탐색
                     ready_tasks = self.find_ready_tasks(project_name)
