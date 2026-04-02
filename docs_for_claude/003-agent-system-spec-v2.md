@@ -1,9 +1,9 @@
 # Agent System Architecture Specification v2
 
 > Claude Code CLI 기반 24시간 자동 개발 시스템  
-> 최종 정리: 2026-04-01  
-> 이전 버전: `docs/000-agent-system-spec.md` (v1)  
-> 변경 논의: `docs/002-design-evolution-for-web-discussion.md`
+> 최종 정리: 2026-04-02  
+> 이전 버전: `docs_for_claude/000-agent-system-spec.md` (v1, 폐기)  
+> 설계 히스토리: `docs_for_claude/005-design-history-archive.md`
 
 ---
 
@@ -11,10 +11,10 @@
 
 | 문서 | 역할 | 참고 수준 |
 |------|------|-----------|
-| `000-agent-system-spec.md` | v1 설계. **이 문서(v2)로 대체됨. 참고하지 마세요.** | 폐기 |
-| `001-handoff-session-01.md` | Session 01→02 핸드오프. v1 기준 작성. **참고 불필요.** | 폐기 |
-| `002-design-evolution-for-web-discussion.md` | v1→v2 변경의 "왜" 기록. 설계 배경이 궁금하면 참고. | 선택적 참고 |
 | **`003-agent-system-spec-v2.md` (이 문서)** | **현행 설계 명세. 모든 구현은 이 문서를 기준으로 합니다.** | **기준 문서** |
+| `005-design-history-archive.md` | v1→v2 변경 배경 + Phase 1.0 핸드오프 병합 아카이브 | 설계 배경이 궁금할 때 |
+| `000-agent-system-spec.md` | v1 설계. 폐기. | 참고 불필요 |
+| `001-handoff-session-01.md` | Session 01→02 핸드오프. 폐기. | 참고 불필요 |
 
 ---
 
@@ -115,7 +115,10 @@ Task Manager는 시스템의 유일한 외부 인터페이스이자, 모든 WFC 
 - **명령 수신:** `commands/` 디렉토리 감시 (TM이 파일로 전달하는 pause, resume, cancel 등)
 - **상태 보고:** `project_state.json` 업데이트 (TM이 읽기)
 - **한도 체크:** 매 agent 호출 전 counters vs limits 비교
-- **git 작업:** branch 생성, commit, PR (git 활성화 시)
+- **git 작업:** branch 생성 (Planner 후), subtask별 commit+push, Summarizer 후 PR 생성, auto_merge 시 PR 머지
+  - `ensure_gh_auth()`: 매 git 작업 전 gh CLI 인증 + repo 권한 확인
+  - branch 네이밍: `feature/{task_id}-{영문설명}` (Planner 제안, WFC 접두사 보장)
+  - PR title: `[{task_id}] 한국어 제목` (Summarizer 생성, WFC가 접두사 추가)
 
 ### 3.5 TM ↔ WFC 통신
 
@@ -261,6 +264,20 @@ WFC ← task 수신:
   - re-plan 한도 초과: 에스컬레이션
   - testing이 전부 disabled면 pipeline에서 bypass (Reviewer 승인 → 바로 커밋)
 
+#### Summarizer Agent
+
+- **위치:** 실행장비
+- **역할:** 완료된 task의 작업 요약 및 PR 메시지 생성
+- **입력:** plan.json, git diff (default_branch..HEAD), 완료된 subtask 목록
+- **출력:** PR 제목/본문 + task 요약
+- **상세:**
+  - 전체 task에서 수행된 코드 변경사항을 `git diff`/`git log`으로 분석
+  - PR title: 한국어, WFC가 `[{task_id}]` 접두사 자동 추가
+  - PR body: 한국어 markdown (Summary, Changes, Test Plan)
+  - task_summary: 한국어, 비개발자도 이해할 수 있는 수준
+  - 코드를 수정하지 않음 (읽기 전용)
+  - step_number: 08
+
 ---
 
 ## 5. Workflow
@@ -273,14 +290,19 @@ WFC ← task 수신:
     → usage threshold (70%) 확인 → 미달이면 대기
 
  2. Workflow Controller (해당 프로젝트)
-    → 새 task 감지 → git branch 생성 (feature/{id})
+    → 새 task 감지
     → 4계층 설정 merge → effective config 생성
     → Planner Agent 기동
 
  3. Planner Agent
     → 코드베이스 + 첨부 이미지 분석
-    → plan 생성 (subtask 배열)
+    → plan 생성 (subtask 배열 + branch_name 제안)
     → [review_plan=true면] Plan 승인 대기
+
+ 3a. Workflow Controller
+    → Planner 결과에서 branch_name 추출
+    → git branch 생성: feature/{task_id}-{영문설명} (Planner 제안 우선, fallback: feature/{task_id})
+    → feature/{task_id}- 접두사 보장
 
  4. Workflow Controller
     → plan의 subtask를 순차 실행
@@ -331,12 +353,19 @@ WFC ← task 수신:
     → 지정 suite + E2E (include_e2e=true면) 실행
     → 실패 시 에스컬레이션
 
- 6. Workflow Controller
-    → [review_before_merge=true면] 머지 승인 대기
-    → PR 생성 or 직접 머지
+ 6. Summarizer Agent
+    → git diff/log로 전체 변경사항 분석
+    → PR title/body + task_summary 생성
 
- 7. Task Manager
+ 7. Workflow Controller
+    → Summarizer 결과로 PR 생성 (gh pr create)
+    → PR title에 [{task_id}] 접두사 자동 추가
+    → [auto_merge=true면] gh pr merge --merge --delete-branch
+    → [auto_merge=false면] task status를 pending_review로 설정
+
+ 8. Task Manager
     → 완료 노티 (CLI stdout 또는 메신저)
+    → [auto_merge=false면] PR 생성됨 알림
 ```
 
 ### 5.2 Pipeline 구성 결정 로직
@@ -584,11 +613,13 @@ codebase:
 # enabled: false면 branch/commit/PR 등 모든 git 작업을 건너뜀
 git:
   enabled: true
+  provider: "github"              # github | bitbucket | gitlab (현재 github만 구현)
   remote: "origin"
   author_name: "agent-bot"
   author_email: "agent@example.com"
-  auto_merge: false
+  auto_merge: false               # true: PR 생성 후 자동 머지 / false: PR만 생성 (pending_review)
   pr_target_branch: "develop"
+  auth_token: ""                  # provider 인증 토큰 (GitHub PAT 등)
 
 # ─── 테스트 ───
 # 각 항목의 enabled 값은 project_state.json에서 동적으로 변경 가능
@@ -626,10 +657,18 @@ testing:
 # ─── 시스템 기본값 override (선택적, 필요한 항목만 작성) ───
 # limits:
 #   max_subtask_count: 10
+#   max_retry_per_subtask: 3
+#   max_replan_count: 2
+#   max_total_agent_invocations: 30
+#   max_task_duration_hours: 4
 # claude:
 #   coder_model: "opus"
+#   max_turns_per_session: 50
 # human_review_policy:
 #   review_plan: false
+#   review_replan: true
+#   review_before_merge: false
+#   auto_approve_timeout_hours: 24
 # notification:
 #   channel: "telegram"
 #   telegram_chat_id: "-100123456789"
@@ -718,7 +757,7 @@ WFC가 subtask 실행 전에 수행하는 merge 로직:
   "submitted_via": "cli",
   "submitted_at": "2026-04-01T09:00:00Z",
   "status": "in_progress",
-  "branch": "feature/00042",
+  "branch": "feature/00042-login-implementation",
 
   "attachments": [
     {
@@ -758,11 +797,16 @@ WFC가 subtask 실행 전에 수행하는 merge 로직:
 
   "mid_task_feedback": [],
 
-  "escalation_reason": null
+  "escalation_reason": null,
+
+  "summary": "한국어 작업 요약 (Summarizer 생성, 완료 후 기록)",
+  "pr_url": "https://github.com/owner/repo/pull/42"
 }
 ```
 
-**status 값:** `queued` → `planned` → `waiting_for_human` → `in_progress` → `completed` / `needs_replan` / `escalated` / `failed` / `cancelled`
+**status 값:** `submitted` → `queued` → `planned` → `waiting_for_human` → `in_progress` → `pending_review` → `completed` / `needs_replan` / `escalated` / `failed` / `cancelled`
+
+- `pending_review`: auto_merge=false일 때, PR이 생성되었지만 사람의 리뷰/머지를 기다리는 상태
 
 **attachment type 값:** `ui_design` | `architecture` | `data_structure` | `reference`
 
@@ -1043,13 +1087,17 @@ claude-agent-coding/
 │       ├── setup.md                    # Setup Agent 역할 프롬프트
 │       ├── unit_tester.md              # Unit Test Agent 역할 프롬프트
 │       ├── e2e_tester.md               # E2E Test Agent 역할 프롬프트
-│       └── reporter.md                 # Reporter Agent 역할 프롬프트
+│       ├── reporter.md                 # Reporter Agent 역할 프롬프트
+│       └── summarizer.md              # Summarizer Agent 역할 프롬프트
 │
-├── docs/
+├── docs/                               # 사용자용 문서 (설정 레퍼런스 등)
+│   └── configuration-reference.md
+│
+├── docs_for_claude/                    # Claude 세션용 내부 문서
 │   ├── 000-agent-system-spec.md        # v1 설계 (폐기, 참고하지 마세요)
 │   ├── 001-handoff-session-01.md       # Session 01 핸드오프 (폐기)
-│   ├── 002-design-evolution-for-web-discussion.md  # v1→v2 변경 배경 (선택적 참고)
-│   └── 003-agent-system-spec-v2.md     # v2 설계 (현행 기준 문서) ★
+│   ├── 003-agent-system-spec-v2.md     # v2 설계 (현행 기준 문서) ★
+│   └── 005-design-history-archive.md  # 설계 히스토리 아카이브
 │
 └── projects/                           # 프로젝트별 디렉토리
     └── (아래 10.2 참조)
@@ -1265,48 +1313,47 @@ init-project 흐름:
 
 ### 12.2 Agent 기동 래퍼
 
+`scripts/run_claude_agent.sh`가 모든 agent 실행을 담당. WFC가 호출한다.
+
 ```bash
-# run_claude_agent.sh
-AGENT_TYPE=$1  # planner | coder | reviewer | setup | unit_tester | e2e_tester | reporter
-TASK_FILE=$2
-SUBTASK_FILE=$3
-PROJECT_YAML=$4
+# 사용법 (WFC에서 호출)
+scripts/run_claude_agent.sh \
+  --agent-type coder \
+  --config /path/to/config.yaml \
+  --project-yaml /path/to/project.yaml \
+  --task-file /path/to/00042.json \
+  --subtask-seq 1 \
+  --agent-hub-root /path/to/claude-agent-coding
 
-# 시스템 config에서 모델 선택
-SYSTEM_CONFIG="config.yaml"
-MODEL=$(yq ".claude.${AGENT_TYPE}_model // .claude.coder_model" $SYSTEM_CONFIG)
+# 지원 옵션
+#   --dummy      : Claude 호출 대신 더미 JSON 출력
+#   --dry-run    : 프롬프트만 출력하고 종료
+#   --model MODEL: 모델 강제 지정
 
-# 프로젝트 config에서 모델 override 확인
-PROJECT_MODEL=$(yq ".claude.${AGENT_TYPE}_model // \"\"" $PROJECT_YAML)
-if [ -n "$PROJECT_MODEL" ]; then
-  MODEL=$PROJECT_MODEL
-fi
-
-CODEBASE=$(yq '.codebase.path' $PROJECT_YAML)
-PROMPT_FILE="config/agent_prompts/${AGENT_TYPE}.md"
-
-# 첨부 이미지 참조 지시 생성
-ATTACHMENT_INSTRUCTIONS=""
-for attachment in $(jq -r '.attachments[]?.path // empty' $TASK_FILE 2>/dev/null); do
-  ATTACHMENT_INSTRUCTIONS+="\n- ${attachment} 파일을 view 명령으로 확인하세요"
-done
-
-cd $CODEBASE
-claude --model $MODEL -p "$(cat $PROMPT_FILE)
-
-## 첨부 자료
-${ATTACHMENT_INSTRUCTIONS}
-
-## Task Context
-$(cat $TASK_FILE)
-
-## Subtask
-$(cat $SUBTASK_FILE)
-
-## Plan
-$(cat $(dirname $TASK_FILE)/$(jq -r '.task_id' $TASK_FILE)-plan.json 2>/dev/null || echo /dev/null)
-" --output-format json
+# 지원 agent: planner, coder, reviewer, setup, unit_tester, e2e_tester, reporter, summarizer
 ```
+
+**실행 흐름:**
+1. config.yaml에서 `claude.{agent_type}_model` 읽기
+2. project.yaml에서 모델 override 확인
+3. safety limits 체크 (check_safety_limits.py 호출)
+4. agent 프롬프트 + task/subtask/plan context 조합
+5. `cd $CODEBASE && claude --model $MODEL -p "$PROMPT" --output-format json`
+6. stdout/stderr를 `logs/{task_id}/` 하위 `.log` 파일에 캡처
+7. JSON 결과 출력 (WFC가 파싱)
+
+**Step numbering:**
+
+| Agent | Step | Name |
+|-------|------|------|
+| planner | 01 | planner |
+| setup | 02 | setup |
+| coder | 03 | coder |
+| reviewer | 04 | reviewer |
+| unit_tester | 05 | unit_tester |
+| e2e_tester | 06 | e2e_tester |
+| reporter | 07 | reporter |
+| summarizer | 08 | summarizer |
 
 ---
 
@@ -1404,36 +1451,61 @@ config.yaml과 project.yaml의 모든 경로는 절대경로. agent가 `cd`로 c
 
 ## 15. 현재 구현 상태 및 TODO
 
-### 15.1 생성된 파일
+> 최종 업데이트: 2026-04-02
 
-| 파일 | 상태 |
+### 15.1 구현 완료
+
+| 파일 | 설명 |
 |------|------|
-| `config.yaml.template` | Part 1 변경사항 반영됨. v2 구조로 재작성 필요. |
-| `create_config.sh` | 존재. v2 구조에 맞게 수정 완료. |
-| `run_agent.sh` | 골격. submit 미구현. 멀티 프로젝트 CLI 미반영. |
-| `scripts/task_manager.py` | 골격. 멀티 프로젝트 WFC 관리 미구현. |
-| `scripts/workflow_controller.py` | 골격. 4계층 설정 merge, pipeline 구성 로직 미구현. |
-| `scripts/run_claude_agent.sh` | 존재. 프로젝트별 config 읽기로 수정 필요. |
-| `scripts/e2e_watcher.sh` | 골격. |
-| `config/agent_prompts/*.md` | 7개 agent 프롬프트 존재. |
-| `CLAUDE.md` | 존재. v2 기준으로 업데이트 필요. |
+| `config.yaml.template` | v2 시스템 설정 템플릿 |
+| `config.yaml` | 실제 시스템 설정 (gitignored) |
+| `project.yaml.template` | 프로젝트 설정 템플릿 (전체 override 항목 포함) |
+| `create_config.sh` | 템플릿 → config.yaml 생성 |
+| `run_agent.sh` | CLI 진입점: run, pipeline, init-project, kill-all, help |
+| `scripts/init_project.py` | 대화형 프로젝트 초기화 |
+| `scripts/workflow_controller.py` | WFC 핵심: run_pipeline(), run_pipeline_from_subtasks(), finalize_task(), git 자동화, Summarizer 연동, replan 로직, safety limits 연동, 로그 rotation |
+| `scripts/run_claude_agent.sh` | Claude Code 세션 래퍼: 8개 agent 지원, dummy/dry-run/force-result 모드, step numbering, stdout/stderr .log 캡처 |
+| `scripts/check_safety_limits.py` | Safety limits 체크: 3계층 merge (config→project→task), 5개 limit 항목 |
+| `config/agent_prompts/*.md` | 8개 agent 프롬프트 (planner, coder, reviewer, setup, unit_tester, e2e_tester, reporter, summarizer) |
+| `CLAUDE.md` | 정적 프로젝트 지식 |
+| `docs/configuration-reference.md` | 사용자용 설정 레퍼런스 (표 기반) |
 
-### 15.2 미구현 (TODO)
+### 15.2 Phase 1.0 검증 완료 항목
 
-| 파일 | 미구현 내용 |
-|------|------------|
-| `scripts/init_project.py` | 대화형 프로젝트 초기화 (신규) |
-| `scripts/task_manager.py` | CLI 인터페이스, WFC spawn/kill, 프로젝트 감시, human interaction, usage check |
-| `scripts/workflow_controller.py` | inotifywait 감시 루프, 4계층 설정 merge, pipeline 구성, agent 호출, 루프백, commands/ 감시, project_state 업데이트, stateful 복구 |
-| `run_agent.sh` | start (전체 기동), init-project, submit --project, pending, approve/reject, config --set, list, start-tester |
-| `config.yaml.template` | v2 구조 (시스템 설정만) 재작성 |
-| `project.yaml.template` | 신규 — 프로젝트 설정 템플릿 |
+| 항목 | 검증 방법 |
+|------|-----------|
+| 더미 파이프라인 사이클 | run_dummy_pipeline.sh |
+| 실제 task 실행 (00002~00006) | test-web-service 대상 실제 claude -p 실행 |
+| Git 자동화 | branch 생성, subtask 커밋, push, PR 생성/머지 |
+| auto_merge=true | task 00005: PR 생성 + 자동 머지 |
+| auto_merge=false | task 00006: PR 생성, status=pending_review |
+| Replan 로직 | task 00099: dummy 모드, reporter force_result=replan |
+| Safety limits | check_safety_limits.py 초과 시 agent 차단 |
+| gh 인증 자동화 | ensure_gh_auth() + project.yaml auth_token |
 
-### 15.3 원래 Phase 계획과의 관계
+### 15.3 미구현 (TODO)
 
-Phase 0(파일 흐름 검증)부터 재개 가능. 단, 그 전에:
-1. config.yaml.template을 v2 구조로 재작성
-2. project.yaml.template 생성
-3. init_project.py 최소 구현 (대화형 → project.yaml 생성)
-4. task_manager.py에 WFC spawn 로직 추가
-5. workflow_controller.py에 4계층 merge + pipeline 구성 로직 추가
+| 범위 | 내용 | 예정 Phase |
+|------|------|-----------|
+| **Task Manager** | CLI 인터페이스, WFC spawn/kill, 프로젝트 감시, human interaction, usage check, 알림 | 다음 (TM) |
+| **human_review_policy 실행** | review_plan, review_replan, waiting_for_human 상태 전환 + 대기 로직 | TM |
+| **project_state.json 연동** | WFC가 project_state.json 읽기/쓰기 (3계층 동적 override) | TM |
+| **4계층 설정 merge (WFC 내부)** | WFC 자체의 testing/claude 모델 등 effective config 계산. 현재 check_safety_limits.py만 3계층 merge | TM |
+| **알림** | 완료/실패/PR생성 시 사용자 알림 (cli/slack/telegram) | TM → Phase 1.4 |
+| **Merge conflict 처리** | git_merge_pr()에 TODO. 에러 시 사용자 noti 필요 | TM |
+| **Pipeline resume** | 실패 지점부터 자동 재개 (run_pipeline_from_subtasks() 있으나 TM 연동 필요) | TM |
+| **E2E 테스트장비 연동** | e2e_watcher.sh, 크로스 머신 handoff, SSH 복구 | Phase 1.3 |
+| **메신저 연동** | Slack/Telegram 등 메시지 수신 → task 생성 | Phase 1.4 |
+| **웹 대시보드** | Task 목록/상세/Timeline, 프로젝트별 필터링 | Phase 2 |
+
+### 15.4 Phase 로드맵 (현재 시점)
+
+| Phase | 내용 | 상태 |
+|-------|------|------|
+| 1.0 | 수동 pipeline 실행 + git 자동화 | **완료** |
+| TM | Task Manager (CLI 인터페이스, WFC 연동, human review) | **다음** |
+| 1.3 | 테스트장비 연동 (E2E) | 미착수 |
+| 1.4 | 메신저 연동 | 미착수 |
+| 2.0 | 웹 모니터링 대시보드 | 미착수 |
+
+참고: 원래 Phase 1.1(파이프라인 자동화)과 1.2(Planner+Subtask Loop)는 Phase 1.0에서 WFC로 통합 구현되어, 별도 Phase가 불필요해짐.

@@ -11,46 +11,93 @@ Pipeline 흐름:
     python3 scripts/workflow_controller.py --project <name> --task <id> --dry-run
 
 Phase 1.1 범위:
-    - testing 전부 disabled 상태: Coder → Reviewer → (커밋 생략) → 다음 subtask
-    - testing 하나라도 enabled: Coder → Reviewer → Reporter → 다음 subtask
-    - git 자동화 미포함 (추후)
+    - testing 전부 disabled 상태: Coder → Reviewer → git commit → 다음 subtask
+    - testing 하나라도 enabled: Coder → Reviewer → Reporter → git commit → 다음 subtask
+    - git 자동화: task별 브랜치 생성, subtask별 커밋, auto_merge 시 머지
     - usage threshold 미포함 (추후)
 """
 
 import argparse
 import json
+import logging
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import yaml
 
-# ─── 색상 출력 ───
+# ─── 색상 출력 (터미널용) ───
 GREEN = "\033[0;32m"
 YELLOW = "\033[1;33m"
 RED = "\033[0;31m"
 CYAN = "\033[0;36m"
 NC = "\033[0m"
 
+# ─── 로거 ───
+# 파일 로거는 setup_file_logger()에서 초기화된다 (project_dir 필요)
+_file_logger = None
+
+
+def setup_file_logger(project_dir):
+    """
+    WFC rotation 파일 로거를 초기화한다.
+    로그 위치: projects/{name}/logs/wfc.log
+    100MB x 최대 10개 rotation.
+    """
+    global _file_logger
+    log_dir = os.path.join(project_dir, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+
+    _file_logger = logging.getLogger("wfc")
+    _file_logger.setLevel(logging.DEBUG)
+
+    # 기존 핸들러 제거 (중복 방지)
+    _file_logger.handlers.clear()
+
+    handler = RotatingFileHandler(
+        os.path.join(log_dir, "wfc.log"),
+        maxBytes=100 * 1024 * 1024,  # 100MB
+        backupCount=10,
+        encoding="utf-8",
+    )
+    formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    handler.setFormatter(formatter)
+    _file_logger.addHandler(handler)
+
+
+def _log_to_file(level, msg):
+    """파일 로거가 초기화되어 있으면 기록한다."""
+    if _file_logger:
+        _file_logger.log(level, msg)
+
 
 def log_info(msg):
     print(f"{GREEN}[WFC]{NC} {msg}")
+    _log_to_file(logging.INFO, msg)
 
 
 def log_warn(msg):
     print(f"{YELLOW}[WFC]{NC} {msg}")
+    _log_to_file(logging.WARNING, msg)
 
 
 def log_error(msg):
     print(f"{RED}[WFC]{NC} {msg}", file=sys.stderr)
+    _log_to_file(logging.ERROR, msg)
 
 
 def log_step(msg):
     print(f"\n{CYAN}{'═' * 60}{NC}")
     print(f"{CYAN}[WFC] {msg}{NC}")
     print(f"{CYAN}{'═' * 60}{NC}\n")
+    _log_to_file(logging.INFO, f"{'═' * 40} {msg} {'═' * 40}")
 
 
 # ─── 파이프라인 단계 넘버링 (run_claude_agent.sh와 동일) ───
@@ -62,6 +109,7 @@ STEP_NUMBER = {
     "unit_tester": "05",
     "e2e_tester": "06",
     "reporter": "07",
+    "summarizer": "08",
 }
 
 STEP_NAME = {
@@ -72,6 +120,7 @@ STEP_NAME = {
     "unit_tester": "unit-tester",
     "e2e_tester": "e2e-tester",
     "reporter": "reporter",
+    "summarizer": "summarizer",
 }
 
 
@@ -79,6 +128,38 @@ def load_json(path):
     """JSON 파일을 읽어 dict로 반환한다."""
     with open(path) as f:
         return json.load(f)
+
+
+def extract_agent_result(raw):
+    """
+    claude -p --output-format json의 wrapper에서 실제 agent 결과를 추출한다.
+
+    claude -p 출력 구조:
+      { "type": "result", "result": "... agent 텍스트 응답 ...", ... }
+    agent 응답 안에 ```json ... ``` 코드블록이 있으면 그 JSON을 파싱하여 반환.
+    코드블록이 없으면 result 텍스트 전체를 JSON 파싱 시도.
+    wrapper가 아니면(dummy 등) 그대로 반환.
+    """
+    # dummy 모드 등 wrapper가 아닌 경우: action 키가 이미 있으면 그대로 반환
+    if "action" in raw or "subtasks" in raw:
+        return raw
+
+    # claude -p wrapper인 경우: result 필드에서 추출
+    result_text = raw.get("result", "")
+    if not result_text:
+        return raw
+
+    # ```json ... ``` 코드블록 추출
+    json_block_match = re.search(r"```json\s*\n(.*?)\n```", result_text, re.DOTALL)
+    if json_block_match:
+        return json.loads(json_block_match.group(1))
+
+    # 코드블록 없으면 텍스트 전체를 JSON으로 파싱 시도
+    try:
+        return json.loads(result_text)
+    except json.JSONDecodeError:
+        # JSON이 아닌 순수 텍스트 응답 — 그대로 dict 감싸서 반환
+        return {"result_text": result_text}
 
 
 def save_json(path, data):
@@ -92,6 +173,161 @@ def load_yaml(path):
     """YAML 파일을 읽어 dict로 반환한다."""
     with open(path) as f:
         return yaml.safe_load(f) or {}
+
+
+# ─── Git 헬퍼 ───
+
+
+def ensure_gh_auth(token, codebase_path=None):
+    """
+    gh CLI 인증 상태를 확인하고, 필요하면 token으로 로그인한다.
+    codebase_path가 주어지면 해당 repo에 대한 접근 권한도 확인한다.
+    git 관련 작업 전에 매번 호출해야 한다.
+    """
+    # 1. gh 인증 상태 확인
+    check = subprocess.run(
+        ["gh", "auth", "status"],
+        capture_output=True, text=True,
+    )
+    if check.returncode != 0:
+        if not token:
+            log_error("[git] gh CLI 미인증 상태이고 auth_token이 설정되지 않았습니다.")
+            raise RuntimeError("gh 인증 필요: project.yaml의 git.auth_token을 설정하세요.")
+        log_info("[git] gh CLI 인증 시도...")
+        result = subprocess.run(
+            ["gh", "auth", "login", "--with-token"],
+            input=token, capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            log_error(f"[git] gh 인증 실패: {result.stderr.strip()}")
+            raise RuntimeError("gh auth login 실패")
+        log_info("[git] gh CLI 인증 완료")
+
+    # 2. repo 접근 권한 확인
+    if codebase_path:
+        repo_check = subprocess.run(
+            ["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
+            cwd=codebase_path, capture_output=True, text=True,
+        )
+        if repo_check.returncode != 0:
+            log_error(f"[git] repo 접근 실패: {repo_check.stderr.strip()}")
+            raise RuntimeError("gh repo 접근 권한 없음. token 권한을 확인하세요.")
+        repo_name = repo_check.stdout.strip()
+        log_info(f"[git] gh 인증 확인됨 (repo: {repo_name})")
+
+
+def git_run(codebase_path, *args):
+    """codebase 디렉토리에서 git 명령을 실행하고 stdout을 반환한다."""
+    cmd = ["git"] + list(args)
+    log_info(f"[git] {' '.join(cmd)}")
+    result = subprocess.run(
+        cmd, cwd=codebase_path,
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        log_error(f"[git] 실패: {result.stderr.strip()}")
+        raise RuntimeError(f"git 명령 실패: {' '.join(cmd)}\n{result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+def git_has_changes(codebase_path):
+    """커밋할 변경사항이 있는지 확인한다."""
+    result = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=codebase_path, capture_output=True, text=True,
+    )
+    return bool(result.stdout.strip())
+
+
+def git_create_task_branch(codebase_path, branch_name, default_branch):
+    """
+    task용 feature 브랜치를 생성하고 checkout한다.
+    이미 존재하면 checkout만 한다.
+    """
+    # 이미 존재하는 브랜치인지 확인
+    existing = subprocess.run(
+        ["git", "branch", "--list", branch_name],
+        cwd=codebase_path, capture_output=True, text=True,
+    )
+    if existing.stdout.strip():
+        log_info(f"[git] 기존 브랜치로 checkout: {branch_name}")
+        git_run(codebase_path, "checkout", branch_name)
+    else:
+        log_info(f"[git] 새 브랜치 생성: {branch_name} (from {default_branch})")
+        git_run(codebase_path, "checkout", "-b", branch_name, default_branch)
+
+    return branch_name
+
+
+def git_push(codebase_path, remote, branch=None):
+    """현재 브랜치를 원격에 push한다. upstream이 없으면 자동 설정."""
+    if branch:
+        git_run(codebase_path, "push", "--set-upstream", remote, branch)
+    else:
+        git_run(codebase_path, "push", remote)
+    log_info(f"[git] push 완료: {remote} {branch or ''}")
+
+
+def git_commit_subtask(codebase_path, task_id, subtask_id, subtask_title,
+                       author_name, author_email, remote=None, branch=None):
+    """
+    subtask 완료 후 변경사항을 커밋하고 push한다.
+    변경사항이 없으면 스킵한다.
+    """
+    if not git_has_changes(codebase_path):
+        log_info(f"[git] 변경사항 없음 — 커밋 스킵 ({subtask_id})")
+        return False
+
+    git_run(codebase_path, "add", "-A")
+    commit_msg = f"[{task_id}] {subtask_id}: {subtask_title}"
+    git_run(
+        codebase_path, "commit",
+        "-m", commit_msg,
+        "--author", f"{author_name} <{author_email}>",
+    )
+    log_info(f"[git] 커밋 완료: {commit_msg}")
+
+    if remote:
+        git_push(codebase_path, remote, branch)
+
+    return True
+
+
+def git_create_pr(codebase_path, task_branch, target_branch, pr_title, pr_body):
+    """GitHub PR을 생성하고 PR URL을 반환한다."""
+    cmd = [
+        "gh", "pr", "create",
+        "--title", pr_title,
+        "--body", pr_body,
+        "--base", target_branch,
+        "--head", task_branch,
+    ]
+    log_info(f"[git] PR 생성: {task_branch} → {target_branch}")
+    result = subprocess.run(
+        cmd, cwd=codebase_path,
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        log_error(f"[git] PR 생성 실패: {result.stderr.strip()}")
+        raise RuntimeError(f"gh pr create 실패: {result.stderr.strip()}")
+    pr_url = result.stdout.strip()
+    log_info(f"[git] PR 생성 완료: {pr_url}")
+    return pr_url
+
+
+def git_merge_pr(codebase_path, pr_url):
+    """GitHub PR을 머지한다."""
+    # TODO: merge conflict 에러 처리 (Phase 2에서 구현)
+    cmd = ["gh", "pr", "merge", pr_url, "--merge", "--delete-branch"]
+    log_info(f"[git] PR 머지: {pr_url}")
+    result = subprocess.run(
+        cmd, cwd=codebase_path,
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        log_error(f"[git] PR 머지 실패: {result.stderr.strip()}")
+        raise RuntimeError(f"gh pr merge 실패: {result.stderr.strip()}")
+    log_info("[git] PR 머지 완료")
 
 
 def determine_pipeline(project_yaml):
@@ -191,7 +427,8 @@ def run_agent(agent_hub_root, agent_type, project_name, task_id,
         return False, None
 
     try:
-        result_data = load_json(log_file)
+        raw = load_json(log_file)
+        result_data = extract_agent_result(raw)
         return True, result_data
     except (json.JSONDecodeError, Exception) as e:
         log_error(f"로그 파일 JSON 파싱 실패: {log_file} — {e}")
@@ -288,6 +525,9 @@ def run_pipeline(args):
     tasks_dir = os.path.join(project_dir, "tasks")
     project_yaml_path = os.path.join(project_dir, "project.yaml")
 
+    # 파일 로거 초기화 (rotation: 100MB x 10)
+    setup_file_logger(project_dir)
+
     # 프로젝트 설정 로드
     if not os.path.exists(project_yaml_path):
         log_error(f"project.yaml을 찾을 수 없음: {project_yaml_path}")
@@ -314,6 +554,25 @@ def run_pipeline(args):
         log_warn("DRY-RUN: 실제 실행 없이 pipeline 구성만 확인")
         return
 
+    # ─── Git 설정 로드 ───
+    git_config = project_yaml.get("git", {})
+    git_enabled = git_config.get("enabled", False) and not args.dummy
+    codebase_path = project_yaml.get("codebase", {}).get("path", "")
+    default_branch = project_yaml.get("project", {}).get("default_branch", "main")
+    task_branch = None
+
+    # ─── Git provider 인증 ───
+    if git_enabled:
+        git_provider = git_config.get("provider", "github")
+        auth_token = git_config.get("auth_token", "")
+        if git_provider == "github":
+            ensure_gh_auth(auth_token, codebase_path=codebase_path)
+        elif git_provider != "github":
+            log_warn(f"[git] provider '{git_provider}'는 아직 미구현. github만 지원합니다.")
+
+    if args.dummy:
+        log_info("DUMMY 모드: git 작업 스킵")
+
     # ─── Phase 1: Planner ───
     log_step("Phase 1: Planner 실행")
 
@@ -337,6 +596,31 @@ def run_pipeline(args):
         sys.exit(1)
 
     log_info(f"subtask {len(subtasks)}개 생성됨")
+
+    # ─── Git: task 브랜치 생성 (Planner 후) ───
+    if git_enabled:
+        log_step("Git: task 브랜치 생성")
+        # 우선순위: task JSON branch_name > planner 출력 branch_name > fallback
+        branch_name = (
+            task.get("branch_name")
+            or plan_data.get("branch_name")
+            or f"feature/{task_id}"
+        )
+        # feature/{task_id}- 접두사 보장
+        # planner가 "feature/00003-temperature-converter" 등을 줄 수 있음
+        # 접두사가 없으면 자동 추가
+        prefix = f"feature/{task_id}-"
+        if not branch_name.startswith(prefix):
+            # "feature/"만 있는 경우 (예: "feature/temperature-converter")
+            if branch_name.startswith("feature/"):
+                suffix = branch_name[len("feature/"):]
+                # task_id로 시작하면 그대로, 아니면 task_id- 추가
+                if not suffix.startswith(task_id):
+                    branch_name = f"feature/{task_id}-{suffix}"
+            else:
+                branch_name = f"feature/{task_id}-{branch_name}"
+        task_branch = git_create_task_branch(codebase_path, branch_name, default_branch)
+        update_task_field(task_file, "branch", task_branch)
 
     # ─── Phase 2: Subtask Loop ───
     completed_subtasks = []
@@ -395,6 +679,9 @@ def run_pipeline(args):
                 run_pipeline_from_subtasks(
                     agent_hub_root, args.project, task_id, task_file,
                     new_subtasks, pipeline, args.dummy, completed_subtasks,
+                    git_enabled=git_enabled, git_config=git_config,
+                    codebase_path=codebase_path, task_branch=task_branch,
+                    default_branch=default_branch,
                 )
                 return
             else:
@@ -402,21 +689,37 @@ def run_pipeline(args):
                 update_task_field(task_file, "status", "failed")
                 sys.exit(1)
 
+        # ─── Git: subtask 커밋 + push ───
+        if git_enabled:
+            git_remote = git_config.get("remote", "origin")
+            subtask_title = subtask.get("title", subtask_id)
+            git_commit_subtask(
+                codebase_path, task_id, subtask_id, subtask_title,
+                git_config.get("author_name", "Agent Hub"),
+                git_config.get("author_email", "agent@hub"),
+                remote=git_remote, branch=task_branch,
+            )
+
         completed_subtasks.append(subtask_id)
         update_task_field(task_file, "completed_subtasks", completed_subtasks)
         log_info(f"subtask {subtask_id} 완료 ({i+1}/{len(subtasks)})")
 
-    # ─── Phase 3: 완료 ───
-    log_step("파이프라인 완료")
-    update_task_field(task_file, "status", "completed")
-    update_task_field(task_file, "current_subtask", None)
-    log_info(f"task {task_id} 완료. subtask {len(completed_subtasks)}개 처리됨.")
+    # ─── Phase 3: Summarizer + PR ───
+    finalize_task(
+        agent_hub_root, args.project, task_id, task_file,
+        completed_subtasks, git_enabled, git_config,
+        codebase_path, task_branch, default_branch, args.dummy,
+    )
 
 
 def run_pipeline_from_subtasks(agent_hub_root, project_name, task_id, task_file,
-                                subtasks, pipeline, dummy, already_completed):
+                                subtasks, pipeline, dummy, already_completed,
+                                git_enabled=False, git_config=None,
+                                codebase_path=None, task_branch=None,
+                                default_branch="main"):
     """re-plan 후 남은 subtask들을 실행한다."""
     completed_subtasks = list(already_completed)
+    git_config = git_config or {}
 
     for i, subtask in enumerate(subtasks):
         subtask_id = subtask.get("subtask_id", f"{task_id}-{i+1}")
@@ -443,12 +746,90 @@ def run_pipeline_from_subtasks(agent_hub_root, project_name, task_id, task_file,
             update_task_field(task_file, "status", "failed")
             sys.exit(1)
 
+        # ─── Git: subtask 커밋 + push ───
+        if git_enabled:
+            git_remote = git_config.get("remote", "origin")
+            subtask_title = subtask.get("title", subtask_id)
+            git_commit_subtask(
+                codebase_path, task_id, subtask_id, subtask_title,
+                git_config.get("author_name", "Agent Hub"),
+                git_config.get("author_email", "agent@hub"),
+                remote=git_remote, branch=task_branch,
+            )
+
         completed_subtasks.append(subtask_id)
         update_task_field(task_file, "completed_subtasks", completed_subtasks)
 
-    log_step("파이프라인 완료 (re-plan 후)")
-    update_task_field(task_file, "status", "completed")
+    # ─── Phase 3: Summarizer + PR (re-plan 경로) ───
+    finalize_task(
+        agent_hub_root, project_name, task_id, task_file,
+        completed_subtasks, git_enabled, git_config,
+        codebase_path, task_branch, default_branch, dummy,
+    )
+
+
+def finalize_task(agent_hub_root, project_name, task_id, task_file,
+                  completed_subtasks, git_enabled, git_config,
+                  codebase_path, task_branch, default_branch, dummy):
+    """
+    Subtask loop 완료 후 Summarizer 실행 + PR 생성/머지 + task 상태 업데이트.
+    run_pipeline()과 run_pipeline_from_subtasks() 양쪽에서 호출된다.
+    """
+    # ─── Summarizer 실행 ───
+    log_step("Summarizer 실행")
+    success, summary_data = run_agent(
+        agent_hub_root, "summarizer", project_name, task_id,
+        dummy=dummy,
+    )
+
+    pr_title = f"[{task_id}] Task completed"
+    pr_body = f"Automated PR for task {task_id}"
+    task_summary = ""
+
+    if success and summary_data:
+        raw_title = summary_data.get("pr_title", pr_title)
+        # task ID 접두사 보장: [00001] Add feature...
+        if not raw_title.startswith(f"[{task_id}]"):
+            pr_title = f"[{task_id}] {raw_title}"
+        else:
+            pr_title = raw_title
+        pr_body = summary_data.get("pr_body", pr_body)
+        task_summary = summary_data.get("task_summary", "")
+        update_task_field(task_file, "summary", task_summary)
+    else:
+        log_warn("Summarizer 실패 — 기본 PR 메시지를 사용합니다.")
+
+    # ─── PR 생성 + 머지 ───
+    if git_enabled and task_branch:
+        pr_target = git_config.get("pr_target_branch", default_branch)
+        auto_merge = git_config.get("auto_merge", False)
+
+        # PR 작업 전 gh 인증 재확인
+        git_provider = git_config.get("provider", "github")
+        if git_provider == "github":
+            ensure_gh_auth(git_config.get("auth_token", ""), codebase_path=codebase_path)
+
+        log_step("Git: PR 생성")
+        try:
+            pr_url = git_create_pr(codebase_path, task_branch, pr_target, pr_title, pr_body)
+            update_task_field(task_file, "pr_url", pr_url)
+
+            if auto_merge:
+                log_step("Git: PR 자동 머지")
+                git_merge_pr(codebase_path, pr_url)
+                update_task_field(task_file, "status", "completed")
+            else:
+                log_info(f"[git] auto_merge=false — PR 생성 완료. 수동 머지 대기: {pr_url}")
+                update_task_field(task_file, "status", "pending_review")
+        except RuntimeError as e:
+            log_error(f"PR 처리 실패: {e}")
+            update_task_field(task_file, "status", "failed")
+            sys.exit(1)
+    else:
+        update_task_field(task_file, "status", "completed")
+
     update_task_field(task_file, "current_subtask", None)
+    log_step("파이프라인 완료")
     log_info(f"task {task_id} 완료. subtask {len(completed_subtasks)}개 처리됨.")
 
 

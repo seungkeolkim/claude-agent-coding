@@ -12,11 +12,13 @@ codebase:
   service_port: 3000
 git:
   enabled: true
+  provider: github  # github | bitbucket | gitlab (현재 github만 구현)
   remote: origin
   author_name: azzibobjo
   author_email: azzibobjo@gmail.com
   auto_merge: false
   pr_target_branch: main
+  auth_token: ""  # GitHub PAT (gitignored config.yaml에서 관리 권장)
 testing:
   unit_test:
     enabled: false

@@ -17,7 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AGENT_HUB_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # ─── 유효한 agent 목록 ───
-VALID_AGENTS="planner coder reviewer setup unit_tester e2e_tester reporter"
+VALID_AGENTS="planner coder reviewer setup unit_tester e2e_tester reporter summarizer"
 
 # ─── 인자 파싱 ───
 AGENT_TYPE="${1:?agent_type을 지정하세요 (planner|coder|reviewer|setup|unit_tester|e2e_tester|reporter)}"
@@ -185,6 +185,7 @@ get_step_number() {
         unit_tester)  echo "05" ;;
         e2e_tester)   echo "06" ;;
         reporter)     echo "07" ;;
+        summarizer)   echo "08" ;;
         *)            echo "99" ;;
     esac
 }
@@ -199,6 +200,7 @@ get_step_name() {
         unit_tester)  echo "unit-tester" ;;
         e2e_tester)   echo "e2e-tester" ;;
         reporter)     echo "reporter" ;;
+        summarizer)   echo "summarizer" ;;
         *)            echo "$1" ;;
     esac
 }
@@ -245,6 +247,12 @@ else
     fi
     LOG_FILE="${LOG_DIR}/${TASK_ID}_${TASK_LEVEL_SEQ}_${STEP_NUM}-${STEP_NAME}.json"
 fi
+
+# ─── 실행 로그 파일 (.log = 전체 stdout/stderr, .json = claude 결과만) ───
+EXEC_LOG_FILE="${LOG_FILE%.json}.log"
+
+# stdout/stderr을 터미널과 실행 로그 파일 양쪽에 기록한다
+exec > >(tee -a "$EXEC_LOG_FILE") 2>&1
 
 # ─── 프로젝트 설명 추출 ───
 PROJECT_DESCRIPTION=$(read_yaml_value "$PROJECT_YAML" "project.description")
@@ -597,6 +605,17 @@ EOJSON
   "verdict": "pass",
   "needs_replan": false,
   "summary": "[dummy] 모든 단계 정상 완료. 커밋 가능."
+}
+EOJSON
+)
+            ;;
+        summarizer)
+            DUMMY_RESULT=$(cat <<EOJSON
+{
+  "action": "summary_complete",
+  "pr_title": "[dummy] Add feature for task ${TASK_ID}",
+  "pr_body": "## Summary\n- [dummy] Automated changes for task ${TASK_ID}\n\n## Changes\n- Dummy file modifications\n\n## Test Plan\n- Manual verification",
+  "task_summary": "[dummy] task ${TASK_ID}의 작업이 완료되었습니다."
 }
 EOJSON
 )

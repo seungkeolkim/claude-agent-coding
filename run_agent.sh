@@ -22,7 +22,7 @@ log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
 
 # ─── 유효한 agent 목록 ───
-VALID_AGENTS="planner coder reviewer setup unit_tester e2e_tester reporter"
+VALID_AGENTS="planner coder reviewer setup unit_tester e2e_tester reporter summarizer"
 
 # ─── 시스템 설정 파일 ───
 CONFIG_FILE="${SCRIPT_DIR}/config.yaml"
