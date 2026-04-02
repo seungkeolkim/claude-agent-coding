@@ -45,16 +45,27 @@ show_help() {
     echo "  kill-all [--force]   모든 agent 프로세스 종료 (claude -p 포함)"
     echo "  help                 이 도움말 표시"
     echo ""
+    echo "Task 관리:"
+    echo "  submit --project <name> --title \"제목\" [--description \"설명\"] [--attach 파일]"
+    echo "  list [--project <name>] [--status <status>]"
+    echo "  pending [--project <name>]"
+    echo "  approve <task_id> --project <name> [--message \"코멘트\"]"
+    echo "  reject <task_id> --project <name> --message \"사유\""
+    echo "  feedback <task_id> --project <name> --message \"피드백\""
+    echo "  config --project <name> --set \"key=value\""
+    echo "  pause --project <name> [<task_id>]"
+    echo "  resume --project <name> [<task_id>]"
+    echo "  cancel <task_id> --project <name>"
+    echo ""
     echo "agent_type:"
     echo "  planner, coder, reviewer, setup, unit_tester, e2e_tester, reporter"
     echo ""
     echo "예시:"
-    echo "  ./run_agent.sh init-project"
+    echo "  ./run_agent.sh submit --project my-app --title \"로그인 기능 구현\""
+    echo "  ./run_agent.sh list --project my-app --status in_progress"
+    echo "  ./run_agent.sh approve 00042 --project my-app"
     echo "  ./run_agent.sh run coder --project my-app --task 00001"
-    echo "  ./run_agent.sh run coder --project my-app --task 00001 --subtask 00001-1"
-    echo "  ./run_agent.sh run coder --project my-app --task 00001 --dry-run"
-    echo ""
-    echo "task 파일명 규칙: 00001-간단한-설명.json (--task에는 00001만 지정)"
+    echo "  ./run_agent.sh pipeline --project my-app --task 00001 --dummy"
     echo ""
     echo "시스템 관리 (./run_system.sh):"
     echo "  start, stop, status → ./run_system.sh 참고"
@@ -416,9 +427,9 @@ case "$COMMAND" in
         log_warn "사용법: ./run_system.sh ${COMMAND}"
         exit 1
         ;;
-    submit|pending|approve|reject|list)
-        log_warn "'${COMMAND}' 명령은 아직 구현 예정입니다."
-        exit 1
+    submit|list|pending|approve|reject|feedback|config|pause|resume|cancel)
+        shift
+        PYTHONPATH="${SCRIPT_DIR}/scripts" python3 "${SCRIPT_DIR}/scripts/cli.py" "${COMMAND}" "$@"
         ;;
     *)
         log_error "알 수 없는 명령: ${COMMAND}"
