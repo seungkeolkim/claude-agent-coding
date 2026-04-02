@@ -18,12 +18,14 @@ Phase 1.1 범위:
 """
 
 import argparse
+import glob as glob_module
 import json
 import logging
 import os
 import re
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -173,6 +175,211 @@ def load_yaml(path):
     """YAML 파일을 읽어 dict로 반환한다."""
     with open(path) as f:
         return yaml.safe_load(f) or {}
+
+
+# ─── 4계층 설정 merge ───
+
+
+def _deep_merge(base, override):
+    """
+    base dict 위에 override dict를 재귀적으로 덮어쓴다.
+    override에 없는 키는 base 값을 유지한다.
+    """
+    merged = dict(base)
+    for key, value in override.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def resolve_effective_config(config, project_yaml, project_state, task):
+    """
+    4계층 설정 merge를 수행하여 effective config를 생성한다.
+
+    계층 순서 (뒤의 것이 앞의 것을 덮어씀):
+      1. config.yaml (시스템 기본값)
+      2. project.yaml (프로젝트 정적 설정)
+      3. project_state.json의 overrides (프로젝트 동적 설정)
+      4. task.config_override (task 단위 일시 변경)
+
+    반환: 최종 effective config dict
+    키 구조: testing, git, claude, limits, human_review_policy, notification 등
+    """
+    # 1계층: config.yaml 시스템 기본값
+    # config.yaml은 default_limits, default_human_review_policy 키를 사용
+    effective = {}
+    effective["claude"] = dict(config.get("claude", {}))
+    effective["limits"] = dict(config.get("default_limits", {}))
+    effective["human_review_policy"] = dict(config.get("default_human_review_policy", {}))
+    effective["notification"] = dict(config.get("notification", {}))
+    effective["logging"] = dict(config.get("logging", {}))
+    # testing, git, codebase, project는 config.yaml에 기본값 없음 (프로젝트별 설정)
+    effective["testing"] = {}
+    effective["git"] = {}
+    effective["codebase"] = {}
+    effective["project"] = {}
+
+    # 2계층: project.yaml 정적 설정으로 덮어쓰기
+    for key in ["testing", "git", "codebase", "project", "claude",
+                "limits", "human_review_policy", "notification"]:
+        project_value = project_yaml.get(key, {})
+        if project_value:
+            effective[key] = _deep_merge(effective[key], project_value)
+
+    # 3계층: project_state.json의 overrides로 덮어쓰기
+    overrides = project_state.get("overrides", {})
+    for key, value in overrides.items():
+        if key in effective and isinstance(value, dict):
+            effective[key] = _deep_merge(effective[key], value)
+        else:
+            effective[key] = value
+
+    # 4계층: task.config_override로 덮어쓰기
+    task_overrides = task.get("config_override", {})
+    for key, value in task_overrides.items():
+        if key in effective and isinstance(value, dict):
+            effective[key] = _deep_merge(effective[key], value)
+        else:
+            effective[key] = value
+
+    return effective
+
+
+# ─── project_state.json 헬퍼 ───
+
+
+def update_project_state(project_dir, status, current_task_id=None, last_error=None):
+    """
+    project_state.json의 WFC 관련 필드를 갱신한다.
+    기존 파일이 있으면 merge, 없으면 새로 생성한다.
+    TM이 이 파일을 읽어 프로젝트 상태를 파악한다.
+    """
+    state_path = os.path.join(project_dir, "project_state.json")
+
+    if os.path.exists(state_path):
+        try:
+            state = load_json(state_path)
+        except (json.JSONDecodeError, OSError):
+            state = {"project_name": os.path.basename(project_dir)}
+    else:
+        state = {"project_name": os.path.basename(project_dir)}
+
+    state["status"] = status
+    state["current_task_id"] = current_task_id
+    state["last_updated"] = datetime.now(timezone.utc).isoformat()
+
+    if last_error:
+        state["last_error_task_id"] = last_error
+
+    save_json(state_path, state)
+    log_info(f"project_state.json 갱신: status={status}, task={current_task_id}")
+
+
+# ─── human_review_policy 헬퍼 ───
+
+
+def request_human_review(task_file, task_id, review_type, plan_path, subtask_count):
+    """
+    task JSON에 human_interaction을 기록하고 status를 waiting_for_human으로 변경한다.
+    review_type: "plan_review" | "replan_review"
+    """
+    task = load_json(task_file)
+
+    task["status"] = "waiting_for_human"
+    task["human_interaction"] = {
+        "type": review_type,
+        "message": f"Plan을 확인해주세요. subtask {subtask_count}개 생성됨.",
+        "payload_path": plan_path,
+        "options": ["approve", "modify", "cancel"],
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+        "response": None,
+    }
+
+    save_json(task_file, task)
+    log_info(f"human review 요청: type={review_type}, task={task_id}")
+
+
+def wait_for_human_response(task_file, project_dir, task_id, timeout_hours,
+                            poll_interval=10):
+    """
+    task JSON의 human_interaction.response가 채워질 때까지 폴링한다.
+    timeout_hours 초과 시 자동 승인.
+    commands/ 디렉토리의 cancel 명령도 감시한다.
+
+    반환: "approve" | "modify" | "cancel" | "timeout"
+    """
+    # project_state.json에 waiting_for_human 상태 기록
+    update_project_state(project_dir, status="waiting_for_human",
+                         current_task_id=task_id)
+
+    start_time = time.time()
+    timeout_seconds = timeout_hours * 3600
+
+    log_step(f"사용자 응답 대기 중 (timeout: {timeout_hours}h)")
+    log_info("승인: ./run_agent.sh approve {task_id} --project {project}")
+    log_info("거부: ./run_agent.sh reject {task_id} --project {project} --message '사유'")
+
+    commands_dir = os.path.join(project_dir, "commands")
+
+    while True:
+        elapsed = time.time() - start_time
+
+        # 타임아웃 확인
+        if elapsed >= timeout_seconds:
+            log_warn(f"자동 승인 (timeout {timeout_hours}h 초과)")
+            # 자동 승인 기록
+            task = load_json(task_file)
+            hi = task.get("human_interaction", {})
+            if hi and not hi.get("response"):
+                hi["response"] = {
+                    "action": "approve",
+                    "message": f"자동 승인 (timeout {timeout_hours}h 초과)",
+                    "attachments": [],
+                    "responded_at": datetime.now(timezone.utc).isoformat(),
+                }
+                task["human_interaction"] = hi
+                task["status"] = "planned"
+                save_json(task_file, task)
+            return "timeout"
+
+        # cancel 명령 확인
+        if os.path.isdir(commands_dir):
+            cancel_pattern = os.path.join(commands_dir, f"cancel-{task_id}.command")
+            cancel_files = glob_module.glob(cancel_pattern)
+            if cancel_files:
+                log_warn(f"cancel 명령 감지: task {task_id}")
+                for cf in cancel_files:
+                    os.unlink(cf)
+                task = load_json(task_file)
+                task["status"] = "cancelled"
+                save_json(task_file, task)
+                return "cancel"
+
+        # 응답 확인
+        task = load_json(task_file)
+        hi = task.get("human_interaction", {})
+        response = hi.get("response") if hi else None
+
+        if response:
+            action = response.get("action", "approve")
+            log_info(f"사용자 응답 수신: action={action}")
+
+            if action == "approve":
+                # hub_api가 이미 status를 "planned"로 변경했음
+                return "approve"
+            elif action == "modify":
+                # hub_api가 이미 status를 "needs_replan"으로 변경했음
+                return "modify"
+            elif action == "cancel":
+                return "cancel"
+            else:
+                log_warn(f"알 수 없는 action: {action}, approve로 처리")
+                return "approve"
+
+        # 대기
+        time.sleep(poll_interval)
 
 
 # ─── Git 헬퍼 ───
@@ -330,13 +537,13 @@ def git_merge_pr(codebase_path, pr_url):
     log_info("[git] PR 머지 완료")
 
 
-def determine_pipeline(project_yaml):
+def determine_pipeline(effective_config):
     """
-    testing 설정을 읽고 이번 subtask의 agent pipeline을 결정한다.
+    effective config의 testing 설정을 읽고 이번 subtask의 agent pipeline을 결정한다.
     testing이 전부 disabled면: [coder, reviewer] → 바로 커밋
     testing이 하나라도 enabled면: reporter 포함
     """
-    testing = project_yaml.get("testing", {})
+    testing = effective_config.get("testing", {})
     unit_enabled = testing.get("unit_test", {}).get("enabled", False)
     e2e_enabled = testing.get("e2e_test", {}).get("enabled", False)
     integration_enabled = testing.get("integration_test", {}).get("enabled", False)
@@ -524,16 +731,32 @@ def run_pipeline(args):
     project_dir = os.path.join(agent_hub_root, "projects", args.project)
     tasks_dir = os.path.join(project_dir, "tasks")
     project_yaml_path = os.path.join(project_dir, "project.yaml")
+    config_yaml_path = os.path.join(agent_hub_root, "config.yaml")
 
     # 파일 로거 초기화 (rotation: 100MB x 10)
     setup_file_logger(project_dir)
 
-    # 프로젝트 설정 로드
+    # 설정 파일 로드
     if not os.path.exists(project_yaml_path):
         log_error(f"project.yaml을 찾을 수 없음: {project_yaml_path}")
         sys.exit(1)
 
     project_yaml = load_yaml(project_yaml_path)
+
+    config = {}
+    if os.path.exists(config_yaml_path):
+        config = load_yaml(config_yaml_path)
+    else:
+        log_warn(f"config.yaml을 찾을 수 없음: {config_yaml_path} — 시스템 기본값 없이 진행")
+
+    # project_state.json 로드 (overrides 등)
+    state_path = os.path.join(project_dir, "project_state.json")
+    project_state = {}
+    if os.path.exists(state_path):
+        try:
+            project_state = load_json(state_path)
+        except (json.JSONDecodeError, OSError):
+            log_warn("project_state.json 파싱 실패 — overrides 없이 진행")
 
     # task 파일 찾기
     task_file = find_task_file(tasks_dir, args.task)
@@ -546,19 +769,26 @@ def run_pipeline(args):
 
     log_step(f"파이프라인 시작: project={args.project} task={task_id}")
 
+    # project_state.json 갱신 (TM 연동용)
+    update_project_state(project_dir, status="running", current_task_id=task_id)
+
+    # 4계층 설정 merge → effective config
+    effective = resolve_effective_config(config, project_yaml, project_state, task)
+    log_info(f"effective config 생성 완료 (4계층 merge)")
+
     # pipeline 구성 결정
-    pipeline = determine_pipeline(project_yaml)
+    pipeline = determine_pipeline(effective)
     log_info(f"pipeline 구성: {' → '.join(pipeline)}")
 
     if args.dry_run:
         log_warn("DRY-RUN: 실제 실행 없이 pipeline 구성만 확인")
         return
 
-    # ─── Git 설정 로드 ───
-    git_config = project_yaml.get("git", {})
+    # ─── Git 설정 로드 (effective config에서) ───
+    git_config = effective.get("git", {})
     git_enabled = git_config.get("enabled", False) and not args.dummy
-    codebase_path = project_yaml.get("codebase", {}).get("path", "")
-    default_branch = project_yaml.get("project", {}).get("default_branch", "main")
+    codebase_path = effective.get("codebase", {}).get("path", "")
+    default_branch = effective.get("project", {}).get("default_branch", "main")
     task_branch = None
 
     # ─── Git provider 인증 ───
@@ -584,6 +814,7 @@ def run_pipeline(args):
     if not success or not plan_data:
         log_error("Planner 실패. 파이프라인 중단.")
         update_task_field(task_file, "status", "failed")
+        update_project_state(project_dir, status="idle", last_error=task_id)
         sys.exit(1)
 
     # plan 저장 및 subtask 파일 생성
@@ -593,9 +824,52 @@ def run_pipeline(args):
     if not subtasks:
         log_error("Planner가 subtask를 생성하지 않았습니다.")
         update_task_field(task_file, "status", "failed")
+        update_project_state(project_dir, status="idle", last_error=task_id)
         sys.exit(1)
 
     log_info(f"subtask {len(subtasks)}개 생성됨")
+
+    # ─── Human Review: Plan 승인 대기 ───
+    human_review = effective.get("human_review_policy", {})
+    if human_review.get("review_plan", False) and not args.dummy:
+        plan_path = os.path.join("tasks", task_id, "plan.json")
+        request_human_review(task_file, task_id, "plan_review", plan_path, len(subtasks))
+
+        timeout_hours = human_review.get("auto_approve_timeout_hours", 24)
+        result = wait_for_human_response(
+            task_file, project_dir, task_id, timeout_hours,
+        )
+
+        if result == "cancel":
+            log_warn("사용자가 plan을 취소했습니다.")
+            update_task_field(task_file, "status", "cancelled")
+            update_project_state(project_dir, status="idle")
+            sys.exit(0)
+        elif result == "modify":
+            log_warn("사용자가 plan 수정을 요청했습니다. replan 실행.")
+            # modify 시 needs_replan으로 설정됨 — planner 재실행
+            update_task_counter(task_file, "replan_count", increment=True)
+            success, plan_data = run_agent(
+                agent_hub_root, "planner", args.project, task_id,
+                dummy=args.dummy,
+            )
+            if not success or not plan_data:
+                log_error("Re-plan 실패. 파이프라인 중단.")
+                update_task_field(task_file, "status", "failed")
+                update_project_state(project_dir, status="idle", last_error=task_id)
+                sys.exit(1)
+            save_plan_file(project_dir, task_id, plan_data)
+            subtasks = create_subtask_files(project_dir, task_id, plan_data)
+            if not subtasks:
+                log_error("Re-plan 후 subtask가 없습니다.")
+                update_task_field(task_file, "status", "failed")
+                update_project_state(project_dir, status="idle", last_error=task_id)
+                sys.exit(1)
+            log_info(f"re-plan 완료: subtask {len(subtasks)}개 재생성")
+
+        # 승인 후 running 상태로 복귀
+        update_project_state(project_dir, status="running", current_task_id=task_id)
+        update_task_field(task_file, "status", "in_progress")
 
     # ─── Git: task 브랜치 생성 (Planner 후) ───
     if git_enabled:
@@ -661,10 +935,37 @@ def run_pipeline(args):
                 if not success or not plan_data:
                     log_error("Re-plan 실패. 파이프라인 중단.")
                     update_task_field(task_file, "status", "failed")
+                    update_project_state(project_dir, status="idle", last_error=task_id)
                     sys.exit(1)
 
                 save_plan_file(project_dir, task_id, plan_data)
                 new_subtasks = create_subtask_files(project_dir, task_id, plan_data)
+
+                # ─── Human Review: Replan 승인 대기 ───
+                if human_review.get("review_replan", False) and not args.dummy:
+                    plan_path = os.path.join("tasks", task_id, "plan.json")
+                    request_human_review(
+                        task_file, task_id, "replan_review",
+                        plan_path, len(new_subtasks),
+                    )
+                    timeout_hours = human_review.get("auto_approve_timeout_hours", 24)
+                    replan_result = wait_for_human_response(
+                        task_file, project_dir, task_id, timeout_hours,
+                    )
+                    if replan_result == "cancel":
+                        log_warn("사용자가 replan을 취소했습니다.")
+                        update_task_field(task_file, "status", "cancelled")
+                        update_project_state(project_dir, status="idle")
+                        sys.exit(0)
+                    elif replan_result == "modify":
+                        log_error("replan 후 재수정 요청. 에스컬레이션이 필요합니다.")
+                        update_task_field(task_file, "status", "escalated")
+                        update_project_state(project_dir, status="idle", last_error=task_id)
+                        sys.exit(1)
+                    # approve/timeout → 계속 진행
+                    update_project_state(project_dir, status="running",
+                                         current_task_id=task_id)
+                    update_task_field(task_file, "status", "in_progress")
 
                 # 새 plan의 subtask로 루프 재시작 (재귀 대신 함수 재호출)
                 log_info(f"새 plan으로 subtask {len(new_subtasks)}개 재구성")
@@ -687,6 +988,7 @@ def run_pipeline(args):
             else:
                 log_error(f"subtask {subtask_id} 실패. 파이프라인 중단.")
                 update_task_field(task_file, "status", "failed")
+                update_project_state(project_dir, status="idle", last_error=task_id)
                 sys.exit(1)
 
         # ─── Git: subtask 커밋 + push ───
@@ -744,6 +1046,8 @@ def run_pipeline_from_subtasks(agent_hub_root, project_name, task_id, task_file,
             if task.get("_needs_replan", False):
                 log_error("re-plan 후에도 실패. 에스컬레이션이 필요합니다.")
             update_task_field(task_file, "status", "failed")
+            project_dir = os.path.join(agent_hub_root, "projects", project_name)
+            update_project_state(project_dir, status="idle", last_error=task_id)
             sys.exit(1)
 
         # ─── Git: subtask 커밋 + push ───
@@ -824,11 +1128,18 @@ def finalize_task(agent_hub_root, project_name, task_id, task_file,
         except RuntimeError as e:
             log_error(f"PR 처리 실패: {e}")
             update_task_field(task_file, "status", "failed")
+            finalize_project_dir = os.path.join(agent_hub_root, "projects", project_name)
+            update_project_state(finalize_project_dir, status="idle", last_error=task_id)
             sys.exit(1)
     else:
         update_task_field(task_file, "status", "completed")
 
     update_task_field(task_file, "current_subtask", None)
+
+    # project_state.json 갱신 (TM 연동용)
+    finalize_project_dir = os.path.join(agent_hub_root, "projects", project_name)
+    update_project_state(finalize_project_dir, status="idle")
+
     log_step("파이프라인 완료")
     log_info(f"task {task_id} 완료. subtask {len(completed_subtasks)}개 처리됨.")
 

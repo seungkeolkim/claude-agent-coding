@@ -52,6 +52,10 @@ default_human_review_policy:
   review_before_merge: false
   auto_approve_timeout_hours: 24
 
+# ─── task 큐 기본값 (프로젝트별 override 가능) ───
+default_task_queue:
+  wait_for_prev_task_done: true    # true: 이전 task 완료 전까지 다음 task spawn 안 함
+
 # ─── 로깅 ───
 logging:
   level: "info"

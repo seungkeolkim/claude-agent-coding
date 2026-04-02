@@ -1492,11 +1492,20 @@ config.yaml과 project.yaml의 모든 경로는 절대경로. agent가 `cd`로 c
 | **project_state.json 연동** | WFC가 project_state.json 읽기/쓰기 (3계층 동적 override) | TM |
 | **4계층 설정 merge (WFC 내부)** | WFC 자체의 testing/claude 모델 등 effective config 계산. 현재 check_safety_limits.py만 3계층 merge | TM |
 | **알림** | 완료/실패/PR생성 시 사용자 알림 (cli/slack/telegram) | TM → Phase 1.4 |
-| **Merge conflict 처리** | git_merge_pr()에 TODO. 에러 시 사용자 noti 필요 | TM |
+| **Merge conflict 처리** | git_merge_pr()에 TODO. 에러 시 사용자 noti 필요 | Phase 2 이후 |
 | **Pipeline resume** | 실패 지점부터 자동 재개 (run_pipeline_from_subtasks() 있으나 TM 연동 필요) | TM |
+| **Chatbot 레이어** | TM 앞단 대화형 인터페이스. 자연어→구조화 명령 변환, 프로젝트 자동 식별 | Phase 1.4 |
+| **Chatbot 세션 관리** | ~20턴 도달 시 Claude compact 방식으로 대화 요약(compress) 후 요약+최근 대화+project context로 세션 유지. 프로젝트 전환 시 context reload, 멀티프로젝트 세션 | Phase 1.4 |
+| **user_preferences slot** | project_state.json에 사용자 선호 저장 영역 추가 (custom_instructions 등). 별도 계층 추가 없이 기존 4계층 내에서 처리 | Phase 1.4 |
+| **SQLite 전환 (선택적)** | 대화 이력, 알림 이력, task 조회 캐시 등 필요 시점에 SQLite 도입. task JSON은 source of truth 유지 | 필요 시 |
+| **프로토콜 body 정의** | Request/Response envelope, 에러 형식, 알림 이벤트 형식, 첨부파일 base64 인코딩 규격 | Phase 1.4 |
 | **E2E 테스트장비 연동** | e2e_watcher.sh, 크로스 머신 handoff, SSH 복구 | Phase 1.3 |
-| **메신저 연동** | Slack/Telegram 등 메시지 수신 → task 생성 | Phase 1.4 |
+| **메신저 연동** | Slack/Telegram 등 메시지 수신 → task 생성. Chatbot 레이어 경유 | Phase 1.4 |
 | **웹 대시보드** | Task 목록/상세/Timeline, 프로젝트별 필터링 | Phase 2 |
+| **task 순서 변경** | 큐 내 task 우선순위 변경, 새 task를 최상위로 삽입하는 기능 | TM 이후 |
+| **강제 실행 옵션** | auto_merge=false, wait_for_prev_task_done=true 상태에서도 무시하고 즉시 실행하는 force 타입 요청 | TM 이후 |
+| **재알림 (re-notification)** | waiting_for_human 상태에서 특정 시간 후 응답 없으면 사용자에게 재알림 전송 | Phase 1.4 |
+| **로컬 E2E 테스트** | 브라우저가 필요 없는 E2E 테스트(API 테스트 등)는 별도 테스트장비 없이 로컬에서 실행. e2e_test에 mode: local/remote 옵션 추가 | Phase 1.3 |
 
 ### 15.4 Phase 로드맵 (현재 시점)
 

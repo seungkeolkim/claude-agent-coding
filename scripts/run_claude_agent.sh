@@ -641,7 +641,17 @@ claude --model "$MODEL" -p "${PROMPT}" --output-format json --dangerously-skip-p
 CLAUDE_PID=$!
 
 # PID 파일 생성 (agent 정보 포함)
-PID_FILE="${PID_DIR}/${CLAUDE_PID}.pid"
+# 파일명 규칙: {project}_{task}_{subtask}_{agent}_attempt-{N}.{PID}.pid
+# subtask가 없는 경우 (planner, summarizer): {project}_{task}_{agent}.{PID}.pid
+_PID_PROJECT="$(basename "$PROJECT_DIR")"
+if [[ -n "${SUBTASK_ID:-}" ]]; then
+    _PID_SUBTASK_SEQ=$(echo "$SUBTASK_ID" | sed 's/.*-//')
+    _PID_SUBTASK_SEQ=$(printf "%02d" "$_PID_SUBTASK_SEQ")
+    PID_FILENAME="${_PID_PROJECT}_${TASK_ID}_${_PID_SUBTASK_SEQ}_${AGENT_TYPE}_attempt-${ATTEMPT:-1}.${CLAUDE_PID}.pid"
+else
+    PID_FILENAME="${_PID_PROJECT}_${TASK_ID}_${AGENT_TYPE}.${CLAUDE_PID}.pid"
+fi
+PID_FILE="${PID_DIR}/${PID_FILENAME}"
 cat > "$PID_FILE" <<EOPID
 {
   "pid": ${CLAUDE_PID},

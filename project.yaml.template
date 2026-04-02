@@ -88,6 +88,11 @@ testing:
 #   review_before_merge: false      # 머지 전 사람 확인 (auto_merge=false면 PR로 대체)
 #   auto_approve_timeout_hours: 24  # 사람 응답 없으면 자동 승인까지 대기 시간
 
+# ─── task 큐 override (선택적) ───
+# config.yaml의 default_task_queue를 프로젝트별로 바꿀 수 있습니다.
+# task_queue:
+#   wait_for_prev_task_done: true    # false면 이전 task 미완료여도 다음 task 실행
+
 # ─── 알림 override (선택적) ───
 # config.yaml의 notification 기본값을 프로젝트별로 바꿀 수 있습니다.
 # notification:

@@ -1,0 +1,594 @@
+"""
+HubAPI — Agent Hub 공통 인터페이스 코어.
+
+CLI, 메신저, 웹 콘솔 모두 이 클래스를 import하여 사용한다.
+모든 상태는 파일시스템에 저장되며, DB나 네트워크 통신은 없다.
+"""
+
+import fcntl
+import glob
+import json
+import os
+import shutil
+import tempfile
+from datetime import datetime, timezone
+from typing import Optional
+
+from hub_api.models import (
+    HumanInteractionInfo,
+    ProjectStatus,
+    SubmitResult,
+    SystemStatus,
+    TaskSummary,
+)
+
+
+class HubAPI:
+    """Agent Hub 공통 인터페이스. 파일시스템 기반 task/project 관리."""
+
+    def __init__(self, agent_hub_root: str):
+        self.root = os.path.abspath(agent_hub_root)
+        self.projects_dir = os.path.join(self.root, "projects")
+
+    # ═══════════════════════════════════════════════════════════
+    # 내부 헬퍼
+    # ═══════════════════════════════════════════════════════════
+
+    def _project_dir(self, project: str) -> str:
+        """프로젝트 디렉토리 경로를 반환한다. 존재하지 않으면 예외."""
+        path = os.path.join(self.projects_dir, project)
+        if not os.path.isdir(path):
+            raise FileNotFoundError(f"프로젝트를 찾을 수 없음: {project}")
+        return path
+
+    def _tasks_dir(self, project: str) -> str:
+        """프로젝트의 tasks/ 디렉토리 경로."""
+        return os.path.join(self._project_dir(project), "tasks")
+
+    def _commands_dir(self, project: str) -> str:
+        """프로젝트의 commands/ 디렉토리 경로. 없으면 생성."""
+        path = os.path.join(self._project_dir(project), "commands")
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    def _load_json(self, path: str) -> dict:
+        """JSON 파일을 읽어 dict로 반환한다."""
+        with open(path) as f:
+            return json.load(f)
+
+    def _save_json_atomic(self, path: str, data: dict):
+        """
+        dict를 JSON 파일로 atomic하게 저장한다.
+        tmp 파일에 먼저 쓰고 os.replace로 교체하여 동시성 안전.
+        """
+        dir_path = os.path.dirname(path)
+        fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+                f.write("\n")
+            os.replace(tmp_path, path)
+        except Exception:
+            # 실패 시 tmp 정리
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
+
+    def _next_task_id(self, tasks_dir: str) -> str:
+        """
+        tasks/ 디렉토리에서 다음 task ID를 결정한다.
+        기존 task 파일들의 최대 ID + 1. flock으로 동시성 보호.
+        """
+        os.makedirs(tasks_dir, exist_ok=True)
+
+        # tasks 디렉토리에 advisory lock
+        lock_path = os.path.join(tasks_dir, ".lock")
+        lock_fd = open(lock_path, "w")
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+
+            max_id = 0
+            for name in os.listdir(tasks_dir):
+                # 파일명에서 숫자 접두사 추출: 00042-xxx.json → 42
+                if name.endswith(".json"):
+                    parts = name.split("-", 1)
+                    try:
+                        num = int(parts[0])
+                        if num > max_id:
+                            max_id = num
+                    except ValueError:
+                        continue
+
+            return f"{max_id + 1:05d}"
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
+
+    def _find_task_file(self, tasks_dir: str, task_id: str) -> Optional[str]:
+        """task ID로 task JSON 파일을 찾는다. 없으면 None."""
+        pattern = os.path.join(tasks_dir, f"{task_id}*.json")
+        matches = glob.glob(pattern)
+        if not matches:
+            return None
+        # 정확히 task_id로 시작하는 파일 (00042.json 또는 00042-설명.json)
+        for m in matches:
+            basename = os.path.basename(m)
+            prefix = basename.split("-", 1)[0].split(".")[0]
+            if prefix == task_id:
+                return m
+        return matches[0] if matches else None
+
+    def _list_projects(self) -> list:
+        """projects/ 하위의 모든 프로젝트 이름을 반환한다."""
+        if not os.path.isdir(self.projects_dir):
+            return []
+        projects = []
+        for name in sorted(os.listdir(self.projects_dir)):
+            project_yaml = os.path.join(self.projects_dir, name, "project.yaml")
+            if os.path.isfile(project_yaml):
+                projects.append(name)
+        return projects
+
+    # ═══════════════════════════════════════════════════════════
+    # task 생명주기
+    # ═══════════════════════════════════════════════════════════
+
+    def submit(self, project: str, title: str, description: str,
+               attachments: Optional[list] = None,
+               config_override: Optional[dict] = None) -> SubmitResult:
+        """
+        새 task를 생성하고 .ready sentinel을 만든다.
+
+        1. 다음 task_id 결정 (기존 최대 + 1)
+        2. task JSON 생성 (atomic write)
+        3. 첨부파일 복사 (있으면)
+        4. .ready sentinel 생성 → TM이 감지하여 WFC spawn
+        """
+        tasks_dir = self._tasks_dir(project)
+        task_id = self._next_task_id(tasks_dir)
+        now = datetime.now(timezone.utc).isoformat()
+
+        # 첨부파일 처리
+        attachment_list = []
+        if attachments:
+            attach_dir = os.path.join(
+                self._project_dir(project), "attachments", task_id
+            )
+            os.makedirs(attach_dir, exist_ok=True)
+
+            for attach in attachments:
+                src_path = attach.get("path", "")
+                filename = attach.get("filename", os.path.basename(src_path))
+                attach_type = attach.get("type", "reference")
+                attach_desc = attach.get("description", "")
+
+                if src_path and os.path.isfile(src_path):
+                    dest = os.path.join(attach_dir, filename)
+                    shutil.copy2(src_path, dest)
+
+                attachment_list.append({
+                    "filename": filename,
+                    "path": f"attachments/{task_id}/{filename}",
+                    "type": attach_type,
+                    "description": attach_desc,
+                })
+
+        # task 제목을 slug로 변환하여 파일명에 사용
+        slug = _make_slug(title)
+        task_filename = f"{task_id}-{slug}.json" if slug else f"{task_id}.json"
+        task_path = os.path.join(tasks_dir, task_filename)
+
+        # task JSON 생성
+        task_data = {
+            "task_id": task_id,
+            "project_name": project,
+            "title": title,
+            "description": description,
+            "submitted_via": "cli",
+            "submitted_at": now,
+            "status": "submitted",
+            "branch": None,
+            "attachments": attachment_list,
+            "plan_version": 0,
+            "current_subtask": None,
+            "completed_subtasks": [],
+            "counters": {
+                "total_agent_invocations": 0,
+                "replan_count": 0,
+                "current_subtask_retry": 0,
+            },
+            "config_override": config_override or {},
+            "human_interaction": None,
+            "mid_task_feedback": [],
+            "escalation_reason": None,
+            "summary": None,
+            "pr_url": None,
+        }
+
+        self._save_json_atomic(task_path, task_data)
+
+        # .ready sentinel 생성 → TM이 감지
+        ready_path = os.path.join(tasks_dir, f"{task_id}.ready")
+        with open(ready_path, "w") as f:
+            f.write(now)
+
+        return SubmitResult(
+            task_id=task_id,
+            project=project,
+            file_path=task_path,
+        )
+
+    def list_tasks(self, project: Optional[str] = None,
+                   status: Optional[str] = None) -> list:
+        """
+        task 목록을 조회한다.
+        project를 지정하면 해당 프로젝트만, 아니면 전체.
+        status를 지정하면 해당 상태만 필터링.
+        """
+        projects = [project] if project else self._list_projects()
+        results = []
+
+        for proj in projects:
+            try:
+                tasks_dir = self._tasks_dir(proj)
+            except FileNotFoundError:
+                continue
+
+            for task_file in sorted(glob.glob(os.path.join(tasks_dir, "*.json"))):
+                try:
+                    task = self._load_json(task_file)
+                except (json.JSONDecodeError, OSError):
+                    continue
+
+                task_status = task.get("status", "")
+                if status and task_status != status:
+                    continue
+
+                results.append(TaskSummary(
+                    task_id=task.get("task_id", ""),
+                    project=proj,
+                    title=task.get("title", ""),
+                    status=task_status,
+                    submitted_at=task.get("submitted_at"),
+                    current_subtask=task.get("current_subtask"),
+                    pr_url=task.get("pr_url"),
+                ))
+
+        return results
+
+    def cancel(self, project: str, task_id: str) -> bool:
+        """
+        task를 취소한다.
+        실행 중이면 commands/cancel-{task_id}.command 파일을 생성하여 WFC에 전달.
+        submitted/queued 상태면 직접 status 변경.
+        """
+        tasks_dir = self._tasks_dir(project)
+        task_file = self._find_task_file(tasks_dir, task_id)
+        if not task_file:
+            raise FileNotFoundError(f"task를 찾을 수 없음: {project}/{task_id}")
+
+        task = self._load_json(task_file)
+        current_status = task.get("status", "")
+
+        # 이미 완료/취소된 task
+        if current_status in ("completed", "cancelled", "failed"):
+            return False
+
+        # 아직 실행 전이면 직접 취소
+        if current_status in ("submitted", "queued", "waiting_for_human"):
+            task["status"] = "cancelled"
+            self._save_json_atomic(task_file, task)
+            # .ready 파일이 남아있으면 삭제
+            ready_path = os.path.join(tasks_dir, f"{task_id}.ready")
+            if os.path.exists(ready_path):
+                os.unlink(ready_path)
+            return True
+
+        # 실행 중이면 .command 파일로 WFC에 전달
+        cmd_dir = self._commands_dir(project)
+        cmd_path = os.path.join(cmd_dir, f"cancel-{task_id}.command")
+        cmd_data = {
+            "action": "cancel",
+            "task_id": task_id,
+            "requested_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._save_json_atomic(cmd_path, cmd_data)
+        return True
+
+    # ═══════════════════════════════════════════════════════════
+    # human interaction
+    # ═══════════════════════════════════════════════════════════
+
+    def pending(self, project: Optional[str] = None) -> list:
+        """
+        사용자 응답을 기다리는 human interaction 목록을 반환한다.
+        status가 'waiting_for_human'이고 응답이 아직 없는 task들.
+        """
+        projects = [project] if project else self._list_projects()
+        results = []
+
+        for proj in projects:
+            try:
+                tasks_dir = self._tasks_dir(proj)
+            except FileNotFoundError:
+                continue
+
+            for task_file in sorted(glob.glob(os.path.join(tasks_dir, "*.json"))):
+                try:
+                    task = self._load_json(task_file)
+                except (json.JSONDecodeError, OSError):
+                    continue
+
+                if task.get("status") != "waiting_for_human":
+                    continue
+
+                hi = task.get("human_interaction")
+                if not hi or hi.get("response"):
+                    continue
+
+                results.append(HumanInteractionInfo(
+                    task_id=task.get("task_id", ""),
+                    project=proj,
+                    interaction_type=hi.get("type", ""),
+                    message=hi.get("message", ""),
+                    options=hi.get("options", []),
+                    requested_at=hi.get("requested_at"),
+                    payload_path=hi.get("payload_path"),
+                ))
+
+        return results
+
+    def approve(self, project: str, task_id: str,
+                message: Optional[str] = None,
+                attachments: Optional[list] = None) -> bool:
+        """
+        plan/replan을 승인한다.
+        task JSON의 human_interaction.response에 승인 기록.
+        WFC가 이를 폴링하여 파이프라인 재개.
+        """
+        return self._respond_to_interaction(
+            project, task_id, action="approve",
+            message=message, attachments=attachments,
+        )
+
+    def reject(self, project: str, task_id: str,
+               message: str,
+               attachments: Optional[list] = None) -> bool:
+        """
+        plan/replan을 거부(수정 요청)한다.
+        message는 필수 — 왜 거부하는지, 어떻게 수정할지.
+        """
+        return self._respond_to_interaction(
+            project, task_id, action="modify",
+            message=message, attachments=attachments,
+        )
+
+    def feedback(self, project: str, task_id: str,
+                 message: str,
+                 attachments: Optional[list] = None) -> bool:
+        """
+        실행 중인 task에 피드백을 추가한다.
+        mid_task_feedback 배열에 append. WFC가 다음 agent 호출 전에 읽음.
+        """
+        tasks_dir = self._tasks_dir(project)
+        task_file = self._find_task_file(tasks_dir, task_id)
+        if not task_file:
+            raise FileNotFoundError(f"task를 찾을 수 없음: {project}/{task_id}")
+
+        task = self._load_json(task_file)
+
+        feedback_entry = {
+            "message": message,
+            "attachments": attachments or [],
+            "submitted_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        if "mid_task_feedback" not in task:
+            task["mid_task_feedback"] = []
+        task["mid_task_feedback"].append(feedback_entry)
+
+        self._save_json_atomic(task_file, task)
+        return True
+
+    def _respond_to_interaction(self, project: str, task_id: str,
+                                action: str, message: Optional[str] = None,
+                                attachments: Optional[list] = None) -> bool:
+        """human interaction에 응답을 기록하는 내부 헬퍼."""
+        tasks_dir = self._tasks_dir(project)
+        task_file = self._find_task_file(tasks_dir, task_id)
+        if not task_file:
+            raise FileNotFoundError(f"task를 찾을 수 없음: {project}/{task_id}")
+
+        task = self._load_json(task_file)
+
+        if task.get("status") != "waiting_for_human":
+            return False
+
+        hi = task.get("human_interaction")
+        if not hi:
+            return False
+
+        # 응답 기록
+        hi["response"] = {
+            "action": action,
+            "message": message or "",
+            "attachments": attachments or [],
+            "responded_at": datetime.now(timezone.utc).isoformat(),
+        }
+        task["human_interaction"] = hi
+
+        # 승인이면 상태를 planned로 되돌림 (WFC가 다음 단계 진행)
+        if action == "approve":
+            task["status"] = "planned"
+        # 거부(modify)면 WFC가 replan 처리
+        elif action == "modify":
+            task["status"] = "needs_replan"
+
+        self._save_json_atomic(task_file, task)
+        return True
+
+    # ═══════════════════════════════════════════════════════════
+    # 설정 & 제어
+    # ═══════════════════════════════════════════════════════════
+
+    def config(self, project: str, changes: dict) -> dict:
+        """
+        프로젝트 동적 설정을 변경한다.
+        project_state.json의 overrides에 deep merge.
+        update_history에 변경 이력 기록.
+
+        changes 예시: {"testing": {"unit_test": {"enabled": True}}}
+        """
+        project_dir = self._project_dir(project)
+        state_path = os.path.join(project_dir, "project_state.json")
+
+        if os.path.exists(state_path):
+            try:
+                state = self._load_json(state_path)
+            except (json.JSONDecodeError, OSError):
+                state = {"project_name": project}
+        else:
+            state = {"project_name": project}
+
+        # overrides에 deep merge
+        overrides = state.get("overrides", {})
+        overrides = _deep_merge(overrides, changes)
+        state["overrides"] = overrides
+
+        # update_history 기록
+        if "update_history" not in state:
+            state["update_history"] = []
+        state["update_history"].append({
+            "changes": changes,
+            "at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        state["last_updated"] = datetime.now(timezone.utc).isoformat()
+        self._save_json_atomic(state_path, state)
+
+        return overrides
+
+    def pause(self, project: str, task_id: Optional[str] = None) -> bool:
+        """프로젝트 또는 특정 task를 일시정지한다."""
+        return self._send_command(project, "pause", task_id)
+
+    def resume(self, project: str, task_id: Optional[str] = None) -> bool:
+        """프로젝트 또는 특정 task를 재개한다."""
+        return self._send_command(project, "resume", task_id)
+
+    def _send_command(self, project: str, action: str,
+                      task_id: Optional[str] = None) -> bool:
+        """WFC에 .command 파일을 전달하는 내부 헬퍼."""
+        cmd_dir = self._commands_dir(project)
+        filename = f"{action}-{task_id}.command" if task_id else f"{action}.command"
+        cmd_path = os.path.join(cmd_dir, filename)
+
+        cmd_data = {
+            "action": action,
+            "task_id": task_id,
+            "requested_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._save_json_atomic(cmd_path, cmd_data)
+        return True
+
+    # ═══════════════════════════════════════════════════════════
+    # 조회
+    # ═══════════════════════════════════════════════════════════
+
+    def status(self) -> SystemStatus:
+        """
+        시스템 전체 상태를 조회한다.
+        TM 실행 여부 + 프로젝트별 상태.
+        """
+        # TM PID 확인
+        tm_running = False
+        tm_pid = None
+        pids_dir = os.path.join(self.root, ".pids")
+        if os.path.isdir(pids_dir):
+            for f in os.listdir(pids_dir):
+                if f.startswith("task_manager.") and f.endswith(".pid"):
+                    # 파일명에서 PID 추출: task_manager.12345.pid → 12345
+                    try:
+                        pid = int(f.split(".")[1])
+                        # 프로세스 존재 확인
+                        os.kill(pid, 0)
+                        tm_running = True
+                        tm_pid = pid
+                    except (ValueError, IndexError, ProcessLookupError, PermissionError):
+                        pass
+
+        # pgrep fallback
+        if not tm_running:
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ["pgrep", "-f", "scripts/task_manager.py"],
+                    capture_output=True, text=True,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    pid_str = result.stdout.strip().split("\n")[0]
+                    tm_pid = int(pid_str)
+                    tm_running = True
+            except (subprocess.SubprocessError, ValueError):
+                pass
+
+        # 프로젝트별 상태
+        projects = []
+        for proj_name in self._list_projects():
+            proj_dir = os.path.join(self.projects_dir, proj_name)
+            state_path = os.path.join(proj_dir, "project_state.json")
+
+            if os.path.exists(state_path):
+                try:
+                    state = self._load_json(state_path)
+                    projects.append(ProjectStatus(
+                        name=proj_name,
+                        status=state.get("status", "unknown"),
+                        current_task_id=state.get("current_task_id"),
+                        last_error_task_id=state.get("last_error_task_id"),
+                        last_updated=state.get("last_updated"),
+                    ))
+                except (json.JSONDecodeError, OSError):
+                    projects.append(ProjectStatus(name=proj_name, status="unknown"))
+            else:
+                projects.append(ProjectStatus(name=proj_name, status="idle"))
+
+        return SystemStatus(
+            tm_running=tm_running,
+            tm_pid=tm_pid,
+            projects=projects,
+        )
+
+
+# ═══════════════════════════════════════════════════════════
+# 유틸리티
+# ═══════════════════════════════════════════════════════════
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """base dict 위에 override dict를 재귀적으로 덮어쓴다."""
+    merged = dict(base)
+    for key, value in override.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _make_slug(title: str, max_len: int = 40) -> str:
+    """
+    task 제목을 파일명에 쓸 수 있는 slug로 변환한다.
+    한국어/영문 모두 지원. 공백→하이픈, 특수문자 제거.
+    """
+    import re
+    # 파일명에 사용 불가능한 문자 제거
+    slug = re.sub(r'[<>:"/\\|?*]', '', title)
+    # 공백을 하이픈으로
+    slug = re.sub(r'\s+', '-', slug.strip())
+    # 연속 하이픈 제거
+    slug = re.sub(r'-+', '-', slug)
+    # 길이 제한
+    if len(slug) > max_len:
+        slug = slug[:max_len].rstrip('-')
+    return slug

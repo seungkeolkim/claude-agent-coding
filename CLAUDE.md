@@ -11,7 +11,7 @@ Claude Code 기반 자동 개발 시스템.
 - `scripts/` — init_project, agent 기동 래퍼
 - `config/agent_prompts/` — agent별 역할 프롬프트
 - `docs/` — 사용자용 문서 (설정 레퍼런스 등)
-- `docs_for_claude/003-agent-system-spec-v2.md` — 전체 아키텍처 명세
+- `docs_for_claude/003-agent-system-spec-v3.md` — 전체 아키텍처 명세
 
 ## 코딩 컨벤션
 - 변수/함수/파일명: 축약 금지, 이름만 보고 알 수 있게
@@ -29,21 +29,34 @@ Claude Code 기반 자동 개발 시스템.
 - agent 간 통신은 .ready sentinel 파일 기반
 - 각 agent는 subtask 단위로 새 세션 생성
 
-## Phase 1.0 사용법
+## 사용법
 ```bash
-# 1. 시스템 설정 생성
+# 시스템 설정 생성
 ./create_config.sh
 
-# 2. 프로젝트 초기화
+# 프로젝트 초기화
 ./run_agent.sh init-project
 
-# 3. task JSON 수동 작성 → projects/{name}/tasks/00001-간단한-설명.json
+# Task Manager 시작 (백그라운드)
+./run_system.sh start [--dummy]
 
-# 4. agent 수동 실행
-./run_agent.sh run coder --project my-app --task 00001
-./run_agent.sh run coder --project my-app --task 00001 --dry-run  # 프롬프트만 확인
+# task 제출 → TM이 자동으로 WFC spawn
+./run_agent.sh submit --project my-app --title "기능 구현"
+
+# task 조회 / 승인 / 거부
+./run_agent.sh list [--project my-app]
+./run_agent.sh pending
+./run_agent.sh approve 00001 --project my-app
+./run_agent.sh reject 00001 --project my-app --message "사유"
+
+# 시스템 상태 / 종료
+./run_system.sh status
+./run_system.sh stop
+
+# agent 수동 실행 (디버깅용)
+./run_agent.sh run coder --project my-app --task 00001 [--dry-run] [--dummy]
 ```
 
 ## 상세 명세가 필요하면
-- `docs_for_claude/000-agent-system-spec.md`는 deprecate 되었습니다. 읽을 필요가 없습니다.
-- 대신 상세 명세를 위해 `docs_for_claude/003-agent-system-spec-v2.md`를 읽으세요.
+- v1, v2 스펙은 `docs_history/`에 아카이브되었습니다. 읽을 필요가 없습니다.
+- 상세 명세를 위해 `docs_for_claude/003-agent-system-spec-v3.md`를 읽으세요.

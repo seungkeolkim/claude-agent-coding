@@ -8,15 +8,15 @@ Claude Code CLI 기반 자동 개발 시스템.
 ## 파이프라인
 
 ```
-Planner → 브랜치 생성 → Subtask Loop → Summarizer → PR 생성 → [auto_merge]
-                            │
-                    ┌───────┴───────┐
-                    │  Coder        │
-                    │  → Reviewer   │
-                    │  → [루프백]    │  ← retry (max_retry_per_subtask)
-                    │  → Reporter   │
-                    │  → [replan]   │  ← replan (max_replan_count)
-                    └───────────────┘
+Planner → [Plan 승인 대기] → 브랜치 생성 → Subtask Loop → Summarizer → PR 생성 → [auto_merge]
+                                                │
+                                        ┌───────┴───────┐
+                                        │  Coder        │
+                                        │  → Reviewer   │
+                                        │  → [루프백]    │  ← retry (max_retry_per_subtask)
+                                        │  → Reporter   │
+                                        │  → [replan]   │  ← replan (max_replan_count)
+                                        └───────────────┘
 ```
 
 | 단계 | Agent | 역할 |
@@ -35,43 +35,48 @@ claude-agent-coding/
 ├── config.yaml.template           # 시스템 설정 템플릿
 ├── project.yaml.template          # 프로젝트 설정 템플릿
 ├── create_config.sh               # 초기 설정 스크립트
-├── run_agent.sh                   # CLI 진입점
+├── run_agent.sh                   # CLI 진입점 (task 관리 + agent 실행)
+├── run_system.sh                  # 시스템 관리 (start/stop/status)
 ├── activate_venv.sh               # Python venv 활성화
 ├── CLAUDE.md                      # Claude Code 정적 지식
 │
 ├── scripts/
+│   ├── task_manager.py            # Task Manager 상주 프로세스
 │   ├── workflow_controller.py     # Workflow Controller (파이프라인 실행 엔진)
+│   ├── cli.py                     # CLI 프론트엔드 (argparse → hub_api)
 │   ├── run_claude_agent.sh        # Claude Code 세션 기동 래퍼
 │   ├── check_safety_limits.py     # Safety limits 체크
 │   ├── init_project.py            # 대화형 프로젝트 초기화
-│   └── e2e_watcher.sh             # 테스트장비용 감시 스크립트
+│   ├── e2e_watcher.sh             # 테스트장비용 감시 스크립트
+│   │
+│   └── hub_api/                   # 공통 인터페이스 라이브러리
+│       ├── __init__.py
+│       ├── core.py                # HubAPI 클래스 (submit, approve, reject 등)
+│       └── models.py              # 데이터 모델
 │
 ├── config/
 │   └── agent_prompts/             # 8개 agent 역할 프롬프트
-│       ├── planner.md
-│       ├── coder.md
-│       ├── reviewer.md
-│       ├── setup.md
-│       ├── unit_tester.md
-│       ├── e2e_tester.md
-│       ├── reporter.md
-│       └── summarizer.md
 │
 ├── projects/                      # 프로젝트별 디렉토리 (전체 gitignored)
 │   └── {name}/
 │       ├── project.yaml           # 프로젝트 정적 설정
 │       ├── project_state.json     # 동적 상태
-│       ├── tasks/                 # task/subtask/plan JSON
+│       ├── tasks/                 # task/subtask/plan JSON + .ready sentinel
+│       ├── commands/              # TM → WFC 명령 전달
 │       ├── handoffs/              # E2E 테스트 요청/결과
+│       ├── attachments/           # 첨부파일
 │       ├── logs/                  # 세션 로그
 │       └── archive/               # 완료된 task 아카이브
 │
 ├── docs/                          # 사용자용 문서
-│   └── configuration-reference.md # 설정 레퍼런스 (전체 항목 표)
+│   └── configuration-reference.md
 │
-└── docs_for_claude/               # Claude 세션용 내부 문서
-    ├── 003-agent-system-spec-v2.md    # 전체 아키텍처 명세
-    └── 005-design-history-archive.md  # 설계 히스토리 아카이브
+├── docs_for_claude/               # Claude 세션용 내부 문서
+│   ├── 003-agent-system-spec-v3.md    # 전체 아키텍처 명세 (현행)
+│   └── 005-design-history-archive.md
+│
+└── docs_history/                  # 이전 버전 아카이브
+    └── 003-agent-system-spec-v2.md
 ```
 
 ## 사전 요구사항
@@ -105,56 +110,74 @@ source activate_venv.sh
 대화형으로 프로젝트 이름, 설명, 코드베이스 경로, git 연동 여부를 입력하면
 `projects/{name}/` 디렉토리와 `project.yaml`, `project_state.json`이 자동 생성됩니다.
 
-### 3. Task JSON 작성
-
-`projects/{name}/tasks/00001-login-feature.json` 형식으로 수동 작성합니다:
-
-```json
-{
-  "task_id": "00001",
-  "project_name": "my-app",
-  "title": "로그인 기능 구현",
-  "description": "OAuth 포함 로그인 페이지를 구현해주세요.",
-  "submitted_via": "manual",
-  "submitted_at": "2026-04-02T10:00:00Z",
-  "status": "submitted",
-  "branch": null,
-  "attachments": [],
-  "plan_version": 0,
-  "current_subtask": null,
-  "completed_subtasks": [],
-  "counters": {
-    "total_agent_invocations": 0,
-    "replan_count": 0,
-    "current_subtask_retry": 0
-  },
-  "config_override": {},
-  "human_interaction": null,
-  "mid_task_feedback": [],
-  "escalation_reason": null
-}
-```
-
-### 4. 실행
+### 3. Task Manager 시작
 
 ```bash
-# 전체 파이프라인 실행 (Planner → Subtask Loop → Summarizer → PR)
-./run_agent.sh pipeline --project my-app --task 00001
+# 백그라운드로 TM 시작
+./run_system.sh start
 
 # 더미 모드 (Claude 호출 없이 파이프라인 흐름만 검증)
-./run_agent.sh pipeline --project my-app --task 00001 --dummy
+./run_system.sh start --dummy
+```
 
+### 4. Task 제출 및 관리
+
+```bash
+# task 제출 → TM이 자동으로 WFC spawn → 파이프라인 실행
+./run_agent.sh submit --project my-app --title "로그인 기능 구현" --description "OAuth 포함"
+
+# 첨부파일과 함께 제출
+./run_agent.sh submit --project my-app --title "UI 수정" --attach mockup.png
+
+# task 목록 확인
+./run_agent.sh list [--project my-app] [--status in_progress]
+
+# 대기 중인 승인 요청 확인 (plan 검토 등)
+./run_agent.sh pending
+
+# plan 승인 / 거부
+./run_agent.sh approve 00001 --project my-app
+./run_agent.sh reject 00001 --project my-app --message "subtask 2번 범위 축소 필요"
+
+# 실행 중 task에 피드백
+./run_agent.sh feedback 00001 --project my-app --message "remember me 체크박스도 추가해줘"
+
+# 프로젝트 설정 동적 변경
+./run_agent.sh config --project my-app --set "testing.unit_test.enabled=true"
+
+# task 제어
+./run_agent.sh pause --project my-app [00001]
+./run_agent.sh resume --project my-app [00001]
+./run_agent.sh cancel 00001 --project my-app
+```
+
+### 5. 시스템 상태 확인 및 종료
+
+```bash
+# 시스템 상태 (TM + 프로젝트별 상태)
+./run_system.sh status
+
+# TM 종료 (실행 중 WFC는 완료 대기)
+./run_system.sh stop
+
+# 즉시 강제 종료
+./run_system.sh stop --force
+```
+
+### 6. 디버깅용 수동 실행
+
+```bash
 # 개별 agent 실행
 ./run_agent.sh run coder --project my-app --task 00001 --subtask 00001-1
 
+# 전체 파이프라인 수동 실행
+./run_agent.sh pipeline --project my-app --task 00001 [--dummy]
+
 # dry-run: Claude 호출 없이 조합된 프롬프트만 확인
 ./run_agent.sh run planner --project my-app --task 00001 --dry-run
-
-# 도움말
-./run_agent.sh help
 ```
 
-### 5. 결과 확인
+### 7. 결과 확인
 
 - 로그: `projects/{name}/logs/{task_id}/` 아래에 agent별 로그 파일 생성
 - PR: `auto_merge=true`면 자동 머지, `false`면 PR만 생성 (status=`pending_review`)
@@ -173,9 +196,9 @@ config.yaml (시스템 기본값)
 
 | 계층 | 파일 | 용도 |
 |------|------|------|
-| 시스템 | `config.yaml` | 장비 정보, Claude 모델, 안전 제한 기본값 |
-| 프로젝트 정적 | `project.yaml` | 코드베이스 경로, git, 테스트 설정 |
-| 프로젝트 동적 | `project_state.json` | 런타임 override (자연어로 변경 가능) |
+| 시스템 | `config.yaml` | 장비 정보, Claude 모델, 안전 제한, task 큐 기본값 |
+| 프로젝트 정적 | `project.yaml` | 코드베이스 경로, git, 테스트, human review 설정 |
+| 프로젝트 동적 | `project_state.json` | 런타임 override (`config` 명령으로 변경) |
 | Task 일시 | `task.config_override` | 해당 task에만 적용 |
 
 전체 설정 항목 상세는 [`docs/configuration-reference.md`](docs/configuration-reference.md)를 참고하세요.
@@ -190,29 +213,29 @@ config.yaml (시스템 기본값)
 | 자동 머지 | `auto_merge: true`면 `gh pr merge`, `false`면 PR만 생성 |
 | 인증 | project.yaml의 `auth_token`으로 `gh` CLI 자동 로그인 |
 
-git provider는 `github`, `bitbucket`, `gitlab` 설정 가능 (현재 github만 구현).
-
 ## 핵심 설계 원칙
 
 - **멀티 프로젝트:** 하나의 agent-hub 인스턴스가 여러 프로젝트를 동시 관리
 - **파일 기반 통신:** JSON 파일 + `.ready` sentinel, 내부 port/소켓 없음
+- **human review:** Planner/Replan 결과 승인 대기, auto_approve timeout 지원
+- **task 큐 블로킹:** 이전 task 미완료 시 다음 task 자동 차단 (설정으로 비활성화 가능)
 - **책임 범위 기반 subtask:** 파일 격리가 아닌 primary_responsibility로 분할
 - **테스트 선택적 bypass:** 비활성화된 agent는 pipeline에 아예 포함하지 않음
 - **Usage 기반 제어:** 5시간 세션 사용량 threshold로 과사용 방지
-- **CLAUDE.md는 정적 지식만:** 동적 상태는 JSON 파일로 관리
 
 ## Phase 로드맵
 
 | Phase | 목표 | 상태 |
 |-------|------|------|
 | **1.0** | 수동 pipeline 실행 + git 자동화 | **완료** |
-| **TM** | Task Manager (CLI 인터페이스, WFC 연동, human review) | **다음** |
-| 1.3 | 테스트장비 연동 (E2E) | 예정 |
-| 1.4 | 메신저 연동 | 예정 |
-| 2.0 | 웹 모니터링 대시보드 | 예정 |
+| **TM** | Task Manager + CLI + hub_api + human review + 큐 블로킹 | **완료** |
+| 1.3 | E2E 테스트장비 연동, 로컬 E2E | 예정 |
+| 1.4 | 운영 안정화: 알림, Pipeline resume, Usage check | 예정 |
+| 1.5 | Chatbot + 메신저 연동 | 예정 |
+| 2.0 | 웹 모니터링 대시보드 + 고급 기능 | 예정 |
 
 ## 상세 명세
 
-- 전체 아키텍처: [`docs_for_claude/003-agent-system-spec-v2.md`](docs_for_claude/003-agent-system-spec-v2.md)
+- 전체 아키텍처: [`docs_for_claude/003-agent-system-spec-v3.md`](docs_for_claude/003-agent-system-spec-v3.md)
 - 설정 레퍼런스: [`docs/configuration-reference.md`](docs/configuration-reference.md)
 - 설계 히스토리: [`docs_for_claude/005-design-history-archive.md`](docs_for_claude/005-design-history-archive.md)
