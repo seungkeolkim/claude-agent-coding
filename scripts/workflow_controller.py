@@ -175,6 +175,36 @@ def load_yaml(path):
         return yaml.safe_load(f) or {}
 
 
+# ─── project_state.json 헬퍼 ───
+
+
+def update_project_state(project_dir, status, current_task_id=None, last_error=None):
+    """
+    project_state.json의 WFC 관련 필드를 갱신한다.
+    기존 파일이 있으면 merge, 없으면 새로 생성한다.
+    TM이 이 파일을 읽어 프로젝트 상태를 파악한다.
+    """
+    state_path = os.path.join(project_dir, "project_state.json")
+
+    if os.path.exists(state_path):
+        try:
+            state = load_json(state_path)
+        except (json.JSONDecodeError, OSError):
+            state = {"project_name": os.path.basename(project_dir)}
+    else:
+        state = {"project_name": os.path.basename(project_dir)}
+
+    state["status"] = status
+    state["current_task_id"] = current_task_id
+    state["last_updated"] = datetime.now(timezone.utc).isoformat()
+
+    if last_error:
+        state["last_error_task_id"] = last_error
+
+    save_json(state_path, state)
+    log_info(f"project_state.json 갱신: status={status}, task={current_task_id}")
+
+
 # ─── Git 헬퍼 ───
 
 
@@ -546,6 +576,9 @@ def run_pipeline(args):
 
     log_step(f"파이프라인 시작: project={args.project} task={task_id}")
 
+    # project_state.json 갱신 (TM 연동용)
+    update_project_state(project_dir, status="running", current_task_id=task_id)
+
     # pipeline 구성 결정
     pipeline = determine_pipeline(project_yaml)
     log_info(f"pipeline 구성: {' → '.join(pipeline)}")
@@ -584,6 +617,7 @@ def run_pipeline(args):
     if not success or not plan_data:
         log_error("Planner 실패. 파이프라인 중단.")
         update_task_field(task_file, "status", "failed")
+        update_project_state(project_dir, status="idle", last_error=task_id)
         sys.exit(1)
 
     # plan 저장 및 subtask 파일 생성
@@ -593,6 +627,7 @@ def run_pipeline(args):
     if not subtasks:
         log_error("Planner가 subtask를 생성하지 않았습니다.")
         update_task_field(task_file, "status", "failed")
+        update_project_state(project_dir, status="idle", last_error=task_id)
         sys.exit(1)
 
     log_info(f"subtask {len(subtasks)}개 생성됨")
@@ -661,6 +696,7 @@ def run_pipeline(args):
                 if not success or not plan_data:
                     log_error("Re-plan 실패. 파이프라인 중단.")
                     update_task_field(task_file, "status", "failed")
+                    update_project_state(project_dir, status="idle", last_error=task_id)
                     sys.exit(1)
 
                 save_plan_file(project_dir, task_id, plan_data)
@@ -687,6 +723,7 @@ def run_pipeline(args):
             else:
                 log_error(f"subtask {subtask_id} 실패. 파이프라인 중단.")
                 update_task_field(task_file, "status", "failed")
+                update_project_state(project_dir, status="idle", last_error=task_id)
                 sys.exit(1)
 
         # ─── Git: subtask 커밋 + push ───
@@ -744,6 +781,8 @@ def run_pipeline_from_subtasks(agent_hub_root, project_name, task_id, task_file,
             if task.get("_needs_replan", False):
                 log_error("re-plan 후에도 실패. 에스컬레이션이 필요합니다.")
             update_task_field(task_file, "status", "failed")
+            project_dir = os.path.join(agent_hub_root, "projects", project_name)
+            update_project_state(project_dir, status="idle", last_error=task_id)
             sys.exit(1)
 
         # ─── Git: subtask 커밋 + push ───
@@ -824,11 +863,18 @@ def finalize_task(agent_hub_root, project_name, task_id, task_file,
         except RuntimeError as e:
             log_error(f"PR 처리 실패: {e}")
             update_task_field(task_file, "status", "failed")
+            finalize_project_dir = os.path.join(agent_hub_root, "projects", project_name)
+            update_project_state(finalize_project_dir, status="idle", last_error=task_id)
             sys.exit(1)
     else:
         update_task_field(task_file, "status", "completed")
 
     update_task_field(task_file, "current_subtask", None)
+
+    # project_state.json 갱신 (TM 연동용)
+    finalize_project_dir = os.path.join(agent_hub_root, "projects", project_name)
+    update_project_state(finalize_project_dir, status="idle")
+
     log_step("파이프라인 완료")
     log_info(f"task {task_id} 완료. subtask {len(completed_subtasks)}개 처리됨.")
 

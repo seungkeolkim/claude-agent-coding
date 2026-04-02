@@ -56,8 +56,8 @@ show_help() {
     echo ""
     echo "task 파일명 규칙: 00001-간단한-설명.json (--task에는 00001만 지정)"
     echo ""
-    echo "Phase 1.1+ 명령 (미구현):"
-    echo "  start, stop, status, submit, pending, approve, reject, list"
+    echo "시스템 관리 (./run_system.sh):"
+    echo "  start, stop, status → ./run_system.sh 참고"
 }
 
 # ═══════════════════════════════════════════════════════════
@@ -76,14 +76,21 @@ cmd_kill_all() {
     log_info "=== Agent Hub 프로세스 종료 ==="
 
     # 1단계: PID 파일 기반 종료 (우리가 추적하는 프로세스)
+    # 파일명 규칙: {info}.{PID}.pid — PID는 파일명 마지막에서 추출
     if [[ -d "$pid_dir" ]] && ls "$pid_dir"/*.pid &>/dev/null; then
         for pid_file in "$pid_dir"/*.pid; do
+            local basename
+            basename=$(basename "$pid_file")
+            # 파일명에서 PID 추출: xxx.12345.pid → 12345
             local pid
-            pid=$(python3 -c "import json; print(json.load(open('${pid_file}'))['pid'])" 2>/dev/null || echo "")
-            local agent_type
-            agent_type=$(python3 -c "import json; print(json.load(open('${pid_file}'))['agent_type'])" 2>/dev/null || echo "unknown")
-            local task_id
-            task_id=$(python3 -c "import json; print(json.load(open('${pid_file}'))['task_id'])" 2>/dev/null || echo "unknown")
+            pid=$(echo "$basename" | sed 's/.*\.\([0-9]*\)\.pid$/\1/')
+            # PID 부분이 없는 파일명이면 (구 형식) JSON에서 읽기 시도
+            if [[ -z "$pid" ]] || ! [[ "$pid" =~ ^[0-9]+$ ]]; then
+                pid=$(python3 -c "import json; print(json.load(open('${pid_file}'))['pid'])" 2>/dev/null || echo "")
+            fi
+            # 파일명에서 정보 표시 (PID 부분 제거)
+            local display_name
+            display_name=$(echo "$basename" | sed 's/\.[0-9]*\.pid$//')
 
             if [[ -z "$pid" ]]; then
                 rm -f "$pid_file"
@@ -94,7 +101,7 @@ cmd_kill_all() {
             if kill -0 "$pid" 2>/dev/null; then
                 # 프로세스 그룹 전체를 종료 (자식 프로세스 포함)
                 kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
-                log_info "종료: PID=${pid} agent=${agent_type} task=${task_id}"
+                log_info "종료: ${display_name} (PID ${pid})"
                 killed=$((killed + 1))
             else
                 stale=$((stale + 1))
@@ -404,9 +411,13 @@ case "$COMMAND" in
         shift
         cmd_kill_all "$@"
         ;;
-    start|stop|status|submit|pending|approve|reject|list)
-        log_warn "'${COMMAND}' 명령은 Phase 1.1+에서 구현 예정입니다."
-        log_warn "현재 Phase 1.0에서는 run, init-project, kill-all만 사용 가능합니다."
+    start|stop|status)
+        log_warn "'${COMMAND}' 명령은 ./run_system.sh 로 이동되었습니다."
+        log_warn "사용법: ./run_system.sh ${COMMAND}"
+        exit 1
+        ;;
+    submit|pending|approve|reject|list)
+        log_warn "'${COMMAND}' 명령은 아직 구현 예정입니다."
         exit 1
         ;;
     *)
