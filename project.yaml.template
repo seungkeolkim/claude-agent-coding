@@ -23,11 +23,13 @@ codebase:
 # enabled: false면 branch/commit/PR 등 모든 git 작업을 건너뜀
 git:
   enabled: true
+  provider: "github"              # github | bitbucket | gitlab (현재 github만 구현)
   remote: "origin"
   author_name: "agent-bot"
   author_email: "agent@example.com"
-  auto_merge: false
-  pr_target_branch: "develop"
+  auto_merge: false               # true: PR 생성 후 자동 머지 / false: PR만 생성 (pending_review)
+  pr_target_branch: "develop"     # PR의 base branch
+  auth_token: ""                  # provider 인증 토큰 (GitHub PAT 등)
 
 # ─── 테스트 ───
 # 각 항목의 enabled 값은 project_state.json에서 동적으로 변경 가능
@@ -56,13 +58,39 @@ testing:
     suites: []
     include_e2e: false    # e2e_test.enabled=false면 이 값도 무시됨
 
-# ─── 시스템 기본값 override (선택적, 필요한 항목만 작성) ───
+# ─── 안전 제한 override (선택적) ───
+# config.yaml의 default_limits를 프로젝트 레벨에서 덮어쓸 수 있습니다.
+# 필요한 항목만 작성하면 나머지는 시스템 기본값을 따릅니다.
 # limits:
-#   max_subtask_count: 10
+#   max_subtask_count: 5            # Planner가 만들 수 있는 최대 subtask 수
+#   max_retry_per_subtask: 3        # subtask당 Coder 재시도 횟수
+#   max_replan_count: 2             # task당 replan 허용 횟수 (초과 시 escalation)
+#   max_total_agent_invocations: 30 # task당 전체 agent 호출 총횟수
+#   max_task_duration_hours: 4      # task 시작 후 최대 허용 시간
+
+# ─── Claude 모델 override (선택적) ───
+# config.yaml의 claude 설정을 프로젝트별로 바꿀 수 있습니다.
 # claude:
-#   coder_model: "opus"
+#   planner_model: "opus"
+#   coder_model: "sonnet"
+#   reviewer_model: "opus"
+#   setup_model: "sonnet"
+#   unit_tester_model: "sonnet"
+#   e2e_tester_model: "sonnet"
+#   reporter_model: "sonnet"
+#   max_turns_per_session: 50
+
+# ─── 사람 개입 정책 override (선택적) ───
+# config.yaml의 default_human_review_policy를 프로젝트별로 바꿀 수 있습니다.
 # human_review_policy:
-#   review_plan: false
+#   review_plan: true               # Planner 결과를 사람이 확인 후 진행
+#   review_replan: true             # replan 발생 시 사람이 확인 후 진행
+#   review_before_merge: false      # 머지 전 사람 확인 (auto_merge=false면 PR로 대체)
+#   auto_approve_timeout_hours: 24  # 사람 응답 없으면 자동 승인까지 대기 시간
+
+# ─── 알림 override (선택적) ───
+# config.yaml의 notification 기본값을 프로젝트별로 바꿀 수 있습니다.
 # notification:
-#   channel: "telegram"
-#   telegram_chat_id: "-100123456789"
+#   channel: "cli"                  # cli | slack | telegram (Phase 1.4+)
+#   slack_webhook_url: ""
+#   telegram_chat_id: ""

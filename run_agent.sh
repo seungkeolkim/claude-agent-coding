@@ -22,7 +22,7 @@ log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
 
 # ─── 유효한 agent 목록 ───
-VALID_AGENTS="planner coder reviewer setup unit_tester e2e_tester reporter"
+VALID_AGENTS="planner coder reviewer setup unit_tester e2e_tester reporter summarizer"
 
 # ─── 시스템 설정 파일 ───
 CONFIG_FILE="${SCRIPT_DIR}/config.yaml"
@@ -37,9 +37,12 @@ show_help() {
     echo "  ./run_agent.sh <command> [options]"
     echo ""
     echo "명령:"
-    echo "  run <agent_type> --project <name> --task <id> [--subtask <id>] [--dry-run]"
+    echo "  run <agent_type> --project <name> --task <id> [--subtask <id>] [--dry-run] [--dummy]"
     echo "                       수동으로 agent 하나 실행"
+    echo "  pipeline --project <name> --task <id> [--dummy] [--dry-run]"
+    echo "                       전체 파이프라인 자동 실행 (Planner → Subtask Loop)"
     echo "  init-project         대화형 프로젝트 초기화"
+    echo "  kill-all [--force]   모든 agent 프로세스 종료 (claude -p 포함)"
     echo "  help                 이 도움말 표시"
     echo ""
     echo "agent_type:"
@@ -47,12 +50,93 @@ show_help() {
     echo ""
     echo "예시:"
     echo "  ./run_agent.sh init-project"
-    echo "  ./run_agent.sh run coder --project my-app --task TASK-001"
-    echo "  ./run_agent.sh run coder --project my-app --task TASK-001 --subtask TASK-001-1"
-    echo "  ./run_agent.sh run coder --project my-app --task TASK-001 --dry-run"
+    echo "  ./run_agent.sh run coder --project my-app --task 00001"
+    echo "  ./run_agent.sh run coder --project my-app --task 00001 --subtask 00001-1"
+    echo "  ./run_agent.sh run coder --project my-app --task 00001 --dry-run"
+    echo ""
+    echo "task 파일명 규칙: 00001-간단한-설명.json (--task에는 00001만 지정)"
     echo ""
     echo "Phase 1.1+ 명령 (미구현):"
     echo "  start, stop, status, submit, pending, approve, reject, list"
+}
+
+# ═══════════════════════════════════════════════════════════
+# kill-all 명령
+# ═══════════════════════════════════════════════════════════
+cmd_kill_all() {
+    local force=false
+    if [[ "${1:-}" == "--force" ]]; then
+        force=true
+    fi
+    local pid_dir="${SCRIPT_DIR}/.pids"
+    local killed=0
+    local stale=0
+
+    echo ""
+    log_info "=== Agent Hub 프로세스 종료 ==="
+
+    # 1단계: PID 파일 기반 종료 (우리가 추적하는 프로세스)
+    if [[ -d "$pid_dir" ]] && ls "$pid_dir"/*.pid &>/dev/null; then
+        for pid_file in "$pid_dir"/*.pid; do
+            local pid
+            pid=$(python3 -c "import json; print(json.load(open('${pid_file}'))['pid'])" 2>/dev/null || echo "")
+            local agent_type
+            agent_type=$(python3 -c "import json; print(json.load(open('${pid_file}'))['agent_type'])" 2>/dev/null || echo "unknown")
+            local task_id
+            task_id=$(python3 -c "import json; print(json.load(open('${pid_file}'))['task_id'])" 2>/dev/null || echo "unknown")
+
+            if [[ -z "$pid" ]]; then
+                rm -f "$pid_file"
+                continue
+            fi
+
+            # 프로세스가 실제로 살아있는지 확인
+            if kill -0 "$pid" 2>/dev/null; then
+                # 프로세스 그룹 전체를 종료 (자식 프로세스 포함)
+                kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+                log_info "종료: PID=${pid} agent=${agent_type} task=${task_id}"
+                killed=$((killed + 1))
+            else
+                stale=$((stale + 1))
+            fi
+            rm -f "$pid_file"
+        done
+    fi
+
+    # 2단계: 잔여 claude -p 프로세스 정리 (PID 파일 없이 남은 것들)
+    local orphan_pids
+    orphan_pids=$(pgrep -f "claude.*--dangerously-skip-permissions" 2>/dev/null || true)
+    if [[ -n "$orphan_pids" ]]; then
+        echo ""
+        log_warn "PID 파일 없는 잔여 claude 프로세스 발견:"
+        echo "$orphan_pids" | while read -r opid; do
+            local cmd
+            cmd=$(ps -p "$opid" -o args= 2>/dev/null || echo "unknown")
+            log_warn "  PID=${opid}: ${cmd:0:80}"
+        done
+
+        echo ""
+        local answer="Y"
+        if [[ "$force" != "true" ]]; then
+            read -rp "잔여 프로세스도 종료할까요? (Y/n) " answer
+        fi
+        if [[ "${answer:-Y}" =~ ^[Yy]?$ ]]; then
+            echo "$orphan_pids" | while read -r opid; do
+                kill "$opid" 2>/dev/null || true
+                killed=$((killed + 1))
+            done
+            log_info "잔여 프로세스 종료 완료"
+        fi
+    fi
+
+    # 3단계: PID 디렉토리 정리
+    if [[ -d "$pid_dir" ]]; then
+        rm -f "$pid_dir"/*.pid 2>/dev/null
+    fi
+
+    echo ""
+    log_info "결과: ${killed}개 종료, ${stale}개 이미 종료된 PID 정리"
+    echo ""
 }
 
 # ═══════════════════════════════════════════════════════════
@@ -87,6 +171,8 @@ cmd_run() {
     local task_id=""
     local subtask_id=""
     local dry_run=false
+    local dummy=false
+    local force_result=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -105,6 +191,14 @@ cmd_run() {
             --dry-run)
                 dry_run=true
                 shift
+                ;;
+            --dummy)
+                dummy=true
+                shift
+                ;;
+            --force-result)
+                force_result="$2"
+                shift 2
                 ;;
             *)
                 log_error "알 수 없는 옵션: $1"
@@ -126,7 +220,7 @@ cmd_run() {
     # config.yaml 존재 확인
     if [[ ! -f "$CONFIG_FILE" ]]; then
         log_error "시스템 설정 파일이 없습니다: ${CONFIG_FILE}"
-        log_error "./create_config_and_env.sh 를 먼저 실행하세요."
+        log_error "./create_config.sh 를 먼저 실행하세요."
         exit 1
     fi
 
@@ -144,18 +238,25 @@ cmd_run() {
         exit 1
     fi
 
-    # task JSON 확인
-    local task_file="${project_dir}/tasks/${task_id}.json"
-    if [[ ! -f "$task_file" ]]; then
-        log_error "task 파일이 없습니다: ${task_file}"
+    # task JSON 확인 (00001-*.json 패턴 지원)
+    local task_file
+    task_file=$(find "${project_dir}/tasks" -maxdepth 1 -name "${task_id}-*.json" -o -name "${task_id}.json" 2>/dev/null | head -1)
+    if [[ -z "$task_file" || ! -f "$task_file" ]]; then
+        log_error "task 파일이 없습니다: ${project_dir}/tasks/${task_id}[-*].json"
         log_error "task JSON을 수동으로 작성해서 넣어주세요."
         exit 1
     fi
 
     # subtask JSON 확인 (지정된 경우)
+    # subtask_id 형식: {task_id}-{num} (예: 00001-1)
+    # 파일 위치: tasks/{task_id}/subtask-{num zero-padded}.json
     local subtask_file=""
     if [[ -n "$subtask_id" ]]; then
-        subtask_file="${project_dir}/tasks/${subtask_id}.json"
+        local subtask_num
+        subtask_num=$(echo "$subtask_id" | sed 's/.*-//')
+        local subtask_num_padded
+        subtask_num_padded=$(printf "%02d" "$subtask_num")
+        subtask_file="${project_dir}/tasks/${task_id}/subtask-${subtask_num_padded}.json"
         if [[ ! -f "$subtask_file" ]]; then
             log_error "subtask 파일이 없습니다: ${subtask_file}"
             exit 1
@@ -172,6 +273,12 @@ cmd_run() {
     fi
     if [[ "$dry_run" == "true" ]]; then
         log_warn "  DRY-RUN 모드 (claude 호출 없이 프롬프트만 출력)"
+    fi
+    if [[ "$dummy" == "true" ]]; then
+        log_warn "  DUMMY 모드 (claude 호출 없이 더미 JSON 출력)"
+    fi
+    if [[ -n "$force_result" ]]; then
+        log_warn "  FORCE-RESULT: ${force_result}"
     fi
     echo ""
 
@@ -197,7 +304,80 @@ cmd_run() {
         run_args+=(--dry-run)
     fi
 
+    if [[ "$dummy" == "true" ]]; then
+        run_args+=(--dummy)
+    fi
+
+    if [[ -n "$force_result" ]]; then
+        run_args+=(--force-result "$force_result")
+    fi
+
     exec "${run_args[@]}"
+}
+
+# ═══════════════════════════════════════════════════════════
+# pipeline 명령
+# ═══════════════════════════════════════════════════════════
+cmd_pipeline() {
+    local project_name=""
+    local task_id=""
+    local dummy=false
+    local dry_run=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --project)
+                project_name="$2"
+                shift 2
+                ;;
+            --task)
+                task_id="$2"
+                shift 2
+                ;;
+            --dummy)
+                dummy=true
+                shift
+                ;;
+            --dry-run)
+                dry_run=true
+                shift
+                ;;
+            *)
+                log_error "알 수 없는 옵션: $1"
+                exit 1
+                ;;
+        esac
+    done
+
+    if [[ -z "$project_name" ]]; then
+        log_error "--project 옵션이 필요합니다."
+        exit 1
+    fi
+    if [[ -z "$task_id" ]]; then
+        log_error "--task 옵션이 필요합니다."
+        exit 1
+    fi
+
+    # venv 활성화 (PyYAML 필요)
+    if [[ -f "${SCRIPT_DIR}/activate_venv.sh" ]]; then
+        source "${SCRIPT_DIR}/activate_venv.sh"
+    fi
+
+    local pipeline_args=(
+        python3 "${SCRIPT_DIR}/scripts/workflow_controller.py"
+        --project "$project_name"
+        --task "$task_id"
+    )
+
+    if [[ "$dummy" == "true" ]]; then
+        pipeline_args+=(--dummy)
+    fi
+
+    if [[ "$dry_run" == "true" ]]; then
+        pipeline_args+=(--dry-run)
+    fi
+
+    exec "${pipeline_args[@]}"
 }
 
 # ═══════════════════════════════════════════════════════════
@@ -216,9 +396,17 @@ case "$COMMAND" in
     help|--help|-h)
         show_help
         ;;
+    pipeline)
+        shift
+        cmd_pipeline "$@"
+        ;;
+    kill-all)
+        shift
+        cmd_kill_all "$@"
+        ;;
     start|stop|status|submit|pending|approve|reject|list)
         log_warn "'${COMMAND}' 명령은 Phase 1.1+에서 구현 예정입니다."
-        log_warn "현재 Phase 1.0에서는 run과 init-project만 사용 가능합니다."
+        log_warn "현재 Phase 1.0에서는 run, init-project, kill-all만 사용 가능합니다."
         exit 1
         ;;
     *)

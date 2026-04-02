@@ -17,7 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AGENT_HUB_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # ─── 유효한 agent 목록 ───
-VALID_AGENTS="planner coder reviewer setup unit_tester e2e_tester reporter"
+VALID_AGENTS="planner coder reviewer setup unit_tester e2e_tester reporter summarizer"
 
 # ─── 인자 파싱 ───
 AGENT_TYPE="${1:?agent_type을 지정하세요 (planner|coder|reviewer|setup|unit_tester|e2e_tester|reporter)}"
@@ -28,6 +28,8 @@ PROJECT_YAML=""
 TASK_FILE=""
 SUBTASK_FILE=""
 DRY_RUN=false
+DUMMY=false
+FORCE_RESULT=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -50,6 +52,14 @@ while [[ $# -gt 0 ]]; do
         --dry-run)
             DRY_RUN=true
             shift
+            ;;
+        --dummy)
+            DUMMY=true
+            shift
+            ;;
+        --force-result)
+            FORCE_RESULT="$2"
+            shift 2
             ;;
         *)
             echo "[ERROR] 알 수 없는 옵션: $1" >&2
@@ -163,25 +173,86 @@ PROJECT_DIR="$(dirname "$PROJECT_YAML")"
 LOG_DIR="${PROJECT_DIR}/logs/${TASK_ID}"
 mkdir -p "$LOG_DIR"
 
+# ─── 파이프라인 단계 넘버링 ───
+# 전체 파이프라인 순서에 맞게 번호를 부여한다.
+# 테스트가 비활성화되어 실행되지 않아도 번호는 고정이다.
+get_step_number() {
+    case "$1" in
+        planner)      echo "01" ;;
+        coder)        echo "02" ;;
+        reviewer)     echo "03" ;;
+        setup)        echo "04" ;;
+        unit_tester)  echo "05" ;;
+        e2e_tester)   echo "06" ;;
+        reporter)     echo "07" ;;
+        summarizer)   echo "08" ;;
+        *)            echo "99" ;;
+    esac
+}
+
+# agent 이름을 로그용 표기로 변환 (snake_case → kebab-case)
+get_step_name() {
+    case "$1" in
+        planner)      echo "planner" ;;
+        coder)        echo "coder" ;;
+        reviewer)     echo "reviewer" ;;
+        setup)        echo "setup" ;;
+        unit_tester)  echo "unit-tester" ;;
+        e2e_tester)   echo "e2e-tester" ;;
+        reporter)     echo "reporter" ;;
+        summarizer)   echo "summarizer" ;;
+        *)            echo "$1" ;;
+    esac
+}
+
+STEP_NUM=$(get_step_number "$AGENT_TYPE")
+STEP_NAME=$(get_step_name "$AGENT_TYPE")
+
 # 로그 파일명 결정
+# 형식:
+#   task-level:    {task_id}_{step}-{name}.json
+#   subtask-level: {task_id}_{subtask_num}_{step}-{name}_attempt-{N}.json
 if [[ -n "$SUBTASK_FILE" ]]; then
     SUBTASK_ID=$(python3 -c "
 import json
 with open('${SUBTASK_FILE}') as f:
     print(json.load(f).get('subtask_id', 'UNKNOWN'))
 ")
+    # subtask_id에서 순번 추출 (예: 00001-2 → 02)
+    SUBTASK_SEQ=$(python3 -c "
+sid = '${SUBTASK_ID}'
+num = sid.split('-')[-1]
+print(num.zfill(2))
+")
     # retry_count 추출해서 attempt 번호로 사용
     RETRY_COUNT=$(python3 -c "
 import json
-with open('${SUBTASK_FILE}') as f:
-    print(json.load(f).get('retry_count', 0))
+with open('${TASK_FILE}') as f:
+    task = json.load(f)
+retry = task.get('counters', {}).get('current_subtask_retry', 0)
+if retry == 0:
+    with open('${SUBTASK_FILE}') as f:
+        retry = json.load(f).get('retry_count', 0)
+print(retry)
 ")
     ATTEMPT=$((RETRY_COUNT + 1))
-    LOG_FILE="${LOG_DIR}/${AGENT_TYPE}_${SUBTASK_ID}_attempt-${ATTEMPT}.log"
+    LOG_FILE="${LOG_DIR}/${TASK_ID}_${SUBTASK_SEQ}_${STEP_NUM}-${STEP_NAME}_attempt-${ATTEMPT}.json"
 else
     SUBTASK_ID=""
-    LOG_FILE="${LOG_DIR}/${AGENT_TYPE}_${TASK_ID}.log"
+    # task-level agent: planner=00, 그 외(integration test 등)=99
+    if [[ "$AGENT_TYPE" == "planner" ]]; then
+        TASK_LEVEL_SEQ="00"
+    else
+        TASK_LEVEL_SEQ="99"
+    fi
+    LOG_FILE="${LOG_DIR}/${TASK_ID}_${TASK_LEVEL_SEQ}_${STEP_NUM}-${STEP_NAME}.json"
 fi
+
+# ─── 실행 로그 파일 (.log = 전체 stdout/stderr, .json = claude 결과만) ───
+EXEC_LOG_FILE="${LOG_FILE%.json}.log"
+
+# stdout/stderr을 터미널과 실행 로그 파일 양쪽에 기록한다
+exec > >(tee -a "$EXEC_LOG_FILE") 2>&1
 
 # ─── 프로젝트 설명 추출 ───
 PROJECT_DESCRIPTION=$(read_yaml_value "$PROJECT_YAML" "project.description")
@@ -255,6 +326,162 @@ echo "[run_claude_agent] agent=${AGENT_TYPE} task=${TASK_ID} subtask=${SUBTASK_I
 echo "[run_claude_agent] 코드베이스: ${CODEBASE_PATH}"
 echo "[run_claude_agent] 로그: ${LOG_FILE}"
 
+# ─── safety limit 체크 (dry-run, dummy 모드에서는 건너뜀) ───
+if [[ "$DRY_RUN" != "true" && "$DUMMY" != "true" ]]; then
+    python3 "${SCRIPT_DIR}/check_safety_limits.py" \
+        --config "$CONFIG_FILE" \
+        --project-yaml "$PROJECT_YAML" \
+        --task-file "$TASK_FILE" \
+        --agent-type "$AGENT_TYPE"
+
+    if [[ $? -ne 0 ]]; then
+        echo "[run_claude_agent] safety limit 초과로 실행 중단" >&2
+        exit 1
+    fi
+fi
+
+# ─── task JSON의 test_scenario에서 force_result 확인 ───
+# CLI --force-result가 없을 때만 task JSON에서 읽는다
+if [[ -z "$FORCE_RESULT" ]]; then
+    FORCE_RESULT=$(python3 -c "
+import json
+with open('${TASK_FILE}') as f:
+    task = json.load(f)
+scenario = task.get('test_scenario', {})
+agent_scenario = scenario.get('${AGENT_TYPE}', {})
+force = agent_scenario.get('force_result', '')
+at_attempt = agent_scenario.get('at_attempt', None)
+if force and at_attempt is not None:
+    # retry_count 기반으로 현재 attempt 계산
+    counters = task.get('counters', {})
+    current_attempt = counters.get('current_subtask_retry', 0) + 1
+    if current_attempt != at_attempt:
+        force = ''  # at_attempt와 현재 attempt가 다르면 정상 실행
+print(force)
+" 2>/dev/null || echo "")
+fi
+
+# ─── force-result 모드: claude 호출 없이 강제 결과 출력 ───
+if [[ -n "$FORCE_RESULT" ]]; then
+    echo ""
+    echo "========== FORCE RESULT 모드: ${FORCE_RESULT} =========="
+
+    case "${AGENT_TYPE}:${FORCE_RESULT}" in
+        planner:approve)
+            FORCED_JSON=$(cat <<EOJSON
+{
+  "action": "plan_created",
+  "task_id": "${TASK_ID}",
+  "forced": true,
+  "subtasks": [
+    {
+      "subtask_id": "${TASK_ID}-1",
+      "title": "[forced] 기본 구조 작성",
+      "primary_responsibility": "기본 파일 구조와 설정 생성",
+      "guidance": "프로젝트 초기 구조를 잡는다"
+    }
+  ]
+}
+EOJSON
+)
+            ;;
+        coder:approve)
+            FORCED_JSON=$(cat <<EOJSON
+{
+  "action": "code_complete",
+  "task_id": "${TASK_ID}",
+  "subtask_id": "${SUBTASK_ID:-none}",
+  "forced": true,
+  "changes_made": [
+    {"file": "forced_file.txt", "change_type": "created", "summary": "[forced] 강제 완료"}
+  ]
+}
+EOJSON
+)
+            ;;
+        reviewer:approve)
+            FORCED_JSON=$(cat <<EOJSON
+{
+  "action": "approved",
+  "task_id": "${TASK_ID}",
+  "subtask_id": "${SUBTASK_ID:-none}",
+  "forced": true,
+  "summary": "[forced] 강제 승인"
+}
+EOJSON
+)
+            ;;
+        reviewer:reject)
+            FORCED_JSON=$(cat <<EOJSON
+{
+  "action": "rejected",
+  "task_id": "${TASK_ID}",
+  "subtask_id": "${SUBTASK_ID:-none}",
+  "forced": true,
+  "feedback": "[forced] 강제 거절 — 루프백 테스트",
+  "issues": ["강제 거절 트리거"]
+}
+EOJSON
+)
+            ;;
+        reporter:pass)
+            FORCED_JSON=$(cat <<EOJSON
+{
+  "action": "report_complete",
+  "task_id": "${TASK_ID}",
+  "subtask_id": "${SUBTASK_ID:-none}",
+  "forced": true,
+  "verdict": "pass",
+  "needs_replan": false,
+  "summary": "[forced] 강제 통과"
+}
+EOJSON
+)
+            ;;
+        reporter:fail)
+            FORCED_JSON=$(cat <<EOJSON
+{
+  "action": "report_complete",
+  "task_id": "${TASK_ID}",
+  "subtask_id": "${SUBTASK_ID:-none}",
+  "forced": true,
+  "verdict": "fail",
+  "needs_replan": false,
+  "summary": "[forced] 강제 실패"
+}
+EOJSON
+)
+            ;;
+        reporter:replan)
+            FORCED_JSON=$(cat <<EOJSON
+{
+  "action": "report_complete",
+  "task_id": "${TASK_ID}",
+  "subtask_id": "${SUBTASK_ID:-none}",
+  "forced": true,
+  "verdict": "fail",
+  "needs_replan": true,
+  "summary": "[forced] 강제 replan 요청"
+}
+EOJSON
+)
+            ;;
+        *)
+            echo "[ERROR] 지원하지 않는 force-result 조합: ${AGENT_TYPE}:${FORCE_RESULT}" >&2
+            echo "가능한 조합:" >&2
+            echo "  planner:approve, coder:approve" >&2
+            echo "  reviewer:approve, reviewer:reject" >&2
+            echo "  reporter:pass, reporter:fail, reporter:replan" >&2
+            exit 1
+            ;;
+    esac
+
+    echo "$FORCED_JSON" | tee "$LOG_FILE"
+    echo ""
+    echo "[run_claude_agent] force-result 저장됨: ${LOG_FILE}"
+    exit 0
+fi
+
 # ─── dry-run 모드: claude 호출 대신 프롬프트 출력 ───
 if [[ "$DRY_RUN" == "true" ]]; then
     echo ""
@@ -270,6 +497,171 @@ if [[ "$DRY_RUN" == "true" ]]; then
     exit 0
 fi
 
+# ─── dummy 모드: claude 호출 대신 agent별 더미 JSON 출력 ───
+if [[ "$DUMMY" == "true" ]]; then
+    echo ""
+    echo "========== DUMMY 모드 =========="
+
+    # agent별 더미 응답 생성
+    case "$AGENT_TYPE" in
+        planner)
+            DUMMY_RESULT=$(cat <<EOJSON
+{
+  "action": "plan_created",
+  "task_id": "${TASK_ID}",
+  "subtasks": [
+    {
+      "subtask_id": "${TASK_ID}-1",
+      "title": "[dummy] 기본 구조 작성",
+      "primary_responsibility": "기본 파일 구조와 설정 생성",
+      "guidance": "프로젝트 초기 구조를 잡는다"
+    },
+    {
+      "subtask_id": "${TASK_ID}-2",
+      "title": "[dummy] 핵심 기능 구현",
+      "primary_responsibility": "주요 비즈니스 로직 구현",
+      "guidance": "${TASK_ID}-1에서 만든 구조 위에 기능을 추가한다"
+    }
+  ]
+}
+EOJSON
+)
+            ;;
+        coder)
+            DUMMY_RESULT=$(cat <<EOJSON
+{
+  "action": "code_complete",
+  "task_id": "${TASK_ID}",
+  "subtask_id": "${SUBTASK_ID:-none}",
+  "changes_made": [
+    {
+      "file": "dummy_file.txt",
+      "change_type": "created",
+      "summary": "[dummy] 더미 파일 생성"
+    }
+  ]
+}
+EOJSON
+)
+            ;;
+        reviewer)
+            DUMMY_RESULT=$(cat <<EOJSON
+{
+  "action": "approved",
+  "task_id": "${TASK_ID}",
+  "subtask_id": "${SUBTASK_ID:-none}",
+  "summary": "[dummy] 코드 리뷰 통과. 변경사항이 적절합니다."
+}
+EOJSON
+)
+            ;;
+        setup)
+            DUMMY_RESULT=$(cat <<EOJSON
+{
+  "action": "setup_complete",
+  "task_id": "${TASK_ID}",
+  "subtask_id": "${SUBTASK_ID:-none}",
+  "service_url": "http://localhost:3000",
+  "summary": "[dummy] 환경 구성 및 서비스 기동 완료"
+}
+EOJSON
+)
+            ;;
+        unit_tester)
+            DUMMY_RESULT=$(cat <<EOJSON
+{
+  "action": "tests_passed",
+  "task_id": "${TASK_ID}",
+  "subtask_id": "${SUBTASK_ID:-none}",
+  "test_results": [
+    {"suite": "dummy_suite", "passed": 3, "failed": 0, "skipped": 0}
+  ],
+  "summary": "[dummy] 단위 테스트 전체 통과"
+}
+EOJSON
+)
+            ;;
+        e2e_tester)
+            DUMMY_RESULT=$(cat <<EOJSON
+{
+  "action": "e2e_complete",
+  "task_id": "${TASK_ID}",
+  "subtask_id": "${SUBTASK_ID:-none}",
+  "overall_result": "pass",
+  "test_results": [
+    {"name": "dummy_scenario", "result": "pass", "duration_seconds": 2.1}
+  ],
+  "summary": "[dummy] E2E 테스트 통과"
+}
+EOJSON
+)
+            ;;
+        reporter)
+            DUMMY_RESULT=$(cat <<EOJSON
+{
+  "action": "report_complete",
+  "task_id": "${TASK_ID}",
+  "subtask_id": "${SUBTASK_ID:-none}",
+  "verdict": "pass",
+  "needs_replan": false,
+  "summary": "[dummy] 모든 단계 정상 완료. 커밋 가능."
+}
+EOJSON
+)
+            ;;
+        summarizer)
+            DUMMY_RESULT=$(cat <<EOJSON
+{
+  "action": "summary_complete",
+  "pr_title": "[dummy] Add feature for task ${TASK_ID}",
+  "pr_body": "## Summary\n- [dummy] Automated changes for task ${TASK_ID}\n\n## Changes\n- Dummy file modifications\n\n## Test Plan\n- Manual verification",
+  "task_summary": "[dummy] task ${TASK_ID}의 작업이 완료되었습니다."
+}
+EOJSON
+)
+            ;;
+    esac
+
+    echo "$DUMMY_RESULT" | tee "$LOG_FILE"
+    echo ""
+    echo "[run_claude_agent] dummy 결과 저장됨: ${LOG_FILE}"
+    exit 0
+fi
+
+# ─── PID 관리 디렉토리 ───
+PID_DIR="${AGENT_HUB_ROOT}/.pids"
+mkdir -p "$PID_DIR"
+
 # ─── Claude Code CLI 실행 ───
 cd "$CODEBASE_PATH"
-claude --model "$MODEL" -p "${PROMPT}" --output-format json 2>&1 | tee "$LOG_FILE"
+
+# claude를 백그라운드로 실행하고 PID를 기록한다
+# 종료 시 PID 파일을 자동 삭제하기 위해 trap을 설정한다
+claude --model "$MODEL" -p "${PROMPT}" --output-format json --dangerously-skip-permissions 2>&1 | tee "$LOG_FILE" &
+CLAUDE_PID=$!
+
+# PID 파일 생성 (agent 정보 포함)
+PID_FILE="${PID_DIR}/${CLAUDE_PID}.pid"
+cat > "$PID_FILE" <<EOPID
+{
+  "pid": ${CLAUDE_PID},
+  "agent_type": "${AGENT_TYPE}",
+  "task_id": "${TASK_ID}",
+  "subtask_id": "${SUBTASK_ID:-none}",
+  "project_dir": "${PROJECT_DIR}",
+  "started_at": "$(date -Iseconds)",
+  "log_file": "${LOG_FILE}"
+}
+EOPID
+
+echo "[run_claude_agent] PID ${CLAUDE_PID} 기록됨: ${PID_FILE}"
+
+# 프로세스 종료 시 PID 파일 정리
+cleanup_pid() {
+    rm -f "$PID_FILE"
+    echo "[run_claude_agent] PID 파일 정리됨: ${PID_FILE}"
+}
+trap cleanup_pid EXIT
+
+# claude 프로세스가 끝날 때까지 대기
+wait $CLAUDE_PID

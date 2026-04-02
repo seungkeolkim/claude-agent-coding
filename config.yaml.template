@@ -8,12 +8,10 @@
 machines:
   executor:
     ssh_key: "~/.ssh/id_rsa"
+    github_token: ""                # GitHub API/PR 자동화에 필요 시 설정 (ghp_xxxxx)
     git_credential_helper: "store"
     service_bind_address: "0.0.0.0"
   tester:
-    host: "192.168.1.100"
-    user: "user"
-    ssh_key: "~/.ssh/id_rsa_server"
     browser: "chromium"
     viewport:
       width: 1280

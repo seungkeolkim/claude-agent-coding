@@ -19,6 +19,7 @@
 
 plan JSON을 다음 구조로 생성:
 - task_id, plan_version, created_at
+- branch_name: git feature 브랜치명 (영문, 소문자, 하이픈 구분). 형식: "feature/{task_id}-{영문-설명}". 예: "feature/00002-unit-converter-webapp"
 - strategy_note: 전체 전략 설명
 - subtasks 배열: subtask_id, title, primary_responsibility, description, guidance, depends_on, require_e2e, acceptance_criteria, reference_attachments
 
