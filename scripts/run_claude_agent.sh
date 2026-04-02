@@ -237,7 +237,13 @@ print(retry)
     LOG_FILE="${LOG_DIR}/${TASK_ID}_${SUBTASK_SEQ}_${STEP_NUM}-${STEP_NAME}_attempt-${ATTEMPT}.json"
 else
     SUBTASK_ID=""
-    LOG_FILE="${LOG_DIR}/${TASK_ID}_${STEP_NUM}-${STEP_NAME}.json"
+    # task-level agent: planner=00, 그 외(integration test 등)=99
+    if [[ "$AGENT_TYPE" == "planner" ]]; then
+        TASK_LEVEL_SEQ="00"
+    else
+        TASK_LEVEL_SEQ="99"
+    fi
+    LOG_FILE="${LOG_DIR}/${TASK_ID}_${TASK_LEVEL_SEQ}_${STEP_NUM}-${STEP_NAME}.json"
 fi
 
 # ─── 프로젝트 설명 추출 ───

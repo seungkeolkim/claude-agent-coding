@@ -1,0 +1,26 @@
+{
+  "task_id": "00001",
+  "project_name": "test-project",
+  "title": "README.md 업데이트",
+  "description": "프로젝트 README.md에 간단한 소개와 설치 방법을 작성해주세요.",
+  "submitted_via": "manual",
+  "submitted_at": "2026-04-02T13:30:00Z",
+  "status": "submitted",
+  "branch": null,
+  "attachments": [],
+  "plan_version": 0,
+  "current_subtask": null,
+  "completed_subtasks": [],
+  "counters": {
+    "total_agent_invocations": 0,
+    "replan_count": 0,
+    "current_subtask_retry": 0
+  },
+  "config_override": {},
+  "human_interaction": null,
+  "mid_task_feedback": [],
+  "escalation_reason": null,
+  "test_scenario": {
+    "reviewer": {"force_result": "reject", "at_attempt": 1}
+  }
+}

@@ -247,12 +247,18 @@ cmd_run() {
         exit 1
     fi
 
-    # subtask JSON 확인 (지정된 경우, 00001-1-*.json 패턴 지원)
+    # subtask JSON 확인 (지정된 경우)
+    # subtask_id 형식: {task_id}-{num} (예: 00001-1)
+    # 파일 위치: tasks/{task_id}/subtask-{num zero-padded}.json
     local subtask_file=""
     if [[ -n "$subtask_id" ]]; then
-        subtask_file=$(find "${project_dir}/tasks" -maxdepth 1 -name "${subtask_id}-*.json" -o -name "${subtask_id}.json" 2>/dev/null | head -1)
-        if [[ -z "$subtask_file" || ! -f "$subtask_file" ]]; then
-            log_error "subtask 파일이 없습니다: ${project_dir}/tasks/${subtask_id}[-*].json"
+        local subtask_num
+        subtask_num=$(echo "$subtask_id" | sed 's/.*-//')
+        local subtask_num_padded
+        subtask_num_padded=$(printf "%02d" "$subtask_num")
+        subtask_file="${project_dir}/tasks/${task_id}/subtask-${subtask_num_padded}.json"
+        if [[ ! -f "$subtask_file" ]]; then
+            log_error "subtask 파일이 없습니다: ${subtask_file}"
             exit 1
         fi
     fi

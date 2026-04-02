@@ -182,7 +182,9 @@ def run_agent(agent_hub_root, agent_type, project_name, task_id,
             attempt = 1
         log_file = os.path.join(log_dir, f"{task_id}_{subtask_seq}_{step_num}-{step_name}_attempt-{attempt}.json")
     else:
-        log_file = os.path.join(log_dir, f"{task_id}_{step_num}-{step_name}.json")
+        # task-level agent: planner=00, 그 외=99
+        task_level_seq = "00" if agent_type == "planner" else "99"
+        log_file = os.path.join(log_dir, f"{task_id}_{task_level_seq}_{step_num}-{step_name}.json")
 
     if not os.path.exists(log_file):
         log_error(f"로그 파일을 찾을 수 없음: {log_file}")
@@ -210,16 +212,25 @@ def find_task_file(tasks_dir, task_id):
     return str(matches[0])
 
 
+def get_task_internal_dir(project_dir, task_id):
+    """WFC 내부 산출물 디렉토리 경로를 반환하고, 없으면 생성한다."""
+    internal_dir = os.path.join(project_dir, "tasks", task_id)
+    os.makedirs(internal_dir, exist_ok=True)
+    return internal_dir
+
+
 def create_subtask_files(project_dir, task_id, plan_data):
     """
     planner 결과에서 subtask JSON 파일들을 생성한다.
+    tasks/{task_id}/subtask-{순번}.json 형식으로 저장.
     """
-    tasks_dir = os.path.join(project_dir, "tasks")
+    internal_dir = get_task_internal_dir(project_dir, task_id)
     subtasks = plan_data.get("subtasks", [])
 
-    for subtask in subtasks:
+    for i, subtask in enumerate(subtasks):
         subtask_id = subtask.get("subtask_id", "")
-        subtask_file = os.path.join(tasks_dir, f"{subtask_id}.json")
+        seq = str(i + 1).zfill(2)
+        subtask_file = os.path.join(internal_dir, f"subtask-{seq}.json")
 
         subtask_state = {
             "subtask_id": subtask_id,
@@ -239,9 +250,9 @@ def create_subtask_files(project_dir, task_id, plan_data):
 
 
 def save_plan_file(project_dir, task_id, plan_data):
-    """plan JSON을 저장한다."""
-    tasks_dir = os.path.join(project_dir, "tasks")
-    plan_file = os.path.join(tasks_dir, f"{task_id}-plan.json")
+    """plan JSON을 tasks/{task_id}/plan.json에 저장한다."""
+    internal_dir = get_task_internal_dir(project_dir, task_id)
+    plan_file = os.path.join(internal_dir, "plan.json")
     save_json(plan_file, plan_data)
     log_info(f"plan 파일 저장: {plan_file}")
     return plan_file
