@@ -58,6 +58,10 @@ show_help() {
     echo "  cancel <task_id> --project <name>"
     echo "  notifications [--project <name>] [--limit N] [--unread]"
     echo ""
+    echo "대화형:"
+    echo "  chat [--confirmation-mode always_confirm|never_confirm|smart]"
+    echo "                       자연어 Chatbot 시작"
+    echo ""
     echo "agent_type:"
     echo "  planner, coder, reviewer, setup, unit_tester, e2e_tester, reporter"
     echo ""
@@ -427,6 +431,10 @@ case "$COMMAND" in
         log_warn "'${COMMAND}' 명령은 ./run_system.sh 로 이동되었습니다."
         log_warn "사용법: ./run_system.sh ${COMMAND}"
         exit 1
+        ;;
+    chat)
+        shift
+        PYTHONPATH="${SCRIPT_DIR}/scripts" python3 "${SCRIPT_DIR}/scripts/chatbot.py" "$@"
         ;;
     submit|list|pending|approve|reject|feedback|config|pause|resume|cancel|notifications)
         shift

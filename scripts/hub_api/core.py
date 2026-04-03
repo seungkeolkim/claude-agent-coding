@@ -149,7 +149,8 @@ class HubAPI:
 
     def submit(self, project: str, title: str, description: str,
                attachments: Optional[list] = None,
-               config_override: Optional[dict] = None) -> SubmitResult:
+               config_override: Optional[dict] = None,
+               source: str = "cli") -> SubmitResult:
         """
         새 task를 생성하고 .ready sentinel을 만든다.
 
@@ -198,7 +199,7 @@ class HubAPI:
             "project_name": project,
             "title": title,
             "description": description,
-            "submitted_via": "cli",
+            "submitted_via": source,
             "submitted_at": now,
             "status": "submitted",
             "branch": None,
@@ -231,6 +232,17 @@ class HubAPI:
             project=project,
             file_path=task_path,
         )
+
+    def get_task(self, project: str, task_id: str) -> dict:
+        """
+        단건 task를 조회한다.
+        task JSON 전체를 dict로 반환. 없으면 FileNotFoundError.
+        """
+        tasks_dir = self._tasks_dir(project)
+        task_file = self._find_task_file(tasks_dir, task_id)
+        if not task_file:
+            raise FileNotFoundError(f"task를 찾을 수 없음: {project}/{task_id}")
+        return self._load_json(task_file)
 
     def list_tasks(self, project: Optional[str] = None,
                    status: Optional[str] = None) -> list:
@@ -609,6 +621,17 @@ class HubAPI:
             results = results[:limit]
 
         return results
+
+    def mark_notification_read(self, project: str,
+                               up_to_timestamp: Optional[str] = None) -> bool:
+        """
+        알림을 읽음 처리한다.
+        up_to_timestamp까지의 알림을 읽음 처리. None이면 전부.
+        """
+        noti = self._get_notification_module()
+        proj_dir = self._project_dir(project)
+        noti.mark_notifications_read(proj_dir, up_to_timestamp=up_to_timestamp)
+        return True
 
 
 # ═══════════════════════════════════════════════════════════
