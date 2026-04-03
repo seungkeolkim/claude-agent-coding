@@ -75,3 +75,12 @@ notification:
     escalation: true
   # 재알림 설정 (waiting_for_human 상태에서 응답 없을 때)
   re_notification_interval_hours: 4   # 0이면 재알림 비활성화
+
+# ─── Chatbot 설정 ───
+chatbot:
+  model: "sonnet"               # chatbot 해석용 모델 (sonnet 권장)
+  confirmation_mode: "smart"    # "always_confirm" | "never_confirm" | "smart"
+  # smart 모드 동작:
+  #   확인 필요: submit, approve, reject, cancel, config (고위험)
+  #   즉시 실행: feedback, mark_notification_read, pause, resume (저위험)
+  #   조회성 action(list, get_task, pending, status, notifications)은 항상 즉시 실행

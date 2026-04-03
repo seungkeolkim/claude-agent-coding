@@ -97,7 +97,7 @@ Agent Hub의 모든 설정 항목을 정리한 문서입니다.
 
 ## 2. project.yaml (프로젝트 정적 설정)
 
-프로젝트별 `projects/{name}/project.yaml`에 위치합니다. 템플릿: `project.yaml.template`
+프로젝트별 `projects/{name}/project.yaml`에 위치합니다. 템플릿: `templates/project.yaml.template`
 
 ### 프로젝트 기본 정보 (`project`)
 

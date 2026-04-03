@@ -40,7 +40,7 @@ echo "=== Agent Hub 초기 설정 ==="
 echo ""
 
 # config.yaml 생성
-TEMPLATE="${SCRIPT_DIR}/config.yaml.template"
+TEMPLATE="${SCRIPT_DIR}/templates/config.yaml.template"
 TARGET="${SCRIPT_DIR}/config.yaml"
 
 if [[ ! -f "$TEMPLATE" ]]; then

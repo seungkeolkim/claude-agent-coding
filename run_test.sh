@@ -26,6 +26,7 @@ UNIT_TESTS=(
     "tests/test_safety_limits.py"
     "tests/test_task_utils.py"
     "tests/test_usage_checker.py"
+    "tests/test_chatbot.py"
 )
 
 INTEGRATION_TESTS=(

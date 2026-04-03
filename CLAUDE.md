@@ -4,15 +4,18 @@ Claude Code 기반 자동 개발 시스템.
 
 ## 프로젝트 구조
 - `config.yaml` — 시스템 전체 설정 (단일 진입점, gitignored)
-- `config.yaml.template` — 시스템 설정 템플릿
-- `project.yaml.template` — 프로젝트 설정 템플릿
+- `templates/config.yaml.template` — 시스템 설정 템플릿
+- `templates/project.yaml.template` — 프로젝트 설정 템플릿
 - `projects/{name}/project.yaml` — 프로젝트별 정적 설정 (git 관리)
 - `projects/{name}/project_state.json` — 프로젝트별 동적 상태 (gitignored)
-- `scripts/` — init_project, agent 기동 래퍼
+- `scripts/` — init_project, agent 기동 래퍼, chatbot, hub_api
+- `scripts/hub_api/protocol.py` — Protocol layer (Request/Response, dispatch)
+- `scripts/chatbot.py` — Chatbot 대화형 인터페이스
+- `session_history/` — Chatbot 세션 이력 (gitignored)
 - `config/agent_prompts/` — agent별 역할 프롬프트
 - `docs/` — 사용자용 문서 (설정 레퍼런스 등)
 - `docs_for_claude/003-agent-system-spec-v4.md` — 전체 아키텍처 명세
-- `tests/` — Unit/Integration/E2E 테스트 스위트
+- `tests/` — Unit/Integration/E2E 테스트 스위트 (140개)
 
 ## 코딩 컨벤션
 - 변수/함수/파일명: 축약 금지, 이름만 보고 알 수 있게
@@ -50,6 +53,11 @@ Claude Code 기반 자동 개발 시스템.
 ./run_agent.sh approve 00001 --project my-app
 ./run_agent.sh reject 00001 --project my-app --message "사유"
 
+# Chatbot (자연어 대화형 인터페이스)
+./run_agent.sh chat
+./run_agent.sh chat --session <session_id>
+./run_agent.sh chat --list-sessions
+
 # 시스템 상태 / 종료
 ./run_system.sh status
 ./run_system.sh stop
@@ -60,7 +68,7 @@ Claude Code 기반 자동 개발 시스템.
 
 ## 테스트
 ```bash
-./run_test.sh all          # 전체 (85개)
+./run_test.sh all          # 전체 (140개)
 ./run_test.sh unit         # Unit 테스트만
 ./run_test.sh integration  # Integration 테스트만
 ./run_test.sh e2e          # E2E 테스트만
