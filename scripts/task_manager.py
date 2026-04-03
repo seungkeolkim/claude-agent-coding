@@ -34,6 +34,7 @@ from notification import (
     format_notification_cli,
     format_notification_plain,
 )
+from usage_checker import wait_until_below_threshold
 
 # ─── 색상 출력 (터미널용) ───
 GREEN = "\033[0;32m"
@@ -638,6 +639,22 @@ class TaskManager:
                     # WFC가 없으면 .ready task 탐색
                     ready_tasks = self.find_ready_tasks(project_name)
                     if ready_tasks:
+                        # usage check: 새 task spawn 전
+                        if not self._dummy:
+                            thresholds = self._config.get("claude", {}).get(
+                                "usage_thresholds", {}
+                            )
+                            new_task_threshold = thresholds.get("new_task", 0.70)
+                            check_interval = self._config.get("claude", {}).get(
+                                "usage_check_interval_seconds", 60
+                            )
+                            wait_until_below_threshold(
+                                new_task_threshold,
+                                check_interval_seconds=check_interval,
+                                level_name="new_task",
+                                log_fn=log_info,
+                            )
+
                         # 가장 앞의 task를 처리
                         task_id = ready_tasks[0]
                         self.consume_ready_sentinel(project_name, task_id)

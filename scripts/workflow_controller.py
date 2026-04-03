@@ -33,6 +33,7 @@ from pathlib import Path
 import yaml
 
 from notification import emit_notification
+from usage_checker import wait_until_below_threshold
 
 # ─── 색상 출력 (터미널용) ───
 GREEN = "\033[0;32m"
@@ -951,6 +952,11 @@ def run_pipeline(args):
         task_branch = git_create_task_branch(codebase_path, branch_name, default_branch)
         update_task_field(task_file, "branch", task_branch)
 
+    # ─── Usage threshold 설정 로드 ───
+    claude_config = effective.get("claude", {})
+    usage_thresholds = claude_config.get("usage_thresholds", {})
+    usage_check_interval = claude_config.get("usage_check_interval_seconds", 60)
+
     # ─── Phase 2: Subtask Loop ───
     completed_subtasks = []
 
@@ -958,6 +964,16 @@ def run_pipeline(args):
         subtask_id = subtask.get("subtask_id", f"{task_id}-{i+1}")
 
         log_step(f"Subtask {i+1}/{len(subtasks)}: {subtask_id}")
+
+        # usage check: 새 subtask 시작 전
+        if not args.dummy:
+            new_subtask_threshold = usage_thresholds.get("new_subtask", 0.80)
+            wait_until_below_threshold(
+                new_subtask_threshold,
+                check_interval_seconds=usage_check_interval,
+                level_name="new_subtask",
+                log_fn=log_info,
+            )
 
         # task에 현재 subtask 기록
         update_task_field(task_file, "current_subtask", subtask_id)
@@ -967,6 +983,8 @@ def run_pipeline(args):
         subtask_success = run_subtask_pipeline(
             agent_hub_root, args.project, task_id, subtask_id,
             task_file, pipeline, args.dummy,
+            usage_thresholds=usage_thresholds,
+            usage_check_interval=usage_check_interval,
         )
 
         if not subtask_success:
@@ -1044,6 +1062,8 @@ def run_pipeline(args):
                     git_enabled=git_enabled, git_config=git_config,
                     codebase_path=codebase_path, task_branch=task_branch,
                     default_branch=default_branch,
+                    usage_thresholds=usage_thresholds,
+                    usage_check_interval=usage_check_interval,
                 )
                 return
             else:
@@ -1084,7 +1104,8 @@ def run_pipeline_from_subtasks(agent_hub_root, project_name, task_id, task_file,
                                 subtasks, pipeline, dummy, already_completed,
                                 git_enabled=False, git_config=None,
                                 codebase_path=None, task_branch=None,
-                                default_branch="main"):
+                                default_branch="main",
+                                usage_thresholds=None, usage_check_interval=60):
     """re-plan 후 남은 subtask들을 실행한다."""
     completed_subtasks = list(already_completed)
     git_config = git_config or {}
@@ -1105,6 +1126,8 @@ def run_pipeline_from_subtasks(agent_hub_root, project_name, task_id, task_file,
         subtask_success = run_subtask_pipeline(
             agent_hub_root, project_name, task_id, subtask_id,
             task_file, pipeline, dummy,
+            usage_thresholds=usage_thresholds,
+            usage_check_interval=usage_check_interval,
         )
 
         if not subtask_success:
@@ -1242,12 +1265,23 @@ def finalize_task(agent_hub_root, project_name, task_id, task_file,
 
 
 def run_subtask_pipeline(agent_hub_root, project_name, task_id, subtask_id,
-                          task_file, pipeline, dummy):
+                          task_file, pipeline, dummy,
+                          usage_thresholds=None, usage_check_interval=60):
     """
     단일 subtask에 대해 pipeline을 실행한다.
     성공 시 True, 실패 시 False 반환.
     """
     for agent_type in pipeline:
+        # usage check: 다음 agent stage 호출 전
+        if not dummy and usage_thresholds:
+            agent_stage_threshold = usage_thresholds.get("new_agent_stage", 0.90)
+            wait_until_below_threshold(
+                agent_stage_threshold,
+                check_interval_seconds=usage_check_interval,
+                level_name=f"new_agent_stage/{agent_type}",
+                log_fn=log_info,
+            )
+
         log_info(f"[{subtask_id}] {agent_type} 실행")
 
         success, result = run_agent(
@@ -1278,6 +1312,8 @@ def run_subtask_pipeline(agent_hub_root, project_name, task_id, subtask_id,
             return run_subtask_pipeline(
                 agent_hub_root, project_name, task_id, subtask_id,
                 task_file, pipeline, dummy,
+                usage_thresholds=usage_thresholds,
+                usage_check_interval=usage_check_interval,
             )
 
         # ─── Reporter: needs_replan ───
@@ -1297,6 +1333,8 @@ def run_subtask_pipeline(agent_hub_root, project_name, task_id, subtask_id,
             return run_subtask_pipeline(
                 agent_hub_root, project_name, task_id, subtask_id,
                 task_file, pipeline, dummy,
+                usage_thresholds=usage_thresholds,
+                usage_check_interval=usage_check_interval,
             )
 
     log_info(f"[{subtask_id}] pipeline 완료")
