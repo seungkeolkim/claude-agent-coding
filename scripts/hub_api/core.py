@@ -30,6 +30,20 @@ class HubAPI:
         self.root = os.path.abspath(agent_hub_root)
         self.projects_dir = os.path.join(self.root, "projects")
 
+        # notification 모듈 lazy import (scripts/ 내부)
+        self._notification_module = None
+
+    def _get_notification_module(self):
+        """notification 모듈을 lazy import한다."""
+        if self._notification_module is None:
+            import importlib
+            import sys as _sys
+            scripts_dir = os.path.join(self.root, "scripts")
+            if scripts_dir not in _sys.path:
+                _sys.path.insert(0, scripts_dir)
+            self._notification_module = importlib.import_module("notification")
+        return self._notification_module
+
     # ═══════════════════════════════════════════════════════════
     # 내부 헬퍼
     # ═══════════════════════════════════════════════════════════
@@ -558,6 +572,43 @@ class HubAPI:
             tm_pid=tm_pid,
             projects=projects,
         )
+
+    # ═══════════════════════════════════════════════════════════
+    # 알림
+    # ═══════════════════════════════════════════════════════════
+
+    def notifications(self, project: Optional[str] = None,
+                      limit: int = 20, unread_only: bool = False) -> list:
+        """
+        알림 목록을 조회한다.
+        project를 지정하면 해당 프로젝트만, 아니면 전체.
+
+        Returns:
+            list[dict]: 알림 목록 (최신 순)
+        """
+        noti = self._get_notification_module()
+        projects = [project] if project else self._list_projects()
+        results = []
+
+        for proj in projects:
+            try:
+                proj_dir = self._project_dir(proj)
+            except FileNotFoundError:
+                continue
+
+            notifications = noti.get_notifications(
+                proj_dir, unread_only=unread_only, limit=limit,
+            )
+            for n in notifications:
+                n["project"] = proj
+            results.extend(notifications)
+
+        # 전체를 최신 순 정렬 + limit 적용
+        results.sort(key=lambda n: n.get("created_at", ""), reverse=True)
+        if limit:
+            results = results[:limit]
+
+        return results
 
 
 # ═══════════════════════════════════════════════════════════

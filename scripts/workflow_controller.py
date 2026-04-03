@@ -32,6 +32,9 @@ from pathlib import Path
 
 import yaml
 
+from notification import emit_notification
+from usage_checker import wait_until_below_threshold
+
 # ─── 색상 출력 (터미널용) ───
 GREEN = "\033[0;32m"
 YELLOW = "\033[1;33m"
@@ -280,10 +283,12 @@ def update_project_state(project_dir, status, current_task_id=None, last_error=N
 # ─── human_review_policy 헬퍼 ───
 
 
-def request_human_review(task_file, task_id, review_type, plan_path, subtask_count):
+def request_human_review(task_file, task_id, review_type, plan_path, subtask_count,
+                         project_dir=None):
     """
     task JSON에 human_interaction을 기록하고 status를 waiting_for_human으로 변경한다.
     review_type: "plan_review" | "replan_review"
+    project_dir: 프로젝트 디렉토리 (알림 발송용). None이면 task_file에서 추론.
     """
     task = load_json(task_file)
 
@@ -300,13 +305,25 @@ def request_human_review(task_file, task_id, review_type, plan_path, subtask_cou
     save_json(task_file, task)
     log_info(f"human review 요청: type={review_type}, task={task_id}")
 
+    # 알림 발송
+    resolved_project_dir = project_dir or os.path.dirname(os.path.dirname(task_file))
+    event_type = "plan_review_requested" if review_type == "plan_review" else "replan_review_requested"
+    emit_notification(
+        project_dir=resolved_project_dir,
+        event_type=event_type,
+        task_id=task_id,
+        message=f"Plan을 확인해주세요. subtask {subtask_count}개 생성됨.",
+        details={"plan_path": plan_path},
+    )
+
 
 def wait_for_human_response(task_file, project_dir, task_id, timeout_hours,
-                            poll_interval=10):
+                            poll_interval=10, re_notification_interval_hours=0):
     """
     task JSON의 human_interaction.response가 채워질 때까지 폴링한다.
     timeout_hours 초과 시 자동 승인.
     commands/ 디렉토리의 cancel 명령도 감시한다.
+    re_notification_interval_hours > 0이면 해당 간격마다 재알림 발송.
 
     반환: "approve" | "modify" | "cancel" | "timeout"
     """
@@ -317,9 +334,15 @@ def wait_for_human_response(task_file, project_dir, task_id, timeout_hours,
     start_time = time.time()
     timeout_seconds = timeout_hours * 3600
 
+    # 재알림 추적
+    re_notification_interval_seconds = re_notification_interval_hours * 3600
+    last_re_notification_time = start_time  # 최초 알림은 request_human_review()에서 이미 발송
+
     log_step(f"사용자 응답 대기 중 (timeout: {timeout_hours}h)")
     log_info("승인: ./run_agent.sh approve {task_id} --project {project}")
     log_info("거부: ./run_agent.sh reject {task_id} --project {project} --message '사유'")
+    if re_notification_interval_hours > 0:
+        log_info(f"재알림: {re_notification_interval_hours}시간마다 재발송")
 
     commands_dir = os.path.join(project_dir, "commands")
 
@@ -377,6 +400,27 @@ def wait_for_human_response(task_file, project_dir, task_id, timeout_hours,
             else:
                 log_warn(f"알 수 없는 action: {action}, approve로 처리")
                 return "approve"
+
+        # 재알림 확인
+        if re_notification_interval_seconds > 0:
+            since_last = time.time() - last_re_notification_time
+            if since_last >= re_notification_interval_seconds:
+                # 현재 human_interaction 정보 읽기
+                task_for_renotify = load_json(task_file)
+                hi_for_renotify = task_for_renotify.get("human_interaction", {})
+                review_type = hi_for_renotify.get("type", "plan_review")
+                event_type = ("plan_review_requested" if review_type == "plan_review"
+                              else "replan_review_requested")
+                hours_waiting = elapsed / 3600
+                emit_notification(
+                    project_dir=project_dir,
+                    event_type=event_type,
+                    task_id=task_id,
+                    message=f"재알림: 승인 대기 중 ({hours_waiting:.1f}시간 경과)",
+                    details={"is_re_notification": True},
+                )
+                last_re_notification_time = time.time()
+                log_info(f"재알림 발송 ({hours_waiting:.1f}시간 경과)")
 
         # 대기
         time.sleep(poll_interval)
@@ -815,6 +859,10 @@ def run_pipeline(args):
         log_error("Planner 실패. 파이프라인 중단.")
         update_task_field(task_file, "status", "failed")
         update_project_state(project_dir, status="idle", last_error=task_id)
+        emit_notification(
+            project_dir=project_dir, event_type="task_failed", task_id=task_id,
+            message="Planner 실패로 파이프라인 중단",
+        )
         sys.exit(1)
 
     # plan 저장 및 subtask 파일 생성
@@ -825,6 +873,10 @@ def run_pipeline(args):
         log_error("Planner가 subtask를 생성하지 않았습니다.")
         update_task_field(task_file, "status", "failed")
         update_project_state(project_dir, status="idle", last_error=task_id)
+        emit_notification(
+            project_dir=project_dir, event_type="task_failed", task_id=task_id,
+            message="Planner가 subtask를 생성하지 않음",
+        )
         sys.exit(1)
 
     log_info(f"subtask {len(subtasks)}개 생성됨")
@@ -833,11 +885,15 @@ def run_pipeline(args):
     human_review = effective.get("human_review_policy", {})
     if human_review.get("review_plan", False) and not args.dummy:
         plan_path = os.path.join("tasks", task_id, "plan.json")
-        request_human_review(task_file, task_id, "plan_review", plan_path, len(subtasks))
+        request_human_review(task_file, task_id, "plan_review", plan_path, len(subtasks),
+                             project_dir=project_dir)
 
         timeout_hours = human_review.get("auto_approve_timeout_hours", 24)
+        notification_config = effective.get("notification", {})
+        re_noti_hours = notification_config.get("re_notification_interval_hours", 0)
         result = wait_for_human_response(
             task_file, project_dir, task_id, timeout_hours,
+            re_notification_interval_hours=re_noti_hours,
         )
 
         if result == "cancel":
@@ -896,6 +952,11 @@ def run_pipeline(args):
         task_branch = git_create_task_branch(codebase_path, branch_name, default_branch)
         update_task_field(task_file, "branch", task_branch)
 
+    # ─── Usage threshold 설정 로드 ───
+    claude_config = effective.get("claude", {})
+    usage_thresholds = claude_config.get("usage_thresholds", {})
+    usage_check_interval = claude_config.get("usage_check_interval_seconds", 60)
+
     # ─── Phase 2: Subtask Loop ───
     completed_subtasks = []
 
@@ -903,6 +964,16 @@ def run_pipeline(args):
         subtask_id = subtask.get("subtask_id", f"{task_id}-{i+1}")
 
         log_step(f"Subtask {i+1}/{len(subtasks)}: {subtask_id}")
+
+        # usage check: 새 subtask 시작 전
+        if not args.dummy:
+            new_subtask_threshold = usage_thresholds.get("new_subtask", 0.80)
+            wait_until_below_threshold(
+                new_subtask_threshold,
+                check_interval_seconds=usage_check_interval,
+                level_name="new_subtask",
+                log_fn=log_info,
+            )
 
         # task에 현재 subtask 기록
         update_task_field(task_file, "current_subtask", subtask_id)
@@ -912,6 +983,8 @@ def run_pipeline(args):
         subtask_success = run_subtask_pipeline(
             agent_hub_root, args.project, task_id, subtask_id,
             task_file, pipeline, args.dummy,
+            usage_thresholds=usage_thresholds,
+            usage_check_interval=usage_check_interval,
         )
 
         if not subtask_success:
@@ -947,10 +1020,12 @@ def run_pipeline(args):
                     request_human_review(
                         task_file, task_id, "replan_review",
                         plan_path, len(new_subtasks),
+                        project_dir=project_dir,
                     )
                     timeout_hours = human_review.get("auto_approve_timeout_hours", 24)
                     replan_result = wait_for_human_response(
                         task_file, project_dir, task_id, timeout_hours,
+                        re_notification_interval_hours=re_noti_hours,
                     )
                     if replan_result == "cancel":
                         log_warn("사용자가 replan을 취소했습니다.")
@@ -961,6 +1036,10 @@ def run_pipeline(args):
                         log_error("replan 후 재수정 요청. 에스컬레이션이 필요합니다.")
                         update_task_field(task_file, "status", "escalated")
                         update_project_state(project_dir, status="idle", last_error=task_id)
+                        emit_notification(
+                            project_dir=project_dir, event_type="escalation", task_id=task_id,
+                            message="replan 후 재수정 요청으로 에스컬레이션 발생",
+                        )
                         sys.exit(1)
                     # approve/timeout → 계속 진행
                     update_project_state(project_dir, status="running",
@@ -983,12 +1062,19 @@ def run_pipeline(args):
                     git_enabled=git_enabled, git_config=git_config,
                     codebase_path=codebase_path, task_branch=task_branch,
                     default_branch=default_branch,
+                    usage_thresholds=usage_thresholds,
+                    usage_check_interval=usage_check_interval,
                 )
                 return
             else:
                 log_error(f"subtask {subtask_id} 실패. 파이프라인 중단.")
                 update_task_field(task_file, "status", "failed")
                 update_project_state(project_dir, status="idle", last_error=task_id)
+                emit_notification(
+                    project_dir=project_dir, event_type="task_failed", task_id=task_id,
+                    message=f"subtask {subtask_id} 실패로 파이프라인 중단",
+                    details={"failed_subtask": subtask_id},
+                )
                 sys.exit(1)
 
         # ─── Git: subtask 커밋 + push ───
@@ -1018,7 +1104,8 @@ def run_pipeline_from_subtasks(agent_hub_root, project_name, task_id, task_file,
                                 subtasks, pipeline, dummy, already_completed,
                                 git_enabled=False, git_config=None,
                                 codebase_path=None, task_branch=None,
-                                default_branch="main"):
+                                default_branch="main",
+                                usage_thresholds=None, usage_check_interval=60):
     """re-plan 후 남은 subtask들을 실행한다."""
     completed_subtasks = list(already_completed)
     git_config = git_config or {}
@@ -1039,6 +1126,8 @@ def run_pipeline_from_subtasks(agent_hub_root, project_name, task_id, task_file,
         subtask_success = run_subtask_pipeline(
             agent_hub_root, project_name, task_id, subtask_id,
             task_file, pipeline, dummy,
+            usage_thresholds=usage_thresholds,
+            usage_check_interval=usage_check_interval,
         )
 
         if not subtask_success:
@@ -1118,6 +1207,16 @@ def finalize_task(agent_hub_root, project_name, task_id, task_file,
             pr_url = git_create_pr(codebase_path, task_branch, pr_target, pr_title, pr_body)
             update_task_field(task_file, "pr_url", pr_url)
 
+            # PR 생성 알림
+            finalize_project_dir = os.path.join(agent_hub_root, "projects", project_name)
+            emit_notification(
+                project_dir=finalize_project_dir,
+                event_type="pr_created",
+                task_id=task_id,
+                message=f"PR 생성됨: {pr_title}",
+                details={"pr_url": pr_url},
+            )
+
             if auto_merge:
                 log_step("Git: PR 자동 머지")
                 git_merge_pr(codebase_path, pr_url)
@@ -1130,6 +1229,10 @@ def finalize_task(agent_hub_root, project_name, task_id, task_file,
             update_task_field(task_file, "status", "failed")
             finalize_project_dir = os.path.join(agent_hub_root, "projects", project_name)
             update_project_state(finalize_project_dir, status="idle", last_error=task_id)
+            emit_notification(
+                project_dir=finalize_project_dir, event_type="task_failed", task_id=task_id,
+                message=f"PR 처리 실패: {e}",
+            )
             sys.exit(1)
     else:
         update_task_field(task_file, "status", "completed")
@@ -1140,17 +1243,45 @@ def finalize_task(agent_hub_root, project_name, task_id, task_file,
     finalize_project_dir = os.path.join(agent_hub_root, "projects", project_name)
     update_project_state(finalize_project_dir, status="idle")
 
+    # task 완료 알림
+    task_final = load_json(task_file)
+    final_status = task_final.get("status", "completed")
+    pr_url = task_final.get("pr_url")
+    details = {}
+    if pr_url:
+        details["pr_url"] = pr_url
+    details["subtask_count"] = len(completed_subtasks)
+
+    emit_notification(
+        project_dir=finalize_project_dir,
+        event_type="task_completed",
+        task_id=task_id,
+        message=f"task 완료 (subtask {len(completed_subtasks)}개){f' — PR: {pr_url}' if pr_url else ''}",
+        details=details,
+    )
+
     log_step("파이프라인 완료")
     log_info(f"task {task_id} 완료. subtask {len(completed_subtasks)}개 처리됨.")
 
 
 def run_subtask_pipeline(agent_hub_root, project_name, task_id, subtask_id,
-                          task_file, pipeline, dummy):
+                          task_file, pipeline, dummy,
+                          usage_thresholds=None, usage_check_interval=60):
     """
     단일 subtask에 대해 pipeline을 실행한다.
     성공 시 True, 실패 시 False 반환.
     """
     for agent_type in pipeline:
+        # usage check: 다음 agent stage 호출 전
+        if not dummy and usage_thresholds:
+            agent_stage_threshold = usage_thresholds.get("new_agent_stage", 0.90)
+            wait_until_below_threshold(
+                agent_stage_threshold,
+                check_interval_seconds=usage_check_interval,
+                level_name=f"new_agent_stage/{agent_type}",
+                log_fn=log_info,
+            )
+
         log_info(f"[{subtask_id}] {agent_type} 실행")
 
         success, result = run_agent(
@@ -1181,6 +1312,8 @@ def run_subtask_pipeline(agent_hub_root, project_name, task_id, subtask_id,
             return run_subtask_pipeline(
                 agent_hub_root, project_name, task_id, subtask_id,
                 task_file, pipeline, dummy,
+                usage_thresholds=usage_thresholds,
+                usage_check_interval=usage_check_interval,
             )
 
         # ─── Reporter: needs_replan ───
@@ -1200,6 +1333,8 @@ def run_subtask_pipeline(agent_hub_root, project_name, task_id, subtask_id,
             return run_subtask_pipeline(
                 agent_hub_root, project_name, task_id, subtask_id,
                 task_file, pipeline, dummy,
+                usage_thresholds=usage_thresholds,
+                usage_check_interval=usage_check_interval,
             )
 
     log_info(f"[{subtask_id}] pipeline 완료")

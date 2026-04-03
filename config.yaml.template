@@ -64,4 +64,14 @@ logging:
 
 # ─── 알림 기본값 (프로젝트별 override 가능) ───
 notification:
-  channel: "cli"      # Phase 1.0~1.3: "cli", Phase 1.4: "slack" | "telegram" 등
+  channel: "cli"      # "cli" | 향후: "slack" | "telegram"
+  # 알림 대상 이벤트 (전부 true가 기본)
+  events:
+    task_completed: true
+    task_failed: true
+    pr_created: true
+    plan_review_requested: true
+    replan_review_requested: true
+    escalation: true
+  # 재알림 설정 (waiting_for_human 상태에서 응답 없을 때)
+  re_notification_interval_hours: 4   # 0이면 재알림 비활성화

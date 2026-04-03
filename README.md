@@ -46,6 +46,8 @@ claude-agent-coding/
 │   ├── cli.py                     # CLI 프론트엔드 (argparse → hub_api)
 │   ├── run_claude_agent.sh        # Claude Code 세션 기동 래퍼
 │   ├── check_safety_limits.py     # Safety limits 체크
+│   ├── notification.py             # 알림 시스템 (emit/get/format)
+│   ├── usage_checker.py           # Usage 사용량 조회 (PTY 기반)
 │   ├── init_project.py            # 대화형 프로젝트 초기화
 │   ├── e2e_watcher.sh             # 테스트장비용 감시 스크립트
 │   │
@@ -71,12 +73,24 @@ claude-agent-coding/
 ├── docs/                          # 사용자용 문서
 │   └── configuration-reference.md
 │
+├── tests/                         # Unit/Integration/E2E 테스트 스위트
+│   ├── conftest.py                # 공통 fixture (임시 프로젝트 자동 생성/정리)
+│   ├── test_notification.py       # Unit: 알림 시스템
+│   ├── test_safety_limits.py      # Unit: Safety limits
+│   ├── test_task_utils.py         # Unit: Task 유틸리티
+│   ├── test_usage_checker.py      # Unit: Usage check
+│   ├── test_wfc_pipeline.py       # Integration: WFC pipeline 제어 흐름
+│   ├── test_hub_api.py            # Integration: HubAPI
+│   ├── test_e2e_agent_shell.py    # E2E: run_agent.sh subprocess
+│   └── test_e2e_tm_lifecycle.py   # E2E: TM full lifecycle
+│
 ├── docs_for_claude/               # Claude 세션용 내부 문서
-│   ├── 003-agent-system-spec-v3.md    # 전체 아키텍처 명세 (현행)
+│   ├── 003-agent-system-spec-v4.md    # 전체 아키텍처 명세 (현행)
 │   └── 005-design-history-archive.md
 │
 └── docs_history/                  # 이전 버전 아카이브
-    └── 003-agent-system-spec-v2.md
+    ├── 003-agent-system-spec-v2.md
+    └── 003-agent-system-spec-v3.md
 ```
 
 ## 사전 요구사항
@@ -223,19 +237,29 @@ config.yaml (시스템 기본값)
 - **테스트 선택적 bypass:** 비활성화된 agent는 pipeline에 아예 포함하지 않음
 - **Usage 기반 제어:** 5시간 세션 사용량 threshold로 과사용 방지
 
+## 테스트
+
+```bash
+./run_test.sh all          # 전체 (85개)
+./run_test.sh unit         # Unit 테스트만
+./run_test.sh integration  # Integration 테스트만
+./run_test.sh e2e          # E2E 테스트만
+./run_test.sh help         # 도움말
+```
+
 ## Phase 로드맵
 
 | Phase | 목표 | 상태 |
 |-------|------|------|
 | **1.0** | 수동 pipeline 실행 + git 자동화 | **완료** |
 | **TM** | Task Manager + CLI + hub_api + human review + 큐 블로킹 | **완료** |
-| 1.3 | E2E 테스트장비 연동, 로컬 E2E | 예정 |
-| 1.4 | 운영 안정화: 알림, Pipeline resume, Usage check | 예정 |
-| 1.5 | Chatbot + 메신저 연동 | 예정 |
-| 2.0 | 웹 모니터링 대시보드 + 고급 기능 | 예정 |
+| **1.4** | 운영 안정화: 알림, Usage check, 재알림, 테스트 스위트 | **완료** |
+| 1.5 | Chatbot + 메신저 연동 | 다음 |
+| 1.6 | E2E 테스트장비 연동, 로컬 E2E | 예정 |
+| 2.0 | 웹 대시보드 + Pipeline resume + SQLite + 고급 기능 | 예정 |
 
 ## 상세 명세
 
-- 전체 아키텍처: [`docs_for_claude/003-agent-system-spec-v3.md`](docs_for_claude/003-agent-system-spec-v3.md)
+- 전체 아키텍처: [`docs_for_claude/003-agent-system-spec-v4.md`](docs_for_claude/003-agent-system-spec-v4.md)
 - 설정 레퍼런스: [`docs/configuration-reference.md`](docs/configuration-reference.md)
 - 설계 히스토리: [`docs_for_claude/005-design-history-archive.md`](docs_for_claude/005-design-history-archive.md)

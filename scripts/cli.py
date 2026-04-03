@@ -267,6 +267,31 @@ def cmd_resume(args):
         sys.exit(1)
 
 
+def cmd_notifications(args):
+    """알림 목록을 조회한다."""
+    api = get_hub_api()
+    notifications = api.notifications(
+        project=args.project,
+        limit=args.limit,
+        unread_only=args.unread,
+    )
+
+    if not notifications:
+        print(f"{GREEN}[INFO]{NC} 알림이 없습니다.")
+        return
+
+    # notification 모듈에서 포맷 함수 가져오기
+    scripts_dir = str(Path(__file__).resolve().parent)
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    from notification import format_notification_cli
+
+    for n in notifications:
+        print(format_notification_cli(n, project_name=n.get("project")))
+
+    print(f"\n총 {len(notifications)}개")
+
+
 def cmd_cancel(args):
     """task를 취소한다."""
     api = get_hub_api()
@@ -395,6 +420,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("task_id", help="task ID")
     sp.add_argument("--project", required=True, help="프로젝트명")
     sp.set_defaults(func=cmd_cancel)
+
+    # ─── notifications ───
+    sp = subparsers.add_parser("notifications", help="알림 목록 조회")
+    sp.add_argument("--project", help="프로젝트명 (미지정시 전체)")
+    sp.add_argument("--limit", type=int, default=20, help="최대 표시 개수 (기본 20)")
+    sp.add_argument("--unread", action="store_true", help="안 읽은 알림만 표시")
+    sp.set_defaults(func=cmd_notifications)
 
     return parser
 
