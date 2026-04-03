@@ -78,6 +78,7 @@ notification:
 
 # ─── Chatbot 설정 ───
 chatbot:
+  model: "sonnet"               # chatbot 해석용 모델 (sonnet 권장)
   confirmation_mode: "smart"    # "always_confirm" | "never_confirm" | "smart"
   # smart 모드 동작:
   #   확인 필요: submit, approve, reject, cancel, config (고위험)

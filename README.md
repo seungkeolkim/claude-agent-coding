@@ -32,8 +32,9 @@ Planner → [Plan 승인 대기] → 브랜치 생성 → Subtask Loop → Summa
 
 ```
 claude-agent-coding/
-├── config.yaml.template           # 시스템 설정 템플릿
-├── project.yaml.template          # 프로젝트 설정 템플릿
+├── templates/
+│   ├── config.yaml.template       # 시스템 설정 템플릿
+│   └── project.yaml.template      # 프로젝트 설정 템플릿
 ├── create_config.sh               # 초기 설정 스크립트
 ├── run_agent.sh                   # CLI 진입점 (task 관리 + agent 실행)
 ├── run_system.sh                  # 시스템 관리 (start/stop/status)
@@ -46,6 +47,7 @@ claude-agent-coding/
 │   ├── cli.py                     # CLI 프론트엔드 (argparse → hub_api)
 │   ├── run_claude_agent.sh        # Claude Code 세션 기동 래퍼
 │   ├── check_safety_limits.py     # Safety limits 체크
+│   ├── chatbot.py                 # Chatbot 대화형 인터페이스
 │   ├── notification.py             # 알림 시스템 (emit/get/format)
 │   ├── usage_checker.py           # Usage 사용량 조회 (PTY 기반)
 │   ├── init_project.py            # 대화형 프로젝트 초기화
@@ -54,7 +56,8 @@ claude-agent-coding/
 │   └── hub_api/                   # 공통 인터페이스 라이브러리
 │       ├── __init__.py
 │       ├── core.py                # HubAPI 클래스 (submit, approve, reject 등)
-│       └── models.py              # 데이터 모델
+│       ├── models.py              # 데이터 모델
+│       └── protocol.py            # Protocol layer (Request/Response, dispatch)
 │
 ├── config/
 │   └── agent_prompts/             # 8개 agent 역할 프롬프트
@@ -69,6 +72,9 @@ claude-agent-coding/
 │       ├── attachments/           # 첨부파일
 │       ├── logs/                  # 세션 로그
 │       └── archive/               # 완료된 task 아카이브
+│
+├── session_history/               # Chatbot 세션 이력 (gitignored)
+│   └── chatbot/
 │
 ├── docs/                          # 사용자용 문서
 │   └── configuration-reference.md
@@ -165,7 +171,28 @@ source activate_venv.sh
 ./run_agent.sh cancel 00001 --project my-app
 ```
 
-### 5. 시스템 상태 확인 및 종료
+### 5. Chatbot (자연어 대화형 인터페이스)
+
+```bash
+# 대화형 모드 시작
+./run_agent.sh chat
+
+# 확인 모드 지정
+./run_agent.sh chat --confirmation-mode always_confirm
+
+# 이전 세션 재개
+./run_agent.sh chat --session 20260403_143052_a3f1
+
+# 저장된 세션 목록
+./run_agent.sh chat --list-sessions
+```
+
+자연어로 시스템을 제어합니다:
+- "my-app에 로그인 기능 만들어줘" → task 제출
+- "현재 상태 알려줘" → 시스템 상태 조회
+- "00001번 승인해" → plan 승인
+
+### 6. 시스템 상태 확인 및 종료
 
 ```bash
 # 시스템 상태 (TM + 프로젝트별 상태)
@@ -178,7 +205,7 @@ source activate_venv.sh
 ./run_system.sh stop --force
 ```
 
-### 6. 디버깅용 수동 실행
+### 7. 디버깅용 수동 실행
 
 ```bash
 # 개별 agent 실행
@@ -191,7 +218,7 @@ source activate_venv.sh
 ./run_agent.sh run planner --project my-app --task 00001 --dry-run
 ```
 
-### 7. 결과 확인
+### 8. 결과 확인
 
 - 로그: `projects/{name}/logs/{task_id}/` 아래에 agent별 로그 파일 생성
 - PR: `auto_merge=true`면 자동 머지, `false`면 PR만 생성 (status=`pending_review`)
@@ -240,7 +267,7 @@ config.yaml (시스템 기본값)
 ## 테스트
 
 ```bash
-./run_test.sh all          # 전체 (85개)
+./run_test.sh all          # 전체 (140개)
 ./run_test.sh unit         # Unit 테스트만
 ./run_test.sh integration  # Integration 테스트만
 ./run_test.sh e2e          # E2E 테스트만
@@ -254,9 +281,11 @@ config.yaml (시스템 기본값)
 | **1.0** | 수동 pipeline 실행 + git 자동화 | **완료** |
 | **TM** | Task Manager + CLI + hub_api + human review + 큐 블로킹 | **완료** |
 | **1.4** | 운영 안정화: 알림, Usage check, 재알림, 테스트 스위트 | **완료** |
-| 1.5 | Chatbot + 메신저 연동 | 다음 |
-| 1.6 | E2E 테스트장비 연동, 로컬 E2E | 예정 |
-| 2.0 | 웹 대시보드 + Pipeline resume + SQLite + 고급 기능 | 예정 |
+| **1.5** | Chatbot 대화형 인터페이스 + Protocol + 세션 관리 | **완료** |
+| 1 잔여 | E2E 테스트장비 연동 | 예정 |
+| 2.0 | scope 파라미터 + chatbot 실행 모델 개선 | 예정 |
+| 2.1 | Web monitor & chat | 예정 |
+| 2.2 | Messenger (Slack/Telegram) | 예정 |
 
 ## 상세 명세
 

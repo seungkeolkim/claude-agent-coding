@@ -15,9 +15,12 @@ protocol.dispatch()를 통해 실행한다.
 import argparse
 import json
 import os
+import random
 import re
+import string
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -91,6 +94,102 @@ def load_chatbot_config(agent_hub_root: str) -> dict:
         return default
     except Exception:
         return default
+
+
+# ═══════════════════════════════════════════════════════════
+# 세션 관리
+# ═══════════════════════════════════════════════════════════
+
+def generate_session_id() -> str:
+    """세션 ID를 생성한다. 형식: YYYYMMDD_HHMMSS_xxxx (타임스탬프 + 랜덤 4자)"""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
+    return f"{timestamp}_{suffix}"
+
+
+def get_session_dir(agent_hub_root: str, frontend: str = "chatbot") -> str:
+    """세션 저장 디렉토리 경로를 반환한다. 없으면 생성한다."""
+    session_dir = os.path.join(agent_hub_root, "session_history", frontend)
+    os.makedirs(session_dir, exist_ok=True)
+    return session_dir
+
+
+def get_session_path(agent_hub_root: str, session_id: str,
+                     frontend: str = "chatbot") -> str:
+    """세션 파일 경로를 반환한다."""
+    session_dir = get_session_dir(agent_hub_root, frontend)
+    return os.path.join(session_dir, f"{session_id}.json")
+
+
+def save_session(agent_hub_root: str, session_id: str,
+                 conversation_history: list, frontend: str = "chatbot"):
+    """세션 이력을 파일에 저장한다."""
+    session_path = get_session_path(agent_hub_root, session_id, frontend)
+    data = {
+        "session_id": session_id,
+        "frontend": frontend,
+        "created_at": None,
+        "updated_at": datetime.now().isoformat(),
+        "turn_count": sum(1 for e in conversation_history if e["role"] == "user"),
+        "history": conversation_history,
+    }
+    # created_at은 기존 파일에서 유지, 없으면 현재 시각
+    if os.path.isfile(session_path):
+        try:
+            with open(session_path) as f:
+                existing = json.load(f)
+            data["created_at"] = existing.get("created_at")
+        except (json.JSONDecodeError, IOError):
+            pass
+    if data["created_at"] is None:
+        data["created_at"] = data["updated_at"]
+
+    with open(session_path, "w") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def load_session(agent_hub_root: str, session_id: str,
+                 frontend: str = "chatbot") -> Optional[list]:
+    """세션 이력을 파일에서 로드한다. 없으면 None 반환."""
+    session_path = get_session_path(agent_hub_root, session_id, frontend)
+    if not os.path.isfile(session_path):
+        return None
+    try:
+        with open(session_path) as f:
+            data = json.load(f)
+        return data.get("history", [])
+    except (json.JSONDecodeError, IOError):
+        return None
+
+
+def list_sessions(agent_hub_root: str, frontend: str = "chatbot") -> list:
+    """세션 목록을 반환한다. 최신순 정렬."""
+    session_dir = get_session_dir(agent_hub_root, frontend)
+    sessions = []
+    for filename in os.listdir(session_dir):
+        if not filename.endswith(".json"):
+            continue
+        session_id = filename[:-5]  # .json 제거
+        filepath = os.path.join(session_dir, filename)
+        try:
+            with open(filepath) as f:
+                data = json.load(f)
+            sessions.append({
+                "session_id": session_id,
+                "created_at": data.get("created_at", ""),
+                "updated_at": data.get("updated_at", ""),
+                "turn_count": data.get("turn_count", 0),
+            })
+        except (json.JSONDecodeError, IOError):
+            sessions.append({
+                "session_id": session_id,
+                "created_at": "",
+                "updated_at": "",
+                "turn_count": 0,
+            })
+    # 최신순 정렬 (session_id가 타임스탬프 기반이라 역순 정렬로 충분)
+    sessions.sort(key=lambda s: s["session_id"], reverse=True)
+    return sessions
 
 
 # ═══════════════════════════════════════════════════════════
@@ -219,7 +318,8 @@ def build_system_prompt(hub_api: HubAPI) -> str:
 # ═══════════════════════════════════════════════════════════
 
 def call_claude_cli(system_prompt: str, user_message: str,
-                    conversation_history: list) -> str:
+                    conversation_history: list,
+                    model: str = "sonnet") -> str:
     """
     claude -p를 호출하여 자연어를 해석한다.
 
@@ -244,7 +344,8 @@ def call_claude_cli(system_prompt: str, user_message: str,
 
     try:
         result = subprocess.run(
-            ["claude", "-p", full_prompt, "--output-format", "text"],
+            ["claude", "-p", full_prompt, "--output-format", "text",
+             "--model", model],
             capture_output=True,
             text=True,
             timeout=60,
@@ -499,16 +600,31 @@ class ChatBot:
     자연어 입력 -> Claude 해석 -> 확인 -> dispatch -> 결과 표시
     """
 
-    MAX_HISTORY_TURNS = 20
+    MAX_HISTORY_TURNS = 100
+    COMPRESS_INTERVAL = 100  # 100턴마다 compress (autocompact이 안전망)
 
-    def __init__(self, agent_hub_root: str):
+    def __init__(self, agent_hub_root: str, session_id: Optional[str] = None,
+                 frontend: str = "chatbot"):
         self.root = os.path.abspath(agent_hub_root)
+        self.frontend = frontend
         self.hub_api = HubAPI(self.root)
         self.chatbot_config = load_chatbot_config(self.root)
         self.confirmation_mode = self.chatbot_config.get("confirmation_mode", "smart")
+        self.model = self.chatbot_config.get("model", "sonnet")
         self.conversation_history: list = []
         self._system_prompt: Optional[str] = None
         self._prompt_refresh_counter = 0
+
+        # 세션 관리
+        if session_id:
+            # 기존 세션 재개
+            self.session_id = session_id
+            loaded = load_session(self.root, session_id, frontend)
+            if loaded is not None:
+                self.conversation_history = loaded
+        else:
+            # 새 세션 생성
+            self.session_id = generate_session_id()
 
     def _get_system_prompt(self) -> str:
         """시스템 프롬프트를 가져온다. 매 5턴마다 재생성."""
@@ -518,13 +634,16 @@ class ChatBot:
         return self._system_prompt
 
     def _add_history(self, role: str, content: str):
-        """대화 이력에 추가한다. 오래된 항목은 잘라낸다."""
+        """대화 이력에 추가하고 파일에 저장한다. 오래된 항목은 잘라낸다."""
         self.conversation_history.append({"role": role, "content": content})
         # user + assistant + system 각각이므로 턴 수 * 3
         max_entries = self.MAX_HISTORY_TURNS * 3
         if len(self.conversation_history) > max_entries:
             trim_count = len(self.conversation_history) - max_entries
             self.conversation_history = self.conversation_history[trim_count:]
+        # 매 턴마다 세션 파일에 저장
+        save_session(self.root, self.session_id,
+                     self.conversation_history, self.frontend)
 
     def process_input(self, user_input: str) -> str:
         """사용자 입력을 처리하고 결과 문자열을 반환한다."""
@@ -536,6 +655,7 @@ class ChatBot:
         raw_response = call_claude_cli(
             system_prompt, user_input,
             self.conversation_history[:-1],  # 현재 입력 제외
+            model=self.model,
         )
 
         # 2. 응답 파싱
@@ -606,11 +726,16 @@ class ChatBot:
 
     def run_interactive(self):
         """터미널 대화형 루프."""
+        resumed = bool(self.conversation_history)
         print(f"{CYAN}{'=' * 55}{NC}")
         print(f"{CYAN}  Agent Hub Chatbot{NC}")
         print(f"{CYAN}  자연어로 시스템을 제어합니다.{NC}")
         print(f"{CYAN}  종료: Ctrl+C 또는 '종료' 입력{NC}")
         print(f"{CYAN}  확인 모드: {self.confirmation_mode}{NC}")
+        print(f"{CYAN}  세션: {self.session_id}{NC}")
+        if resumed:
+            turn_count = sum(1 for e in self.conversation_history if e["role"] == "user")
+            print(f"{CYAN}  (이전 세션 재개 — {turn_count}턴 이력 로드됨){NC}")
         print(f"{CYAN}{'=' * 55}{NC}")
         print()
 
@@ -654,9 +779,33 @@ def main():
         choices=["always_confirm", "never_confirm", "smart"],
         help="확인 모드 override (기본: config.yaml의 chatbot.confirmation_mode)",
     )
+    parser.add_argument(
+        "--session",
+        help="기존 세션 ID로 재개 (예: 20260403_143052_a3f1)",
+    )
+    parser.add_argument(
+        "--list-sessions",
+        action="store_true",
+        help="저장된 세션 목록 출력",
+    )
     args = parser.parse_args()
 
-    bot = ChatBot(args.root)
+    # 세션 목록 출력
+    if args.list_sessions:
+        sessions = list_sessions(args.root)
+        if not sessions:
+            print("저장된 세션이 없습니다.")
+        else:
+            print(f"{'세션 ID':<28} {'턴':<6} {'생성일시':<22} {'최근 업데이트'}")
+            print("─" * 85)
+            for s in sessions:
+                print(
+                    f"{s['session_id']:<28} {s['turn_count']:<6} "
+                    f"{s['created_at'][:19]:<22} {s['updated_at'][:19]}"
+                )
+        return
+
+    bot = ChatBot(args.root, session_id=args.session)
 
     # CLI override가 있으면 적용
     if args.confirmation_mode:

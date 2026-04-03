@@ -10,6 +10,7 @@ Chatbot + Protocol 레이어 테스트.
   6. Protocol dispatch — Request/Response envelope 통한 HubAPI 호출
   7. HubAPI 보강 — get_task, mark_notification_read, source 파라미터
   8. Action 분류 일관성 — 모든 action이 분류에 포함되어 있는지
+  9. Session 관리 — 생성, 저장, 로드, 목록 조회
 """
 
 import json
@@ -23,9 +24,13 @@ from chatbot import (
     READ_ONLY_ACTIONS,
     format_confirmation_prompt,
     format_response_for_display,
+    generate_session_id,
+    list_sessions,
     load_chatbot_config,
+    load_session,
     needs_confirmation,
     parse_claude_response,
+    save_session,
 )
 from hub_api.core import HubAPI
 from hub_api.protocol import (
@@ -496,3 +501,111 @@ class TestActionDescriptions:
         desc = get_action_descriptions()
         assert isinstance(desc, str)
         assert len(desc) > 100
+
+
+# ═══════════════════════════════════════════════════════════
+# Session 관리
+# ═══════════════════════════════════════════════════════════
+
+
+class TestSessionManagement:
+    """세션 생성, 저장, 로드, 목록 조회 테스트."""
+
+    def test_generate_session_id_format(self):
+        """session_id가 YYYYMMDD_HHMMSS_xxxx 형식이다."""
+        sid = generate_session_id()
+        # 예: 20260403_143052_a3f1
+        parts = sid.split("_")
+        assert len(parts) == 3
+        assert len(parts[0]) == 8  # YYYYMMDD
+        assert len(parts[1]) == 6  # HHMMSS
+        assert len(parts[2]) == 4  # 랜덤 4자
+
+    def test_generate_session_id_unique(self):
+        """연속 생성 시 다른 ID가 나온다."""
+        ids = {generate_session_id() for _ in range(10)}
+        assert len(ids) == 10
+
+    def test_save_and_load_session(self, tmp_path):
+        """세션을 저장하고 로드할 수 있다."""
+        root = str(tmp_path)
+        sid = "20260403_143052_a3f1"
+        history = [
+            {"role": "user", "content": "안녕"},
+            {"role": "assistant", "content": "안녕하세요!"},
+        ]
+        save_session(root, sid, history)
+        loaded = load_session(root, sid)
+        assert loaded == history
+
+    def test_load_nonexistent_session(self, tmp_path):
+        """없는 세션 로드 시 None 반환."""
+        loaded = load_session(str(tmp_path), "nonexistent_session_id")
+        assert loaded is None
+
+    def test_save_preserves_created_at(self, tmp_path):
+        """여러 번 저장해도 created_at은 최초 값을 유지한다."""
+        root = str(tmp_path)
+        sid = "20260403_143052_a3f1"
+        save_session(root, sid, [{"role": "user", "content": "1"}])
+
+        # 최초 created_at 읽기
+        session_path = os.path.join(root, "session_history", "chatbot", f"{sid}.json")
+        with open(session_path) as f:
+            first = json.load(f)
+        first_created = first["created_at"]
+
+        # 두 번째 저장
+        save_session(root, sid, [
+            {"role": "user", "content": "1"},
+            {"role": "user", "content": "2"},
+        ])
+        with open(session_path) as f:
+            second = json.load(f)
+        assert second["created_at"] == first_created
+        assert second["turn_count"] == 2
+
+    def test_list_sessions_empty(self, tmp_path):
+        """세션이 없으면 빈 리스트."""
+        sessions = list_sessions(str(tmp_path))
+        assert sessions == []
+
+    def test_list_sessions_sorted(self, tmp_path):
+        """세션 목록이 최신순으로 정렬된다."""
+        root = str(tmp_path)
+        save_session(root, "20260401_100000_aaaa", [{"role": "user", "content": "1"}])
+        save_session(root, "20260403_100000_bbbb", [{"role": "user", "content": "2"}])
+        save_session(root, "20260402_100000_cccc", [{"role": "user", "content": "3"}])
+
+        sessions = list_sessions(root)
+        ids = [s["session_id"] for s in sessions]
+        assert ids == ["20260403_100000_bbbb", "20260402_100000_cccc", "20260401_100000_aaaa"]
+
+    def test_session_file_structure(self, tmp_path):
+        """저장된 세션 파일의 JSON 구조가 올바르다."""
+        root = str(tmp_path)
+        sid = "20260403_143052_a3f1"
+        save_session(root, sid, [{"role": "user", "content": "테스트"}])
+
+        session_path = os.path.join(root, "session_history", "chatbot", f"{sid}.json")
+        with open(session_path) as f:
+            data = json.load(f)
+
+        assert data["session_id"] == sid
+        assert data["frontend"] == "chatbot"
+        assert "created_at" in data
+        assert "updated_at" in data
+        assert data["turn_count"] == 1
+        assert len(data["history"]) == 1
+
+    def test_save_custom_frontend(self, tmp_path):
+        """frontend를 지정하면 해당 하위 디렉토리에 저장된다."""
+        root = str(tmp_path)
+        sid = "20260403_143052_a3f1"
+        save_session(root, sid, [{"role": "user", "content": "슬랙"}], frontend="slack")
+
+        session_path = os.path.join(root, "session_history", "slack", f"{sid}.json")
+        assert os.path.isfile(session_path)
+
+        loaded = load_session(root, sid, frontend="slack")
+        assert loaded[0]["content"] == "슬랙"
