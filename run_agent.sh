@@ -56,6 +56,7 @@ show_help() {
     echo "  pause --project <name> [<task_id>]"
     echo "  resume --project <name> [<task_id>]"
     echo "  cancel <task_id> --project <name>"
+    echo "  notifications [--project <name>] [--limit N] [--unread]"
     echo ""
     echo "agent_type:"
     echo "  planner, coder, reviewer, setup, unit_tester, e2e_tester, reporter"
@@ -427,7 +428,7 @@ case "$COMMAND" in
         log_warn "사용법: ./run_system.sh ${COMMAND}"
         exit 1
         ;;
-    submit|list|pending|approve|reject|feedback|config|pause|resume|cancel)
+    submit|list|pending|approve|reject|feedback|config|pause|resume|cancel|notifications)
         shift
         PYTHONPATH="${SCRIPT_DIR}/scripts" python3 "${SCRIPT_DIR}/scripts/cli.py" "${COMMAND}" "$@"
         ;;

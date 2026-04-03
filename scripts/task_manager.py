@@ -28,6 +28,13 @@ from pathlib import Path
 
 import yaml
 
+from notification import (
+    get_notifications,
+    mark_notifications_read,
+    format_notification_cli,
+    format_notification_plain,
+)
+
 # ─── 색상 출력 (터미널용) ───
 GREEN = "\033[0;32m"
 YELLOW = "\033[1;33m"
@@ -142,6 +149,9 @@ class TaskManager:
         # 종료 플래그
         self._shutdown_requested = False
         self._force_shutdown_requested = False
+
+        # 알림 폴링: 프로젝트별 마지막으로 확인한 알림 시각
+        self._last_notification_check = {}  # {project_name: ISO timestamp}
 
     # ═══════════════════════════════════════════════════════════
     # 프로젝트 스캔
@@ -383,6 +393,43 @@ class TaskManager:
         self.update_project_state(project_name, "idle", current_task_id=None, last_error=last_error)
 
     # ═══════════════════════════════════════════════════════════
+    # 알림 폴링
+    # ═══════════════════════════════════════════════════════════
+
+    def poll_notifications(self, project_name):
+        """
+        프로젝트의 새 알림을 확인하고 터미널에 출력한다.
+        마지막 확인 시각 이후의 알림만 출력.
+        """
+        project_dir = os.path.join(self._projects_dir, project_name)
+        since = self._last_notification_check.get(project_name)
+
+        new_notifications = get_notifications(
+            project_dir, since=since, unread_only=True,
+        )
+
+        if not new_notifications:
+            return
+
+        # 오래된 순으로 출력 (get_notifications는 최신 순이므로 역순)
+        for notification in reversed(new_notifications):
+            cli_line = format_notification_cli(notification, project_name=project_name)
+            print(cli_line, flush=True)
+
+            # 파일 로거에만 기록 (stdout 중복 방지)
+            plain_line = format_notification_plain(notification, project_name=project_name)
+            _log_to_file(logging.INFO, f"[알림] {plain_line}")
+
+        # 마지막 확인 시각 갱신
+        latest_timestamp = max(
+            n.get("created_at", "") for n in new_notifications
+        )
+        self._last_notification_check[project_name] = latest_timestamp
+
+        # 출력한 알림을 읽음 처리
+        mark_notifications_read(project_dir, up_to_timestamp=latest_timestamp)
+
+    # ═══════════════════════════════════════════════════════════
     # 상태 관리
     # ═══════════════════════════════════════════════════════════
 
@@ -561,6 +608,9 @@ class TaskManager:
                 for project_name, state in self._project_states.items():
                     if self._shutdown_requested:
                         break
+
+                    # 새 알림 확인 및 출력
+                    self.poll_notifications(project_name)
 
                     # WFC가 실행 중이면 완료 여부 확인
                     if state.get("process"):
