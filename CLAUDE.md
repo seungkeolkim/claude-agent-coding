@@ -11,7 +11,8 @@ Claude Code 기반 자동 개발 시스템.
 - `scripts/` — init_project, agent 기동 래퍼
 - `config/agent_prompts/` — agent별 역할 프롬프트
 - `docs/` — 사용자용 문서 (설정 레퍼런스 등)
-- `docs_for_claude/003-agent-system-spec-v3.md` — 전체 아키텍처 명세
+- `docs_for_claude/003-agent-system-spec-v4.md` — 전체 아키텍처 명세
+- `tests/` — Unit/Integration/E2E 테스트 스위트
 
 ## 코딩 컨벤션
 - 변수/함수/파일명: 축약 금지, 이름만 보고 알 수 있게
@@ -57,6 +58,14 @@ Claude Code 기반 자동 개발 시스템.
 ./run_agent.sh run coder --project my-app --task 00001 [--dry-run] [--dummy]
 ```
 
+## 테스트
+```bash
+./run_test.sh all          # 전체 (85개)
+./run_test.sh unit         # Unit 테스트만
+./run_test.sh integration  # Integration 테스트만
+./run_test.sh e2e          # E2E 테스트만
+```
+
 ## 상세 명세가 필요하면
-- v1, v2 스펙은 `docs_history/`에 아카이브되었습니다. 읽을 필요가 없습니다.
-- 상세 명세를 위해 `docs_for_claude/003-agent-system-spec-v3.md`를 읽으세요.
+- v1~v3 스펙은 `docs_history/`에 아카이브되었습니다. 읽을 필요가 없습니다.
+- 상세 명세를 위해 `docs_for_claude/003-agent-system-spec-v4.md`를 읽으세요.
