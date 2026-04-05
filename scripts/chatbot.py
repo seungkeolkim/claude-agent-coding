@@ -593,6 +593,40 @@ def format_response_for_display(response: Response, action: str) -> str:
         lines.append(f"  task_id: {BOLD}{data.task_id}{NC}")
         lines.append(f"  project: {data.project}")
 
+    elif action == "get_plan" and isinstance(data, dict):
+        # plan 전체 정보 표시
+        branch = data.get("branch_name", "")
+        strategy = data.get("strategy_note", "")
+        subtasks = data.get("subtasks", [])
+
+        if branch:
+            lines.append(f"  branch: {branch}")
+        if strategy:
+            lines.append(f"  전략: {strategy}")
+
+        lines.append(f"\n  {BOLD}subtask ({len(subtasks)}개){NC}")
+        lines.append("  " + "─" * 60)
+
+        for subtask in subtasks:
+            subtask_id = subtask.get("subtask_id", "?")
+            title = subtask.get("title", "")
+            responsibility = subtask.get("primary_responsibility", "")
+            depends = subtask.get("depends_on", [])
+            guidance = subtask.get("guidance", [])
+
+            lines.append(f"\n  {CYAN}[{subtask_id}]{NC} {title}")
+            if responsibility:
+                lines.append(f"    담당: {responsibility}")
+            if depends:
+                lines.append(f"    의존: {', '.join(depends)}")
+            if guidance:
+                for guide_item in guidance:
+                    lines.append(f"    • {guide_item}")
+
+    elif action == "resubmit" and hasattr(data, "task_id"):
+        lines.append(f"  새 task_id: {BOLD}{data.task_id}{NC}")
+        lines.append(f"  project: {data.project}")
+
     elif action == "notifications" and isinstance(data, list):
         for n in data:
             event = n.get("event_type", "?")
