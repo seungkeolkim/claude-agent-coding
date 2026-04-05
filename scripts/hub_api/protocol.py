@@ -484,7 +484,7 @@ ACTION_REGISTRY = {
     },
     "resubmit": {
         "handler": _handle_resubmit,
-        "description": "cancelled/failed task를 새 task로 재제출한다.",
+        "description": "cancelled/failed task를 새 task로 재제출한다. '재실행', '다시 실행', '다시 돌려줘' 등의 요청에 사용. resume과 다름.",
         "required_params": ["task_id"],
         "optional_params": ["config_override"],
         "requires_project": True,
