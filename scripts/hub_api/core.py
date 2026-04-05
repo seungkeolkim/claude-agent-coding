@@ -432,6 +432,33 @@ class HubAPI:
         self._save_json_atomic(cmd_path, cmd_data)
         return True
 
+    def get_plan(self, project: str, task_id: str) -> Optional[dict]:
+        """
+        task의 plan.json을 읽어 dict로 반환한다.
+
+        plan이 아직 생성되지 않았으면 None을 반환한다.
+
+        Args:
+            project: 프로젝트명
+            task_id: task ID
+
+        Returns:
+            plan dict 또는 None
+        """
+        tasks_dir = self._tasks_dir(project)
+        task_file = self._find_task_file(tasks_dir, task_id)
+        if not task_file:
+            raise FileNotFoundError(f"task를 찾을 수 없음: {project}/{task_id}")
+
+        # plan.json은 tasks/{task_id}/plan.json 에 위치
+        plan_dir = os.path.join(tasks_dir, task_id)
+        plan_path = os.path.join(plan_dir, "plan.json")
+
+        if not os.path.isfile(plan_path):
+            return None
+
+        return self._load_json(plan_path)
+
     def resubmit(self, project: str, task_id: str,
                  config_override: Optional[dict] = None) -> SubmitResult:
         """

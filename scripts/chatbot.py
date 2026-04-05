@@ -58,7 +58,7 @@ NC = "\033[0m"
 
 # 조회성 — 항상 즉시 실행
 READ_ONLY_ACTIONS = frozenset({
-    "list", "get_task", "pending", "status", "notifications",
+    "list", "get_task", "get_plan", "pending", "status", "notifications",
 })
 
 # 고위험 실행성 — smart 모드에서 확인 필요

@@ -346,6 +346,22 @@ def _handle_mark_notification_read(api, request: Request) -> Response:
     return _ok(True, f"{request.project} 알림 읽음 처리 완료")
 
 
+def _handle_get_plan(api, request: Request) -> Response:
+    """task의 plan을 조회한다."""
+    if err := _require_project(request):
+        return err
+    if err := _require_params(request, "task_id"):
+        return err
+
+    plan = api.get_plan(request.project, request.params["task_id"])
+    if plan is None:
+        return _error(
+            ErrorCode.INVALID_STATE,
+            f"task {request.params['task_id']}의 plan이 아직 생성되지 않았습니다.",
+        )
+    return _ok(plan, f"task {request.params['task_id']} plan 조회 완료")
+
+
 def _handle_resubmit(api, request: Request) -> Response:
     """cancelled/failed task를 새 task로 재제출한다."""
     if err := _require_project(request):
@@ -480,6 +496,13 @@ ACTION_REGISTRY = {
         "description": "알림을 읽음 처리한다.",
         "required_params": [],
         "optional_params": ["up_to_timestamp"],
+        "requires_project": True,
+    },
+    "get_plan": {
+        "handler": _handle_get_plan,
+        "description": "task의 plan(subtask 목록, 전략)을 조회한다. '플랜 보여줘', 'plan 확인' 등의 요청에 사용.",
+        "required_params": ["task_id"],
+        "optional_params": [],
         "requires_project": True,
     },
     "resubmit": {

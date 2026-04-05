@@ -674,6 +674,102 @@ class TestCreateProjectProtocol:
 
 
 # ═══════════════════════════════════════════════════════════
+# plan 조회
+# ═══════════════════════════════════════════════════════════
+
+
+class TestGetPlan:
+    """task plan 조회."""
+
+    def _create_plan(self, tasks_dir, task_id):
+        """테스트용 plan.json을 생성하는 헬퍼."""
+        plan_dir = os.path.join(tasks_dir, task_id)
+        os.makedirs(plan_dir, exist_ok=True)
+        plan_data = {
+            "task_id": task_id,
+            "plan_version": 1,
+            "branch_name": f"feature/{task_id}-test",
+            "strategy_note": "테스트 전략",
+            "subtasks": [
+                {
+                    "subtask_id": f"{task_id}-1",
+                    "title": "첫 번째 subtask",
+                    "primary_responsibility": "기능 구현",
+                    "guidance": ["가이드 1"],
+                    "depends_on": [],
+                },
+                {
+                    "subtask_id": f"{task_id}-2",
+                    "title": "두 번째 subtask",
+                    "primary_responsibility": "문서화",
+                    "guidance": ["가이드 2"],
+                    "depends_on": [f"{task_id}-1"],
+                },
+            ],
+        }
+        plan_path = os.path.join(plan_dir, "plan.json")
+        with open(plan_path, "w") as f:
+            json.dump(plan_data, f, ensure_ascii=False, indent=2)
+        return plan_data
+
+    def test_get_plan_returns_plan(self, test_project, agent_hub_root):
+        """plan.json이 있으면 내용을 반환한다."""
+        api = HubAPI(agent_hub_root)
+        api.submit(test_project["name"], "plan 테스트", "설명")
+        self._create_plan(test_project["tasks_dir"], "00001")
+
+        plan = api.get_plan(test_project["name"], "00001")
+        assert plan is not None
+        assert plan["plan_version"] == 1
+        assert len(plan["subtasks"]) == 2
+        assert plan["subtasks"][0]["title"] == "첫 번째 subtask"
+
+    def test_get_plan_no_plan_returns_none(self, test_project, agent_hub_root):
+        """plan.json이 없으면 None을 반환한다."""
+        api = HubAPI(agent_hub_root)
+        api.submit(test_project["name"], "plan 없는 task", "설명")
+
+        plan = api.get_plan(test_project["name"], "00001")
+        assert plan is None
+
+    def test_get_plan_nonexistent_task(self, test_project, agent_hub_root):
+        """존재하지 않는 task면 FileNotFoundError."""
+        api = HubAPI(agent_hub_root)
+        with pytest.raises(FileNotFoundError):
+            api.get_plan(test_project["name"], "99999")
+
+    def test_get_plan_via_dispatch(self, test_project, agent_hub_root):
+        """protocol dispatch로 plan 조회."""
+        api = HubAPI(agent_hub_root)
+        api.submit(test_project["name"], "dispatch plan", "설명")
+        self._create_plan(test_project["tasks_dir"], "00001")
+
+        request = Request(
+            action="get_plan",
+            project=test_project["name"],
+            params={"task_id": "00001"},
+        )
+        response = dispatch(api, request)
+        assert response.success is True
+        assert response.data["plan_version"] == 1
+        assert len(response.data["subtasks"]) == 2
+
+    def test_get_plan_via_dispatch_no_plan(self, test_project, agent_hub_root):
+        """plan이 없으면 dispatch에서 INVALID_STATE 에러."""
+        api = HubAPI(agent_hub_root)
+        api.submit(test_project["name"], "no plan task", "설명")
+
+        request = Request(
+            action="get_plan",
+            project=test_project["name"],
+            params={"task_id": "00001"},
+        )
+        response = dispatch(api, request)
+        assert response.success is False
+        assert response.error["code"] == ErrorCode.INVALID_STATE
+
+
+# ═══════════════════════════════════════════════════════════
 # resubmit + resume/pause 상태 검증
 # ═══════════════════════════════════════════════════════════
 
