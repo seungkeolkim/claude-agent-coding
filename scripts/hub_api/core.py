@@ -432,6 +432,52 @@ class HubAPI:
         self._save_json_atomic(cmd_path, cmd_data)
         return True
 
+    def resubmit(self, project: str, task_id: str,
+                 config_override: Optional[dict] = None) -> SubmitResult:
+        """
+        cancelled/failed task를 새 task로 재제출한다.
+
+        원본 task의 title, description, attachments를 복사하여 새 task를 생성한다.
+        원본 task는 변경하지 않는다.
+
+        Args:
+            project: 프로젝트명
+            task_id: 원본 task ID
+            config_override: 새 task에 적용할 config_override (없으면 원본 것 사용)
+
+        Returns:
+            SubmitResult (새로 생성된 task 정보)
+
+        Raises:
+            FileNotFoundError: task를 찾을 수 없음
+            ValueError: 재제출 가능한 상태가 아님 (cancelled/failed만 가능)
+        """
+        tasks_dir = self._tasks_dir(project)
+        task_file = self._find_task_file(tasks_dir, task_id)
+        if not task_file:
+            raise FileNotFoundError(f"task를 찾을 수 없음: {project}/{task_id}")
+
+        original_task = self._load_json(task_file)
+        original_status = original_task.get("status", "")
+
+        # cancelled/failed만 재제출 가능
+        resubmittable_statuses = {"cancelled", "failed"}
+        if original_status not in resubmittable_statuses:
+            raise ValueError(
+                f"task {task_id}는 '{original_status}' 상태이므로 재제출할 수 없습니다. "
+                f"재제출 가능 상태: {', '.join(sorted(resubmittable_statuses))}"
+            )
+
+        # 원본의 title, description, attachments를 복사하여 새 task 생성
+        return self.submit(
+            project=project,
+            title=original_task.get("title", ""),
+            description=original_task.get("description", ""),
+            attachments=original_task.get("attachments"),
+            config_override=config_override or original_task.get("config_override", {}),
+            source=original_task.get("submitted_via", "cli"),
+        )
+
     # ═══════════════════════════════════════════════════════════
     # human interaction
     # ═══════════════════════════════════════════════════════════
@@ -606,12 +652,40 @@ class HubAPI:
         return overrides
 
     def pause(self, project: str, task_id: Optional[str] = None) -> bool:
-        """프로젝트 또는 특정 task를 일시정지한다."""
+        """프로젝트 또는 특정 task를 일시정지한다.
+
+        task_id를 지정한 경우, 실행 중(in_progress)인 task만 일시정지 가능.
+        종료된 task(completed, cancelled, failed)에는 False 반환.
+        """
+        if task_id:
+            self._validate_task_is_active(project, task_id, "pause")
         return self._send_command(project, "pause", task_id)
 
     def resume(self, project: str, task_id: Optional[str] = None) -> bool:
-        """프로젝트 또는 특정 task를 재개한다."""
+        """프로젝트 또는 특정 task를 재개한다.
+
+        task_id를 지정한 경우, 실행 중이거나 대기 중인 task만 재개 가능.
+        종료된 task(completed, cancelled, failed)에는 ValueError.
+        """
+        if task_id:
+            self._validate_task_is_active(project, task_id, "resume")
         return self._send_command(project, "resume", task_id)
+
+    def _validate_task_is_active(self, project: str, task_id: str, action: str) -> None:
+        """task가 활성 상태인지 검증한다. 종료된 task이면 ValueError."""
+        terminal_statuses = {"completed", "cancelled", "failed"}
+        tasks_dir = self._tasks_dir(project)
+        task_file = self._find_task_file(tasks_dir, task_id)
+        if not task_file:
+            raise FileNotFoundError(f"task를 찾을 수 없음: {project}/{task_id}")
+
+        task = self._load_json(task_file)
+        current_status = task.get("status", "")
+        if current_status in terminal_statuses:
+            raise ValueError(
+                f"task {task_id}는 '{current_status}' 상태이므로 {action}할 수 없습니다. "
+                f"재실행하려면 resubmit을 사용하세요."
+            )
 
     def _send_command(self, project: str, action: str,
                       task_id: Optional[str] = None) -> bool:

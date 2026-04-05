@@ -346,6 +346,24 @@ def _handle_mark_notification_read(api, request: Request) -> Response:
     return _ok(True, f"{request.project} 알림 읽음 처리 완료")
 
 
+def _handle_resubmit(api, request: Request) -> Response:
+    """cancelled/failed task를 새 task로 재제출한다."""
+    if err := _require_project(request):
+        return err
+    if err := _require_params(request, "task_id"):
+        return err
+
+    result = api.resubmit(
+        project=request.project,
+        task_id=request.params["task_id"],
+        config_override=request.params.get("config_override"),
+    )
+    return _ok(
+        result,
+        f"task {request.params['task_id']} → 새 task {result.task_id}로 재제출 완료",
+    )
+
+
 def _handle_create_project(api, request: Request) -> Response:
     """새 프로젝트를 생성한다."""
     if err := _require_params(request, "name", "description", "codebase_path"):
@@ -462,6 +480,13 @@ ACTION_REGISTRY = {
         "description": "알림을 읽음 처리한다.",
         "required_params": [],
         "optional_params": ["up_to_timestamp"],
+        "requires_project": True,
+    },
+    "resubmit": {
+        "handler": _handle_resubmit,
+        "description": "cancelled/failed task를 새 task로 재제출한다.",
+        "required_params": ["task_id"],
+        "optional_params": ["config_override"],
         "requires_project": True,
     },
     "create_project": {

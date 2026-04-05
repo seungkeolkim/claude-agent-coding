@@ -671,3 +671,170 @@ class TestCreateProjectProtocol:
         finally:
             project_dir = os.path.join(agent_hub_root, "projects", project_name)
             shutil.rmtree(project_dir, ignore_errors=True)
+
+
+# ═══════════════════════════════════════════════════════════
+# resubmit + resume/pause 상태 검증
+# ═══════════════════════════════════════════════════════════
+
+
+class TestResubmit:
+    """cancelled/failed task 재제출."""
+
+    def test_resubmit_cancelled_task(self, test_project, agent_hub_root):
+        """cancelled task를 재제출하면 새 task가 생성된다."""
+        api = HubAPI(agent_hub_root)
+        original = api.submit(test_project["name"], "원본 task", "원본 설명")
+        api.cancel(test_project["name"], original.task_id)
+
+        new_result = api.resubmit(test_project["name"], original.task_id)
+
+        assert new_result.task_id == "00002"
+        assert new_result.project == test_project["name"]
+
+        # 새 task의 내용이 원본과 동일한지 확인
+        with open(new_result.file_path) as f:
+            new_task = json.load(f)
+        assert new_task["title"] == "원본 task"
+        assert new_task["description"] == "원본 설명"
+        assert new_task["status"] == "submitted"
+
+    def test_resubmit_failed_task(self, test_project, agent_hub_root):
+        """failed task를 재제출할 수 있다."""
+        api = HubAPI(agent_hub_root)
+        original = api.submit(test_project["name"], "실패한 task", "설명")
+
+        # status를 직접 failed로 변경
+        with open(original.file_path) as f:
+            task = json.load(f)
+        task["status"] = "failed"
+        with open(original.file_path, "w") as f:
+            json.dump(task, f, ensure_ascii=False, indent=2)
+
+        new_result = api.resubmit(test_project["name"], original.task_id)
+        assert new_result.task_id == "00002"
+
+    def test_resubmit_in_progress_task_raises(self, test_project, agent_hub_root):
+        """in_progress task는 재제출할 수 없다."""
+        api = HubAPI(agent_hub_root)
+        original = api.submit(test_project["name"], "진행 중 task", "설명")
+
+        with open(original.file_path) as f:
+            task = json.load(f)
+        task["status"] = "in_progress"
+        with open(original.file_path, "w") as f:
+            json.dump(task, f, ensure_ascii=False, indent=2)
+
+        with pytest.raises(ValueError, match="재제출할 수 없습니다"):
+            api.resubmit(test_project["name"], original.task_id)
+
+    def test_resubmit_completed_task_raises(self, test_project, agent_hub_root):
+        """completed task는 재제출할 수 없다."""
+        api = HubAPI(agent_hub_root)
+        original = api.submit(test_project["name"], "완료된 task", "설명")
+
+        with open(original.file_path) as f:
+            task = json.load(f)
+        task["status"] = "completed"
+        with open(original.file_path, "w") as f:
+            json.dump(task, f, ensure_ascii=False, indent=2)
+
+        with pytest.raises(ValueError, match="재제출할 수 없습니다"):
+            api.resubmit(test_project["name"], original.task_id)
+
+    def test_resubmit_preserves_config_override(self, test_project, agent_hub_root):
+        """원본의 config_override가 새 task에 유지된다."""
+        api = HubAPI(agent_hub_root)
+        override = {"limits": {"max_retry_per_subtask": 10}}
+        original = api.submit(
+            test_project["name"], "config 포함 task", "설명",
+            config_override=override,
+        )
+        api.cancel(test_project["name"], original.task_id)
+
+        new_result = api.resubmit(test_project["name"], original.task_id)
+        with open(new_result.file_path) as f:
+            new_task = json.load(f)
+        assert new_task["config_override"]["limits"]["max_retry_per_subtask"] == 10
+
+    def test_resubmit_with_new_config_override(self, test_project, agent_hub_root):
+        """resubmit 시 새 config_override를 지정하면 원본 대신 적용된다."""
+        api = HubAPI(agent_hub_root)
+        original = api.submit(
+            test_project["name"], "override 교체", "설명",
+            config_override={"limits": {"max_retry_per_subtask": 3}},
+        )
+        api.cancel(test_project["name"], original.task_id)
+
+        new_override = {"limits": {"max_retry_per_subtask": 20}}
+        new_result = api.resubmit(
+            test_project["name"], original.task_id,
+            config_override=new_override,
+        )
+        with open(new_result.file_path) as f:
+            new_task = json.load(f)
+        assert new_task["config_override"]["limits"]["max_retry_per_subtask"] == 20
+
+    def test_resubmit_nonexistent_task(self, test_project, agent_hub_root):
+        """존재하지 않는 task ID면 FileNotFoundError."""
+        api = HubAPI(agent_hub_root)
+        with pytest.raises(FileNotFoundError):
+            api.resubmit(test_project["name"], "99999")
+
+    def test_resubmit_via_dispatch(self, test_project, agent_hub_root):
+        """protocol dispatch 경유 resubmit."""
+        api = HubAPI(agent_hub_root)
+        original = api.submit(test_project["name"], "dispatch 재제출", "설명")
+        api.cancel(test_project["name"], original.task_id)
+
+        request = Request(
+            action="resubmit",
+            project=test_project["name"],
+            params={"task_id": original.task_id},
+            source="test",
+        )
+        response = dispatch(api, request)
+        assert response.success is True
+        assert "재제출 완료" in response.message
+
+
+class TestResumeStateValidation:
+    """resume/pause 상태 검증."""
+
+    def test_resume_cancelled_task_raises(self, test_project, agent_hub_root):
+        """cancelled task에 resume하면 ValueError."""
+        api = HubAPI(agent_hub_root)
+        original = api.submit(test_project["name"], "취소 후 resume", "설명")
+        api.cancel(test_project["name"], original.task_id)
+
+        with pytest.raises(ValueError, match="cancelled.*resume할 수 없습니다"):
+            api.resume(test_project["name"], task_id=original.task_id)
+
+    def test_resume_completed_task_raises(self, test_project, agent_hub_root):
+        """completed task에 resume하면 ValueError."""
+        api = HubAPI(agent_hub_root)
+        original = api.submit(test_project["name"], "완료 후 resume", "설명")
+
+        with open(original.file_path) as f:
+            task = json.load(f)
+        task["status"] = "completed"
+        with open(original.file_path, "w") as f:
+            json.dump(task, f, ensure_ascii=False, indent=2)
+
+        with pytest.raises(ValueError, match="completed.*resume할 수 없습니다"):
+            api.resume(test_project["name"], task_id=original.task_id)
+
+    def test_pause_cancelled_task_raises(self, test_project, agent_hub_root):
+        """cancelled task에 pause하면 ValueError."""
+        api = HubAPI(agent_hub_root)
+        original = api.submit(test_project["name"], "취소 후 pause", "설명")
+        api.cancel(test_project["name"], original.task_id)
+
+        with pytest.raises(ValueError, match="cancelled.*pause할 수 없습니다"):
+            api.pause(test_project["name"], task_id=original.task_id)
+
+    def test_resume_without_task_id_always_succeeds(self, test_project, agent_hub_root):
+        """task_id 없이 프로젝트 전체 resume은 상태 검증 없이 성공한다."""
+        api = HubAPI(agent_hub_root)
+        result = api.resume(test_project["name"])
+        assert result is True
