@@ -58,3 +58,12 @@ class SystemStatus:
     tm_running: bool
     tm_pid: Optional[int] = None
     projects: list = field(default_factory=list)  # list[ProjectStatus]
+
+
+@dataclass
+class CreateProjectResult:
+    """프로젝트 생성 결과."""
+    project_name: str
+    project_directory: str
+    project_yaml_path: str
+    project_state_path: str

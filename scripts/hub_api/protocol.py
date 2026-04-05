@@ -38,6 +38,9 @@ class ErrorCode:
     # 상태 오류
     INVALID_STATE = "INVALID_STATE"             # 현재 상태에서 불가능한 작업
 
+    # 리소스 충돌
+    PROJECT_ALREADY_EXISTS = "PROJECT_ALREADY_EXISTS"  # 프로젝트 이미 존재
+
     # 시스템 오류
     INTERNAL_ERROR = "INTERNAL_ERROR"           # 예상치 못한 에러
 
@@ -343,6 +346,20 @@ def _handle_mark_notification_read(api, request: Request) -> Response:
     return _ok(True, f"{request.project} 알림 읽음 처리 완료")
 
 
+def _handle_create_project(api, request: Request) -> Response:
+    """새 프로젝트를 생성한다."""
+    if err := _require_params(request, "name", "description", "codebase_path"):
+        return err
+
+    result = api.create_project(
+        name=request.params["name"],
+        description=request.params["description"],
+        codebase_path=request.params["codebase_path"],
+        git_settings=request.params.get("git_settings"),
+    )
+    return _ok(result, f"프로젝트 '{request.params['name']}' 생성 완료")
+
+
 # ═══════════════════════════════════════════════════════════
 # Action 레지스트리
 # ═══════════════════════════════════════════════════════════
@@ -447,6 +464,13 @@ ACTION_REGISTRY = {
         "optional_params": ["up_to_timestamp"],
         "requires_project": True,
     },
+    "create_project": {
+        "handler": _handle_create_project,
+        "description": "새 프로젝트를 생성한다. 미설정 필드는 __UNCONFIGURED__ 플레이스홀더가 채워진다.",
+        "required_params": ["name", "description", "codebase_path"],
+        "optional_params": ["git_settings"],
+        "requires_project": False,
+    },
 }
 
 
@@ -480,6 +504,10 @@ def dispatch(api, request: Request) -> Response:
         if "프로젝트" in msg:
             return _error(ErrorCode.PROJECT_NOT_FOUND, msg)
         return _error(ErrorCode.TASK_NOT_FOUND, msg)
+    except FileExistsError as e:
+        return _error(ErrorCode.PROJECT_ALREADY_EXISTS, str(e))
+    except ValueError as e:
+        return _error(ErrorCode.INVALID_PARAM, str(e))
     except Exception as e:
         return _error(ErrorCode.INTERNAL_ERROR, f"내부 오류: {e}")
 

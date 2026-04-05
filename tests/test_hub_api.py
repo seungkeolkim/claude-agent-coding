@@ -1,17 +1,37 @@
 """
 HubAPI 통합 테스트.
 
-submit / list / approve / reject / cancel / pending / feedback / notifications 검증.
+submit / list / approve / reject / cancel / pending / feedback /
+notifications / create_project 검증.
 실제 파일시스템 기반으로 동작을 확인한다.
 """
 
 import json
 import os
+import shutil
+from datetime import datetime
 
 import pytest
+import yaml
 
 from hub_api.core import HubAPI
+from hub_api.protocol import dispatch, Request, ErrorCode
 from notification import emit_notification, get_unread_count
+
+
+def _test_project_name(label: str) -> str:
+    """테스트용 프로젝트 이름을 생성한다.
+
+    형식: test-{label}-YYMMDD-HHmmss
+    - 'test-' 접두사로 테스트임을 명시
+    - label로 어떤 테스트인지 식별
+    - 타임스탬프로 생성 시점 확인
+
+    Args:
+        label: 테스트 목적을 나타내는 짧은 식별자 (영문소문자, 하이픈)
+    """
+    timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
+    return f"test-{label}-{timestamp}"
 
 
 class TestSubmit:
@@ -300,3 +320,354 @@ class TestNotifications:
         )
         assert len(notis) == 1
         assert notis[0]["task_id"] == "00002"
+
+
+# ═══════════════════════════════════════════════════════════
+# 프로젝트 생성
+# ═══════════════════════════════════════════════════════════
+
+
+class TestCreateProject:
+    """프로젝트 생성 — HubAPI.create_project()."""
+
+    def test_create_project_basic(self, agent_hub_root, tmp_path):
+        """기본 프로젝트 생성: 디렉토리, project.yaml, project_state.json이 생성된다."""
+        api = HubAPI(agent_hub_root)
+        project_name = _test_project_name("basic")
+        codebase = str(tmp_path / "my-codebase")
+
+        result = api.create_project(
+            name=project_name,
+            description="기본 생성 테스트",
+            codebase_path=codebase,
+        )
+        try:
+            assert result.project_name == project_name
+            assert os.path.isdir(result.project_directory)
+            assert os.path.isfile(result.project_yaml_path)
+            assert os.path.isfile(result.project_state_path)
+
+            # runtime 디렉토리 확인
+            for subdir in ["tasks", "handoffs", "commands", "logs", "archive", "attachments"]:
+                assert os.path.isdir(os.path.join(result.project_directory, subdir))
+
+            # codebase 디렉토리 자동 생성 확인
+            assert os.path.isdir(codebase)
+        finally:
+            shutil.rmtree(result.project_directory, ignore_errors=True)
+
+    def test_create_project_yaml_content(self, agent_hub_root, tmp_path):
+        """project.yaml에 입력 값이 올바르게 기록된다."""
+        api = HubAPI(agent_hub_root)
+        project_name = _test_project_name("yaml")
+        codebase = str(tmp_path / "codebase-yaml-test")
+
+        result = api.create_project(
+            name=project_name,
+            description="YAML 내용 테스트",
+            codebase_path=codebase,
+        )
+        try:
+            with open(result.project_yaml_path, encoding="utf-8") as f:
+                config = yaml.safe_load(f)
+
+            assert config["project"]["name"] == project_name
+            assert config["project"]["description"] == "YAML 내용 테스트"
+            assert config["codebase"]["path"] == codebase
+        finally:
+            shutil.rmtree(result.project_directory, ignore_errors=True)
+
+    def test_create_project_unconfigured_placeholders(self, agent_hub_root, tmp_path):
+        """git_settings 미지정 시 __UNCONFIGURED__ 플레이스홀더가 채워진다."""
+        api = HubAPI(agent_hub_root)
+        project_name = _test_project_name("placeholder")
+        codebase = str(tmp_path / "codebase-placeholder")
+
+        result = api.create_project(
+            name=project_name,
+            description="플레이스홀더 테스트",
+            codebase_path=codebase,
+        )
+        try:
+            with open(result.project_yaml_path, encoding="utf-8") as f:
+                config = yaml.safe_load(f)
+
+            # git 설정 미지정 → author_name, author_email이 플레이스홀더
+            assert config["git"]["author_name"] == "__UNCONFIGURED__"
+            assert config["git"]["author_email"] == "__UNCONFIGURED__"
+            assert config["git"]["enabled"] is False
+        finally:
+            shutil.rmtree(result.project_directory, ignore_errors=True)
+
+    def test_create_project_with_git_settings(self, agent_hub_root, tmp_path):
+        """git 설정이 project.yaml에 반영된다."""
+        api = HubAPI(agent_hub_root)
+        project_name = _test_project_name("git")
+        codebase = str(tmp_path / "codebase-git")
+
+        git_settings = {
+            "enabled": True,
+            "remote": "upstream",
+            "author_name": "my-bot",
+            "author_email": "bot@test.com",
+            "auto_merge": True,
+            "pr_target_branch": "develop",
+        }
+        result = api.create_project(
+            name=project_name,
+            description="git 설정 테스트",
+            codebase_path=codebase,
+            git_settings=git_settings,
+        )
+        try:
+            with open(result.project_yaml_path, encoding="utf-8") as f:
+                config = yaml.safe_load(f)
+
+            assert config["git"]["enabled"] is True
+            assert config["git"]["remote"] == "upstream"
+            assert config["git"]["author_name"] == "my-bot"
+            assert config["git"]["auto_merge"] is True
+            assert config["project"]["default_branch"] == "develop"
+        finally:
+            shutil.rmtree(result.project_directory, ignore_errors=True)
+
+    def test_create_project_state_initialized(self, agent_hub_root, tmp_path):
+        """project_state.json이 올바른 초기 상태로 생성된다."""
+        api = HubAPI(agent_hub_root)
+        project_name = _test_project_name("state")
+        codebase = str(tmp_path / "codebase-state")
+
+        result = api.create_project(
+            name=project_name,
+            description="상태 초기화 테스트",
+            codebase_path=codebase,
+        )
+        try:
+            with open(result.project_state_path, encoding="utf-8") as f:
+                state = json.load(f)
+
+            assert state["project_name"] == project_name
+            assert state["status"] == "idle"
+            assert state["current_task_id"] is None
+            assert state["overrides"] == {}
+        finally:
+            shutil.rmtree(result.project_directory, ignore_errors=True)
+
+    def test_create_project_invalid_name_uppercase(self, agent_hub_root, tmp_path):
+        """대문자가 포함된 이름이면 ValueError."""
+        api = HubAPI(agent_hub_root)
+        with pytest.raises(ValueError, match="잘못된 프로젝트 이름"):
+            api.create_project("INVALID", "desc", str(tmp_path))
+
+    def test_create_project_invalid_name_special_chars(self, agent_hub_root, tmp_path):
+        """특수문자가 포함된 이름이면 ValueError."""
+        api = HubAPI(agent_hub_root)
+        with pytest.raises(ValueError, match="잘못된 프로젝트 이름"):
+            api.create_project("my_project!", "desc", str(tmp_path))
+
+    def test_create_project_invalid_name_starts_with_hyphen(self, agent_hub_root, tmp_path):
+        """하이픈으로 시작하는 이름이면 ValueError."""
+        api = HubAPI(agent_hub_root)
+        with pytest.raises(ValueError, match="잘못된 프로젝트 이름"):
+            api.create_project("-bad-name", "desc", str(tmp_path))
+
+    def test_create_project_duplicate(self, agent_hub_root, tmp_path):
+        """이미 존재하는 프로젝트명이면 FileExistsError."""
+        api = HubAPI(agent_hub_root)
+        project_name = _test_project_name("duplicate")
+        codebase = str(tmp_path / "codebase-dup")
+
+        # 먼저 프로젝트 생성
+        result = api.create_project(project_name, "first", codebase)
+        try:
+            # 같은 이름으로 재생성 시도
+            with pytest.raises(FileExistsError, match="이미 존재"):
+                api.create_project(project_name, "second", str(tmp_path / "other"))
+        finally:
+            shutil.rmtree(result.project_directory, ignore_errors=True)
+
+    def test_create_project_relative_path(self, agent_hub_root):
+        """상대경로이면 ValueError."""
+        api = HubAPI(agent_hub_root)
+        project_name = _test_project_name("relative-path")
+        with pytest.raises(ValueError, match="절대경로"):
+            api.create_project(project_name, "desc", "relative/path")
+
+    def test_create_project_codebase_not_directory(self, agent_hub_root, tmp_path):
+        """codebase_path가 파일이면 ValueError."""
+        api = HubAPI(agent_hub_root)
+        project_name = _test_project_name("not-directory")
+        # 파일을 먼저 생성
+        file_path = tmp_path / "not-a-dir"
+        file_path.write_text("file content")
+
+        with pytest.raises(ValueError, match="디렉토리가 아닙니다"):
+            api.create_project(project_name, "desc", str(file_path))
+
+    def test_create_project_creates_nested_codebase(self, agent_hub_root, tmp_path):
+        """존재하지 않는 중첩 경로도 자동 생성한다."""
+        api = HubAPI(agent_hub_root)
+        project_name = _test_project_name("nested")
+        nested_path = str(tmp_path / "a" / "b" / "c" / "codebase")
+        assert not os.path.exists(nested_path)
+
+        result = api.create_project(
+            name=project_name,
+            description="중첩 경로 테스트",
+            codebase_path=nested_path,
+        )
+        try:
+            assert os.path.isdir(nested_path)
+        finally:
+            shutil.rmtree(result.project_directory, ignore_errors=True)
+
+    def test_create_project_existing_codebase(self, agent_hub_root, tmp_path):
+        """이미 존재하는 codebase 디렉토리도 정상 처리한다."""
+        api = HubAPI(agent_hub_root)
+        project_name = _test_project_name("existing-codebase")
+        codebase = str(tmp_path / "existing-codebase")
+        os.makedirs(codebase)
+
+        result = api.create_project(
+            name=project_name,
+            description="기존 codebase 테스트",
+            codebase_path=codebase,
+        )
+        try:
+            assert os.path.isdir(result.project_directory)
+        finally:
+            shutil.rmtree(result.project_directory, ignore_errors=True)
+
+    def test_create_project_single_char_name(self, agent_hub_root, tmp_path):
+        """단일 문자 프로젝트 이름도 유효하다."""
+        api = HubAPI(agent_hub_root)
+        codebase = str(tmp_path / "codebase-single")
+
+        result = api.create_project(
+            name="a",
+            description="단일 문자 이름 테스트",
+            codebase_path=codebase,
+        )
+        try:
+            assert result.project_name == "a"
+        finally:
+            shutil.rmtree(result.project_directory, ignore_errors=True)
+
+
+class TestCreateProjectProtocol:
+    """프로젝트 생성 — protocol dispatch 경유."""
+
+    def test_dispatch_create_project(self, agent_hub_root, tmp_path):
+        """protocol dispatch로 프로젝트 생성 성공."""
+        api = HubAPI(agent_hub_root)
+        project_name = _test_project_name("protocol")
+        request = Request(
+            action="create_project",
+            params={
+                "name": project_name,
+                "description": "프로토콜 생성 테스트",
+                "codebase_path": str(tmp_path / "proto-codebase"),
+            },
+            source="test",
+        )
+        response = dispatch(api, request)
+        try:
+            assert response.success is True
+            assert "생성 완료" in response.message
+        finally:
+            project_dir = os.path.join(agent_hub_root, "projects", project_name)
+            shutil.rmtree(project_dir, ignore_errors=True)
+
+    def test_dispatch_create_project_missing_name(self, agent_hub_root):
+        """name 파라미터 누락 시 MISSING_PARAM 에러."""
+        api = HubAPI(agent_hub_root)
+        request = Request(
+            action="create_project",
+            params={"description": "desc", "codebase_path": "/tmp/x"},
+        )
+        response = dispatch(api, request)
+        assert response.success is False
+        assert response.error["code"] == ErrorCode.MISSING_PARAM
+
+    def test_dispatch_create_project_missing_codebase(self, agent_hub_root):
+        """codebase_path 파라미터 누락 시 MISSING_PARAM 에러."""
+        api = HubAPI(agent_hub_root)
+        request = Request(
+            action="create_project",
+            params={"name": "foo", "description": "desc"},
+        )
+        response = dispatch(api, request)
+        assert response.success is False
+        assert response.error["code"] == ErrorCode.MISSING_PARAM
+
+    def test_dispatch_create_project_invalid_name(self, agent_hub_root, tmp_path):
+        """잘못된 이름이면 INVALID_PARAM 에러."""
+        api = HubAPI(agent_hub_root)
+        request = Request(
+            action="create_project",
+            params={
+                "name": "INVALID",
+                "description": "desc",
+                "codebase_path": str(tmp_path),
+            },
+        )
+        response = dispatch(api, request)
+        assert response.success is False
+        assert response.error["code"] == ErrorCode.INVALID_PARAM
+
+    def test_dispatch_create_project_duplicate(self, agent_hub_root, tmp_path):
+        """이미 존재하는 프로젝트면 PROJECT_ALREADY_EXISTS 에러."""
+        api = HubAPI(agent_hub_root)
+        project_name = _test_project_name("protocol-duplicate")
+        # 먼저 프로젝트 생성
+        first_request = Request(
+            action="create_project",
+            params={
+                "name": project_name,
+                "description": "first",
+                "codebase_path": str(tmp_path / "first"),
+            },
+        )
+        dispatch(api, first_request)
+        try:
+            # 같은 이름으로 재생성
+            request = Request(
+                action="create_project",
+                params={
+                    "name": project_name,
+                    "description": "second",
+                    "codebase_path": str(tmp_path / "second"),
+                },
+            )
+            response = dispatch(api, request)
+            assert response.success is False
+            assert response.error["code"] == ErrorCode.PROJECT_ALREADY_EXISTS
+        finally:
+            project_dir = os.path.join(agent_hub_root, "projects", project_name)
+            shutil.rmtree(project_dir, ignore_errors=True)
+
+    def test_dispatch_create_project_with_git(self, agent_hub_root, tmp_path):
+        """git_settings 포함 dispatch 성공."""
+        api = HubAPI(agent_hub_root)
+        project_name = _test_project_name("protocol-git")
+        request = Request(
+            action="create_project",
+            params={
+                "name": project_name,
+                "description": "git 포함 프로토콜 테스트",
+                "codebase_path": str(tmp_path / "git-codebase"),
+                "git_settings": {
+                    "enabled": True,
+                    "remote": "origin",
+                    "author_name": "proto-bot",
+                    "author_email": "proto@test.com",
+                },
+            },
+            source="chatbot",
+        )
+        response = dispatch(api, request)
+        try:
+            assert response.success is True
+        finally:
+            project_dir = os.path.join(agent_hub_root, "projects", project_name)
+            shutil.rmtree(project_dir, ignore_errors=True)

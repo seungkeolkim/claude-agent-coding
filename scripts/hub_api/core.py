@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from hub_api.models import (
+    CreateProjectResult,
     HumanInteractionInfo,
     ProjectStatus,
     SubmitResult,
@@ -142,6 +143,116 @@ class HubAPI:
             if os.path.isfile(project_yaml):
                 projects.append(name)
         return projects
+
+    # ═══════════════════════════════════════════════════════════
+    # 프로젝트 생성
+    # ═══════════════════════════════════════════════════════════
+
+    def _get_init_project_module(self):
+        """init_project 모듈을 lazy import한다."""
+        if not hasattr(self, "_init_project_module"):
+            import importlib
+            import sys as _sys
+            scripts_dir = os.path.join(self.root, "scripts")
+            if scripts_dir not in _sys.path:
+                _sys.path.insert(0, scripts_dir)
+            self._init_project_module = importlib.import_module("init_project")
+        return self._init_project_module
+
+    def create_project(
+        self,
+        name: str,
+        description: str,
+        codebase_path: str,
+        git_settings: Optional[dict] = None,
+    ) -> CreateProjectResult:
+        """
+        새 프로젝트를 생성한다.
+
+        디렉토리 구조, project.yaml, project_state.json을 생성한다.
+        설정되지 않은 필드는 __UNCONFIGURED__ 플레이스홀더가 들어가며,
+        프로젝트 실행 전 반드시 사용자가 실제 값으로 교체해야 한다.
+
+        Args:
+            name: 프로젝트 이름 (영문소문자, 숫자, 하이픈)
+            description: 프로젝트 설명
+            codebase_path: 코드베이스 절대경로 (없으면 자동 생성)
+            git_settings: git 연동 설정 dict. None이면 플레이스홀더 기본값 사용.
+                keys: enabled, remote, author_name, author_email,
+                      auto_merge, pr_target_branch
+
+        Returns:
+            CreateProjectResult
+
+        Raises:
+            ValueError: 이름 형식 오류 또는 상대경로
+            FileExistsError: 이미 존재하는 프로젝트
+        """
+        init_project = self._get_init_project_module()
+
+        # 1. 이름 유효성 검사
+        if not init_project.PROJECT_NAME_PATTERN.match(name):
+            raise ValueError(
+                f"잘못된 프로젝트 이름: '{name}'. "
+                "영문소문자, 숫자, 하이픈만 사용 가능. 하이픈으로 시작/끝 불가."
+            )
+
+        # 2. 중복 검사
+        project_directory = os.path.join(self.projects_dir, name)
+        if os.path.exists(project_directory):
+            raise FileExistsError(
+                f"프로젝트가 이미 존재합니다: {name}"
+            )
+
+        # 3. codebase_path 절대경로 검증
+        expanded_codebase_path = os.path.expanduser(codebase_path)
+        if not os.path.isabs(expanded_codebase_path):
+            raise ValueError(
+                f"codebase_path는 절대경로여야 합니다: '{codebase_path}'"
+            )
+
+        # 4. codebase 디렉토리가 없으면 자동 생성
+        if not os.path.exists(expanded_codebase_path):
+            os.makedirs(expanded_codebase_path, exist_ok=True)
+        elif not os.path.isdir(expanded_codebase_path):
+            raise ValueError(
+                f"codebase_path가 디렉토리가 아닙니다: '{expanded_codebase_path}'"
+            )
+
+        # 5. git_settings 기본값 merge (미설정 필드는 플레이스홀더)
+        placeholder = init_project.UNCONFIGURED_PLACEHOLDER
+        default_git_settings = {
+            "enabled": False,
+            "remote": "origin",
+            "author_name": placeholder,
+            "author_email": placeholder,
+            "auto_merge": False,
+            "pr_target_branch": "main",
+        }
+        if git_settings:
+            default_git_settings.update(git_settings)
+        effective_git_settings = default_git_settings
+
+        # 6. 디렉토리 구조 생성
+        from pathlib import Path
+        project_root = Path(project_directory)
+        init_project.create_project_directory_structure(project_root)
+
+        # 7. project.yaml 생성
+        yaml_path = init_project.generate_project_yaml(
+            project_root, name, description,
+            expanded_codebase_path, effective_git_settings,
+        )
+
+        # 8. project_state.json 초기화
+        state_path = init_project.initialize_project_state(project_root, name)
+
+        return CreateProjectResult(
+            project_name=name,
+            project_directory=str(project_directory),
+            project_yaml_path=str(yaml_path),
+            project_state_path=str(state_path),
+        )
 
     # ═══════════════════════════════════════════════════════════
     # task 생명주기
