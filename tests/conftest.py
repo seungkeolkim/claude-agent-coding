@@ -279,3 +279,34 @@ def hub_api(agent_hub_root):
     """HubAPI 인스턴스를 반환한다."""
     from hub_api.core import HubAPI
     return HubAPI(agent_hub_root)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def cleanup_leftover_test_projects():
+    """테스트 세션 종료 후 남아있는 test 프로젝트 잔재를 정리한다.
+
+    E2E 테스트에서 TM/WFC가 프로젝트 디렉토리에 추가 파일(logs, project_state.json)을
+    생성할 수 있으며, fixture teardown과의 race condition으로 잔재가 남을 수 있다.
+    세션 종료 시 test_ 또는 test- 접두사로 시작하는 프로젝트를 모두 삭제한다.
+    """
+    yield
+
+    # 세션 종료 후 정리
+    projects_dir = os.path.join(AGENT_HUB_ROOT, "projects")
+    if not os.path.isdir(projects_dir):
+        return
+
+    import re
+    # conftest의 _generate_project_name()이 생성하는 패턴: test_YYMMDD-HHmmss_RRRR
+    # test_hub_api.py의 _test_project_name()이 생성하는 패턴: test-{label}-YYMMDD-HHmmss
+    # 이 두 패턴만 매칭하여 삭제. 사용자가 만든 프로젝트(test-web 등)는 보존.
+    test_project_pattern = re.compile(
+        r"^test_\d{6}-\d{6}_\d{4}$"       # conftest: test_260406-021638_8285
+        r"|^test-[\w-]+-\d{6}-\d{6}$"     # test_hub_api: test-basic-260406-012345
+        r"|^a$"                            # 단일 문자 테스트 프로젝트
+    )
+    for project_name in os.listdir(projects_dir):
+        if test_project_pattern.match(project_name):
+            project_path = os.path.join(projects_dir, project_name)
+            if os.path.isdir(project_path):
+                shutil.rmtree(project_path, ignore_errors=True)

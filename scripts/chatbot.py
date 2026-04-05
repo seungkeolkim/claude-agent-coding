@@ -58,12 +58,12 @@ NC = "\033[0m"
 
 # 조회성 — 항상 즉시 실행
 READ_ONLY_ACTIONS = frozenset({
-    "list", "get_task", "pending", "status", "notifications",
+    "list", "get_task", "get_plan", "pending", "status", "notifications",
 })
 
 # 고위험 실행성 — smart 모드에서 확인 필요
 HIGH_RISK_ACTIONS = frozenset({
-    "submit", "approve", "reject", "cancel", "config",
+    "submit", "approve", "reject", "cancel", "config", "create_project", "resubmit",
 })
 
 # 저위험 실행성 — smart 모드에서 즉시 실행
@@ -269,12 +269,26 @@ submit action에서 config_override를 사용할 때, 반드시 아래 구조를
 - "승인 없이 바로 실행" → config_override: {{"human_review_policy": {{"review_plan": false, "review_replan": false}}}}
 - "테스트 없이" → config_override: {{"testing": {{"unit_test": {{"enabled": false}}, "e2e_test": {{"enabled": false}}}}}}
 
+## action 선택 가이드 (혼동하기 쉬운 상황)
+
+| 사용자 표현 | 올바른 action | 잘못된 선택 |
+|-------------|---------------|-------------|
+| "재실행해줘", "다시 실행", "재제출" (cancelled/failed task) | **resubmit** | ~~resume~~ |
+| "일시정지 해제", "다시 시작" (paused task) | **resume** | ~~resubmit~~ |
+| "task 다시 돌려줘" (cancelled/failed) | **resubmit** | ~~resume~~ |
+| "새 프로젝트 만들어줘" | **create_project** | ~~submit~~ |
+
+핵심 구분:
+- **resume**: 일시정지(paused)된 task를 이어서 실행. 종료된 task(cancelled/failed/completed)에는 사용 불가.
+- **resubmit**: cancelled/failed task의 내용을 복사하여 새 task로 재제출. 새 task_id가 부여된다.
+
 ## 주의사항
 - project가 필수인 action인데 사용자가 프로젝트를 명시하지 않았고, 프로젝트가 1개뿐이면 자동 선택
 - 프로젝트가 여러 개이고 명시하지 않았으면 clarification으로 물어볼 것
 - params의 키 이름은 정확히 action 정의와 동일하게 사용
 - 사용자가 모호하게 말해도 최선의 action을 추론할 것
 - 설명(explanation)에는 사용자의 원래 의도를 반영하여 정확하게 작성
+- 이전 대화에서 task 상태를 확인한 경우, 그 상태를 바탕으로 적절한 action을 선택할 것
 """
 
 
@@ -577,6 +591,40 @@ def format_response_for_display(response: Response, action: str) -> str:
 
     elif action == "submit" and hasattr(data, "task_id"):
         lines.append(f"  task_id: {BOLD}{data.task_id}{NC}")
+        lines.append(f"  project: {data.project}")
+
+    elif action == "get_plan" and isinstance(data, dict):
+        # plan 전체 정보 표시
+        branch = data.get("branch_name", "")
+        strategy = data.get("strategy_note", "")
+        subtasks = data.get("subtasks", [])
+
+        if branch:
+            lines.append(f"  branch: {branch}")
+        if strategy:
+            lines.append(f"  전략: {strategy}")
+
+        lines.append(f"\n  {BOLD}subtask ({len(subtasks)}개){NC}")
+        lines.append("  " + "─" * 60)
+
+        for subtask in subtasks:
+            subtask_id = subtask.get("subtask_id", "?")
+            title = subtask.get("title", "")
+            responsibility = subtask.get("primary_responsibility", "")
+            depends = subtask.get("depends_on", [])
+            guidance = subtask.get("guidance", [])
+
+            lines.append(f"\n  {CYAN}[{subtask_id}]{NC} {title}")
+            if responsibility:
+                lines.append(f"    담당: {responsibility}")
+            if depends:
+                lines.append(f"    의존: {', '.join(depends)}")
+            if guidance:
+                for guide_item in guidance:
+                    lines.append(f"    • {guide_item}")
+
+    elif action == "resubmit" and hasattr(data, "task_id"):
+        lines.append(f"  새 task_id: {BOLD}{data.task_id}{NC}")
         lines.append(f"  project: {data.project}")
 
     elif action == "notifications" and isinstance(data, list):

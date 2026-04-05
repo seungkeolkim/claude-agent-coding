@@ -22,6 +22,10 @@ AGENT_HUB_ROOT = Path(__file__).resolve().parent.parent
 # 프로젝트 이름 유효성 패턴: 영문소문자, 숫자, 하이픈만 허용
 PROJECT_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9\-]*[a-z0-9]$|^[a-z0-9]$")
 
+# 아직 설정되지 않은 필드임을 나타내는 플레이스홀더 값.
+# 프로젝트 실행 전 반드시 사용자가 실제 값으로 교체해야 한다.
+UNCONFIGURED_PLACEHOLDER = "__UNCONFIGURED__"
+
 # 프로젝트 하위에 생성할 runtime 디렉토리 목록
 RUNTIME_DIRECTORIES = [
     "tasks",
@@ -160,8 +164,12 @@ def generate_project_yaml(
     description: str,
     codebase_path: str,
     git_settings: dict,
-) -> None:
-    """project.yaml 파일을 생성한다."""
+) -> Path:
+    """project.yaml 파일을 생성한다.
+
+    Returns:
+        생성된 project.yaml 파일의 Path.
+    """
     project_config = {
         "project": {
             "name": project_name,
@@ -170,8 +178,8 @@ def generate_project_yaml(
         },
         "codebase": {
             "path": codebase_path,
-            "service_bind_address": "0.0.0.0",
-            "service_port": 3000,
+            "service_bind_address": git_settings.pop("_service_bind_address", "0.0.0.0"),
+            "service_port": git_settings.pop("_service_port", 3000),
         },
         "git": git_settings,
         "testing": {
@@ -197,7 +205,8 @@ def generate_project_yaml(
     with open(yaml_path, "w", encoding="utf-8") as yaml_file:
         # 헤더 주석 추가
         yaml_file.write(f"# projects/{project_name}/project.yaml\n")
-        yaml_file.write("# 프로젝트별 정적 설정. 테스트 설정 등은 나중에 활성화할 수 있습니다.\n\n")
+        yaml_file.write("# 프로젝트별 정적 설정. 테스트 설정 등은 나중에 활성화할 수 있습니다.\n")
+        yaml_file.write(f"# __UNCONFIGURED__ 값은 실행 전 반드시 실제 값으로 변경해야 합니다.\n\n")
         yaml.dump(
             project_config,
             yaml_file,
@@ -205,10 +214,15 @@ def generate_project_yaml(
             allow_unicode=True,
             sort_keys=False,
         )
+    return yaml_path
 
 
-def initialize_project_state(project_root: Path, project_name: str) -> None:
-    """project_state.json을 초기 상태로 생성한다."""
+def initialize_project_state(project_root: Path, project_name: str) -> Path:
+    """project_state.json을 초기 상태로 생성한다.
+
+    Returns:
+        생성된 project_state.json 파일의 Path.
+    """
     initial_state = {
         "project_name": project_name,
         "status": "idle",
@@ -221,10 +235,14 @@ def initialize_project_state(project_root: Path, project_name: str) -> None:
     state_path = project_root / "project_state.json"
     with open(state_path, "w", encoding="utf-8") as state_file:
         json.dump(initial_state, state_file, ensure_ascii=False, indent=2)
+    return state_path
 
 
 def main() -> None:
-    """대화형 프로젝트 초기화 메인 흐름."""
+    """대화형 프로젝트 초기화 메인 흐름.
+
+    사용자에게 대화형으로 정보를 수집한 뒤 HubAPI.create_project()를 호출한다.
+    """
     print("=" * 60)
     print("  Agent Hub — 프로젝트 초기화")
     print("=" * 60)
@@ -241,30 +259,35 @@ def main() -> None:
     # 4. git 설정
     git_settings = ask_git_settings()
 
-    # 신규 코드베이스에 git init (git 활성화 시)
-    if is_new_codebase and git_settings["enabled"]:
+    # 5. HubAPI를 통해 프로젝트 생성
+    # hub_api를 사용하는 대화형 경로에서는 사용자가 직접 값을 입력했으므로
+    # 플레이스홀더가 아닌 실제 값이 들어간다.
+    sys.path.insert(0, str(AGENT_HUB_ROOT / "scripts"))
+    from hub_api.core import HubAPI
+
+    api = HubAPI(str(AGENT_HUB_ROOT))
+    result = api.create_project(
+        name=project_name,
+        description=description,
+        codebase_path=codebase_path,
+        git_settings=git_settings,
+    )
+
+    # 6. 신규 코드베이스에 git init (대화형 전용 — 프로그래밍 API에서는 수행하지 않음)
+    if is_new_codebase and git_settings.get("enabled"):
         import subprocess
 
         subprocess.run(["git", "init"], cwd=codebase_path, check=True, capture_output=True)
         print(f"  ✓ git init 완료: {codebase_path}")
 
-    # 5. 디렉토리 구조 생성
-    project_root = AGENT_HUB_ROOT / "projects" / project_name
-    create_project_directory_structure(project_root)
-
-    # 6. project.yaml 생성
-    generate_project_yaml(project_root, project_name, description, codebase_path, git_settings)
-
-    # 7. project_state.json 초기화
-    initialize_project_state(project_root, project_name)
-
     # 완료 메시지
     print("\n" + "=" * 60)
     print(f"  ✓ 프로젝트 '{project_name}' 초기화 완료!")
-    print(f"  → 설정: projects/{project_name}/project.yaml")
-    print(f"  → 상태: projects/{project_name}/project_state.json")
+    print(f"  → 설정: {result.project_yaml_path}")
+    print(f"  → 상태: {result.project_state_path}")
     print()
     print("  테스트는 나중에 project.yaml에서 활성화할 수 있습니다.")
+    print(f"  __UNCONFIGURED__ 값이 있으면 실행 전 반드시 수정하세요.")
     print("  다음 단계: task JSON을 작성하고 run_agent.sh run으로 실행하세요.")
     print("=" * 60)
 

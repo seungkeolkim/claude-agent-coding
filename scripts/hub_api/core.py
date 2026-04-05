@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from hub_api.models import (
+    CreateProjectResult,
     HumanInteractionInfo,
     ProjectStatus,
     SubmitResult,
@@ -142,6 +143,116 @@ class HubAPI:
             if os.path.isfile(project_yaml):
                 projects.append(name)
         return projects
+
+    # ═══════════════════════════════════════════════════════════
+    # 프로젝트 생성
+    # ═══════════════════════════════════════════════════════════
+
+    def _get_init_project_module(self):
+        """init_project 모듈을 lazy import한다."""
+        if not hasattr(self, "_init_project_module"):
+            import importlib
+            import sys as _sys
+            scripts_dir = os.path.join(self.root, "scripts")
+            if scripts_dir not in _sys.path:
+                _sys.path.insert(0, scripts_dir)
+            self._init_project_module = importlib.import_module("init_project")
+        return self._init_project_module
+
+    def create_project(
+        self,
+        name: str,
+        description: str,
+        codebase_path: str,
+        git_settings: Optional[dict] = None,
+    ) -> CreateProjectResult:
+        """
+        새 프로젝트를 생성한다.
+
+        디렉토리 구조, project.yaml, project_state.json을 생성한다.
+        설정되지 않은 필드는 __UNCONFIGURED__ 플레이스홀더가 들어가며,
+        프로젝트 실행 전 반드시 사용자가 실제 값으로 교체해야 한다.
+
+        Args:
+            name: 프로젝트 이름 (영문소문자, 숫자, 하이픈)
+            description: 프로젝트 설명
+            codebase_path: 코드베이스 절대경로 (없으면 자동 생성)
+            git_settings: git 연동 설정 dict. None이면 플레이스홀더 기본값 사용.
+                keys: enabled, remote, author_name, author_email,
+                      auto_merge, pr_target_branch
+
+        Returns:
+            CreateProjectResult
+
+        Raises:
+            ValueError: 이름 형식 오류 또는 상대경로
+            FileExistsError: 이미 존재하는 프로젝트
+        """
+        init_project = self._get_init_project_module()
+
+        # 1. 이름 유효성 검사
+        if not init_project.PROJECT_NAME_PATTERN.match(name):
+            raise ValueError(
+                f"잘못된 프로젝트 이름: '{name}'. "
+                "영문소문자, 숫자, 하이픈만 사용 가능. 하이픈으로 시작/끝 불가."
+            )
+
+        # 2. 중복 검사
+        project_directory = os.path.join(self.projects_dir, name)
+        if os.path.exists(project_directory):
+            raise FileExistsError(
+                f"프로젝트가 이미 존재합니다: {name}"
+            )
+
+        # 3. codebase_path 절대경로 검증
+        expanded_codebase_path = os.path.expanduser(codebase_path)
+        if not os.path.isabs(expanded_codebase_path):
+            raise ValueError(
+                f"codebase_path는 절대경로여야 합니다: '{codebase_path}'"
+            )
+
+        # 4. codebase 디렉토리가 없으면 자동 생성
+        if not os.path.exists(expanded_codebase_path):
+            os.makedirs(expanded_codebase_path, exist_ok=True)
+        elif not os.path.isdir(expanded_codebase_path):
+            raise ValueError(
+                f"codebase_path가 디렉토리가 아닙니다: '{expanded_codebase_path}'"
+            )
+
+        # 5. git_settings 기본값 merge (미설정 필드는 플레이스홀더)
+        placeholder = init_project.UNCONFIGURED_PLACEHOLDER
+        default_git_settings = {
+            "enabled": False,
+            "remote": "origin",
+            "author_name": placeholder,
+            "author_email": placeholder,
+            "auto_merge": False,
+            "pr_target_branch": "main",
+        }
+        if git_settings:
+            default_git_settings.update(git_settings)
+        effective_git_settings = default_git_settings
+
+        # 6. 디렉토리 구조 생성
+        from pathlib import Path
+        project_root = Path(project_directory)
+        init_project.create_project_directory_structure(project_root)
+
+        # 7. project.yaml 생성
+        yaml_path = init_project.generate_project_yaml(
+            project_root, name, description,
+            expanded_codebase_path, effective_git_settings,
+        )
+
+        # 8. project_state.json 초기화
+        state_path = init_project.initialize_project_state(project_root, name)
+
+        return CreateProjectResult(
+            project_name=name,
+            project_directory=str(project_directory),
+            project_yaml_path=str(yaml_path),
+            project_state_path=str(state_path),
+        )
 
     # ═══════════════════════════════════════════════════════════
     # task 생명주기
@@ -321,6 +432,79 @@ class HubAPI:
         self._save_json_atomic(cmd_path, cmd_data)
         return True
 
+    def get_plan(self, project: str, task_id: str) -> Optional[dict]:
+        """
+        task의 plan.json을 읽어 dict로 반환한다.
+
+        plan이 아직 생성되지 않았으면 None을 반환한다.
+
+        Args:
+            project: 프로젝트명
+            task_id: task ID
+
+        Returns:
+            plan dict 또는 None
+        """
+        tasks_dir = self._tasks_dir(project)
+        task_file = self._find_task_file(tasks_dir, task_id)
+        if not task_file:
+            raise FileNotFoundError(f"task를 찾을 수 없음: {project}/{task_id}")
+
+        # plan.json은 tasks/{task_id}/plan.json 에 위치
+        plan_dir = os.path.join(tasks_dir, task_id)
+        plan_path = os.path.join(plan_dir, "plan.json")
+
+        if not os.path.isfile(plan_path):
+            return None
+
+        return self._load_json(plan_path)
+
+    def resubmit(self, project: str, task_id: str,
+                 config_override: Optional[dict] = None) -> SubmitResult:
+        """
+        cancelled/failed task를 새 task로 재제출한다.
+
+        원본 task의 title, description, attachments를 복사하여 새 task를 생성한다.
+        원본 task는 변경하지 않는다.
+
+        Args:
+            project: 프로젝트명
+            task_id: 원본 task ID
+            config_override: 새 task에 적용할 config_override (없으면 원본 것 사용)
+
+        Returns:
+            SubmitResult (새로 생성된 task 정보)
+
+        Raises:
+            FileNotFoundError: task를 찾을 수 없음
+            ValueError: 재제출 가능한 상태가 아님 (cancelled/failed만 가능)
+        """
+        tasks_dir = self._tasks_dir(project)
+        task_file = self._find_task_file(tasks_dir, task_id)
+        if not task_file:
+            raise FileNotFoundError(f"task를 찾을 수 없음: {project}/{task_id}")
+
+        original_task = self._load_json(task_file)
+        original_status = original_task.get("status", "")
+
+        # cancelled/failed만 재제출 가능
+        resubmittable_statuses = {"cancelled", "failed"}
+        if original_status not in resubmittable_statuses:
+            raise ValueError(
+                f"task {task_id}는 '{original_status}' 상태이므로 재제출할 수 없습니다. "
+                f"재제출 가능 상태: {', '.join(sorted(resubmittable_statuses))}"
+            )
+
+        # 원본의 title, description, attachments를 복사하여 새 task 생성
+        return self.submit(
+            project=project,
+            title=original_task.get("title", ""),
+            description=original_task.get("description", ""),
+            attachments=original_task.get("attachments"),
+            config_override=config_override or original_task.get("config_override", {}),
+            source=original_task.get("submitted_via", "cli"),
+        )
+
     # ═══════════════════════════════════════════════════════════
     # human interaction
     # ═══════════════════════════════════════════════════════════
@@ -495,12 +679,40 @@ class HubAPI:
         return overrides
 
     def pause(self, project: str, task_id: Optional[str] = None) -> bool:
-        """프로젝트 또는 특정 task를 일시정지한다."""
+        """프로젝트 또는 특정 task를 일시정지한다.
+
+        task_id를 지정한 경우, 실행 중(in_progress)인 task만 일시정지 가능.
+        종료된 task(completed, cancelled, failed)에는 False 반환.
+        """
+        if task_id:
+            self._validate_task_is_active(project, task_id, "pause")
         return self._send_command(project, "pause", task_id)
 
     def resume(self, project: str, task_id: Optional[str] = None) -> bool:
-        """프로젝트 또는 특정 task를 재개한다."""
+        """프로젝트 또는 특정 task를 재개한다.
+
+        task_id를 지정한 경우, 실행 중이거나 대기 중인 task만 재개 가능.
+        종료된 task(completed, cancelled, failed)에는 ValueError.
+        """
+        if task_id:
+            self._validate_task_is_active(project, task_id, "resume")
         return self._send_command(project, "resume", task_id)
+
+    def _validate_task_is_active(self, project: str, task_id: str, action: str) -> None:
+        """task가 활성 상태인지 검증한다. 종료된 task이면 ValueError."""
+        terminal_statuses = {"completed", "cancelled", "failed"}
+        tasks_dir = self._tasks_dir(project)
+        task_file = self._find_task_file(tasks_dir, task_id)
+        if not task_file:
+            raise FileNotFoundError(f"task를 찾을 수 없음: {project}/{task_id}")
+
+        task = self._load_json(task_file)
+        current_status = task.get("status", "")
+        if current_status in terminal_statuses:
+            raise ValueError(
+                f"task {task_id}는 '{current_status}' 상태이므로 {action}할 수 없습니다. "
+                f"재실행하려면 resubmit을 사용하세요."
+            )
 
     def _send_command(self, project: str, action: str,
                       task_id: Optional[str] = None) -> bool:

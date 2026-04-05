@@ -839,6 +839,9 @@ def run_pipeline(args):
     if git_enabled:
         git_provider = git_config.get("provider", "github")
         auth_token = git_config.get("auth_token", "")
+        # project.yaml의 auth_token이 비어있으면 config.yaml의 github_token을 fallback으로 사용
+        if not auth_token:
+            auth_token = config.get("machines", {}).get("executor", {}).get("github_token", "")
         if git_provider == "github":
             ensure_gh_auth(auth_token, codebase_path=codebase_path)
         elif git_provider != "github":
@@ -1199,8 +1202,11 @@ def finalize_task(agent_hub_root, project_name, task_id, task_file,
 
         # PR 작업 전 gh 인증 재확인
         git_provider = git_config.get("provider", "github")
+        finalize_auth_token = git_config.get("auth_token", "")
+        if not finalize_auth_token:
+            finalize_auth_token = config.get("machines", {}).get("executor", {}).get("github_token", "")
         if git_provider == "github":
-            ensure_gh_auth(git_config.get("auth_token", ""), codebase_path=codebase_path)
+            ensure_gh_auth(finalize_auth_token, codebase_path=codebase_path)
 
         log_step("Git: PR 생성")
         try:

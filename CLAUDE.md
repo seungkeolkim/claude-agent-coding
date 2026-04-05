@@ -35,6 +35,10 @@ Claude Code 기반 자동 개발 시스템.
 
 ## 사용법
 ```bash
+# 환경 초기화 (최초 또는 새 장비에서)
+./setup_environment.sh          # 전체 초기화 (시스템 도구 검증 + venv + 디렉토리)
+./setup_environment.sh --check  # 검증만 (설치/생성 없이 상태 확인)
+
 # 시스템 설정 생성
 ./create_config.sh
 
