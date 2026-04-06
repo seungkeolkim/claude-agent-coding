@@ -62,6 +62,9 @@ show_help() {
     echo "  chat [--confirmation-mode always_confirm|never_confirm|smart]"
     echo "                       자연어 Chatbot 시작"
     echo ""
+    echo "웹 콘솔:"
+    echo "  web                  웹 모니터링 콘솔 시작 (기본 포트: 9880)"
+    echo ""
     echo "agent_type:"
     echo "  planner, coder, reviewer, setup, unit_tester, e2e_tester, reporter"
     echo ""
@@ -435,6 +438,13 @@ case "$COMMAND" in
     chat)
         shift
         PYTHONPATH="${SCRIPT_DIR}/scripts" python3 "${SCRIPT_DIR}/scripts/chatbot.py" "$@"
+        ;;
+    web)
+        shift
+        if [[ -f "${SCRIPT_DIR}/activate_venv.sh" ]]; then
+            source "${SCRIPT_DIR}/activate_venv.sh"
+        fi
+        AGENT_HUB_ROOT="${SCRIPT_DIR}" PYTHONPATH="${SCRIPT_DIR}:${SCRIPT_DIR}/scripts" python3 -m scripts.web.server "$@"
         ;;
     submit|list|pending|approve|reject|feedback|config|pause|resume|cancel|notifications)
         shift

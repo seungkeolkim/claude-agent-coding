@@ -12,7 +12,7 @@
 - **TM Phase 완료:** Task Manager, CLI (11개 서브커맨드), hub_api, human review, task 큐 블로킹, 4계층 config merge
 - **Phase 1.4 완료:** 알림 시스템, Usage check (3계층 threshold), 재알림, 테스트 스위트 (85개)
 - **Phase 1.5 완료:** Chatbot 레이어, Protocol, 세션 관리 (140개 테스트)
-- **Phase 1.6 진행중:** Chatbot 사용성 개선 (177개 테스트)
+- **Phase 1.6 완료:** Chatbot 사용성 개선 (177개 테스트)
 
 ---
 
@@ -152,11 +152,10 @@ project.yaml의 `git.auth_token`이 비어있을 때 config.yaml의 `machines.ex
 
 | Phase | 내용 | 상태 |
 |-------|------|------|
-| 1 잔여 | E2E 테스트장비 연동 (e2e_watcher.sh, SSH) | 미착수 |
-| 2.0 | scope 파라미터 + chatbot 실행 모델 개선 | 미착수 |
-| 2.0 | GH_TOKEN 환경변수 방식 전환 (멀티유저 격리) | 미착수 |
-| 2.1 | Web monitor & chat | 미착수 |
+| 2.0 | 웹 대시보드 + Web monitor & chat | **다음** |
+| 2.1 | 고급 기능: Pipeline resume, SQLite, user_preferences, GH_TOKEN 환경변수, Merge conflict, task 순서 변경 | 미착수 |
 | 2.2 | Messenger (Slack/Telegram) | 미착수 |
+| 2.3 | E2E 테스트장비 연동, 로컬 E2E (웹 이후로 연기) | 미착수 |
 
 ---
 

@@ -29,6 +29,21 @@ PID_DIR="${SCRIPT_DIR}/.pids"
 # TM PID 파일: task_manager.{PID}.pid 패턴
 LOG_DIR="${SCRIPT_DIR}/logs"
 TM_LOG="${LOG_DIR}/task_manager.log"
+WEB_LOG="${LOG_DIR}/web_console.log"
+WEB_PID_FILE="${PID_DIR}/web_console.pid"
+
+read_web_port() {
+    # config.yaml에서 web.port를 읽는다. 없으면 기본값 9880.
+    python3 -c "
+import yaml, sys
+try:
+    with open('${CONFIG_FILE}') as f:
+        c = yaml.safe_load(f) or {}
+    print(c.get('web', {}).get('port', 9880))
+except Exception:
+    print(9880)
+" 2>/dev/null
+}
 
 # ═══════════════════════════════════════════════════════════
 # help 명령
@@ -40,10 +55,10 @@ show_help() {
     echo "  ./run_system.sh <command> [options]"
     echo ""
     echo "명령:"
-    echo "  start              Task Manager를 백그라운드로 실행"
+    echo "  start              Task Manager + Web Console을 백그라운드로 실행"
     echo "  start --dummy      Task Manager를 dummy 모드로 실행 (claude 호출 없이)"
-    echo "  stop               Task Manager 종료 (실행 중 WFC는 완료 대기)"
-    echo "  stop --force       Task Manager + 모든 WFC 즉시 강제종료"
+    echo "  stop               Task Manager + Web Console 종료 (실행 중 WFC는 완료 대기)"
+    echo "  stop --force       Task Manager + Web Console + 모든 WFC 즉시 강제종료"
     echo "  status             시스템 상태 출력"
     echo "  help               이 도움말 표시"
     echo ""
@@ -51,6 +66,7 @@ show_help() {
     echo ""
     echo "로그 확인:"
     echo "  tail -f logs/task_manager.log"
+    echo "  tail -f logs/web_console.log"
 }
 
 # ═══════════════════════════════════════════════════════════
@@ -156,9 +172,26 @@ cmd_start() {
         exit 1
     fi
 
+    # ─── Web Console 시작 ───
+    mkdir -p "$LOG_DIR"
+    AGENT_HUB_ROOT="${SCRIPT_DIR}" PYTHONPATH="${SCRIPT_DIR}:${SCRIPT_DIR}/scripts" \
+        nohup python3 -m scripts.web.server >> "${WEB_LOG}" 2>&1 &
+    local web_pid=$!
+
+    sleep 1
+    local web_port
+    web_port=$(read_web_port)
+    if kill -0 "$web_pid" 2>/dev/null; then
+        echo "$web_pid" > "$WEB_PID_FILE"
+        log_info "Web Console 시작됨 (PID: ${web_pid}, http://localhost:${web_port})"
+    else
+        log_warn "Web Console 시작 실패. 로그를 확인하세요: ${WEB_LOG}"
+    fi
+
     echo ""
     log_info "Task Manager 시작됨 (PID: ${tm_pid})"
-    log_info "  로그 확인: tail -f ${TM_LOG}"
+    log_info "  TM 로그:  tail -f ${TM_LOG}"
+    log_info "  Web 로그: tail -f ${WEB_LOG}"
     log_info "  상태 확인: ./run_system.sh status"
     log_info "  종료 방법: ./run_system.sh stop"
     echo ""
@@ -167,11 +200,27 @@ cmd_start() {
 # ═══════════════════════════════════════════════════════════
 # stop 명령
 # ═══════════════════════════════════════════════════════════
+stop_web_console() {
+    # Web Console 프로세스를 종료한다.
+    if [[ -f "$WEB_PID_FILE" ]]; then
+        local web_pid
+        web_pid=$(cat "$WEB_PID_FILE")
+        if kill -0 "$web_pid" 2>/dev/null; then
+            kill "$web_pid" 2>/dev/null || true
+            log_info "Web Console 종료됨 (PID: ${web_pid})"
+        fi
+        rm -f "$WEB_PID_FILE"
+    fi
+}
+
 cmd_stop() {
     local force=false
     if [[ "${1:-}" == "--force" ]]; then
         force=true
     fi
+
+    # Web Console 먼저 종료
+    stop_web_console
 
     if ! is_tm_running; then
         log_warn "Task Manager가 실행 중이 아닙니다."
@@ -251,6 +300,21 @@ cmd_status() {
         log_warn "Task Manager: 종료됨 (stale PID 파일)"
     else
         log_warn "Task Manager: 미실행"
+    fi
+
+    # Web Console 상태
+    if [[ -f "$WEB_PID_FILE" ]]; then
+        local web_pid
+        web_pid=$(cat "$WEB_PID_FILE")
+        if kill -0 "$web_pid" 2>/dev/null; then
+            local web_port
+            web_port=$(read_web_port)
+            log_info "Web Console:  ${GREEN}실행 중${NC} (PID ${web_pid}, http://localhost:${web_port})"
+        else
+            log_warn "Web Console:  종료됨 (stale PID 파일)"
+        fi
+    else
+        log_warn "Web Console:  미실행"
     fi
 
     # 프로젝트별 상태

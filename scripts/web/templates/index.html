@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Hub Console</title>
+    <link rel="stylesheet" href="/static/style.css?v=2">
+</head>
+<body>
+    <header id="header">
+        <h1>Agent Hub Console</h1>
+        <div id="header-right">
+            <span id="notification-badge" class="badge hidden">0</span>
+            <span id="tm-status" class="status-indicator"></span>
+        </div>
+    </header>
+
+    <nav id="nav">
+        <button class="nav-btn active" data-tab="dashboard">Dashboard</button>
+        <button class="nav-btn" data-tab="tasks">Tasks</button>
+        <button class="nav-btn" data-tab="notifications">Notifications</button>
+        <button class="nav-btn" data-tab="chat">Chat</button>
+    </nav>
+
+    <main id="main">
+        <!-- Dashboard 탭 -->
+        <section id="tab-dashboard" class="tab-content active">
+            <h2>System Status</h2>
+            <div id="system-status"></div>
+            <h2>Projects</h2>
+            <div id="project-cards"></div>
+            <h2>Pending Approvals</h2>
+            <div id="pending-list"></div>
+        </section>
+
+        <!-- Tasks 탭 -->
+        <section id="tab-tasks" class="tab-content">
+            <div id="task-filters">
+                <select id="filter-project"><option value="">All Projects</option></select>
+                <select id="filter-status">
+                    <option value="">All Status</option>
+                    <option value="submitted">submitted</option>
+                    <option value="queued">queued</option>
+                    <option value="in_progress">in_progress</option>
+                    <option value="waiting_for_human">waiting_for_human</option>
+                    <option value="pending_review">pending_review</option>
+                    <option value="completed">completed</option>
+                    <option value="cancelled">cancelled</option>
+                    <option value="failed">failed</option>
+                </select>
+                <button id="btn-new-task" class="btn btn-primary">+ New Task</button>
+            </div>
+            <div id="task-list"></div>
+        </section>
+
+        <!-- Notifications 탭 -->
+        <section id="tab-notifications" class="tab-content">
+            <div id="notification-list"></div>
+        </section>
+
+        <!-- Chat 탭 -->
+        <section id="tab-chat" class="tab-content">
+            <div id="chat-area">
+                <div id="chat-messages"></div>
+                <div id="chat-input-area">
+                    <input type="text" id="chat-input" placeholder="메시지 입력..." />
+                    <button id="btn-chat-send" class="btn btn-primary">Send</button>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- 모달 -->
+    <div id="modal-overlay" class="hidden">
+        <div id="modal">
+            <div id="modal-header">
+                <h3 id="modal-title"></h3>
+                <button id="modal-close">&times;</button>
+            </div>
+            <div id="modal-body"></div>
+            <div id="modal-footer"></div>
+        </div>
+    </div>
+
+    <script src="/static/app.js?v=2"></script>
+</body>
+</html>

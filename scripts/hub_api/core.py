@@ -511,8 +511,9 @@ class HubAPI:
 
     def pending(self, project: Optional[str] = None) -> list:
         """
-        사용자 응답을 기다리는 human interaction 목록을 반환한다.
-        status가 'waiting_for_human'이고 응답이 아직 없는 task들.
+        사용자 응답을 기다리는 항목 목록을 반환한다.
+        - status가 'waiting_for_human'이고 응답이 아직 없는 human interaction
+        - status가 'pending_review'인 task (PR 머지 대기 등)
         """
         projects = [project] if project else self._list_projects()
         results = []
@@ -529,7 +530,23 @@ class HubAPI:
                 except (json.JSONDecodeError, OSError):
                     continue
 
-                if task.get("status") != "waiting_for_human":
+                status = task.get("status")
+
+                # pending_review: PR 생성 완료, 수동 머지/리뷰 대기
+                if status == "pending_review":
+                    results.append(HumanInteractionInfo(
+                        task_id=task.get("task_id", ""),
+                        project=proj,
+                        interaction_type="pending_review",
+                        message=f"PR 리뷰/머지 대기: {task.get('title', '')}",
+                        options=["approve", "reject"],
+                        requested_at=task.get("pipeline_stage_updated_at"),
+                        payload_path=None,
+                    ))
+                    continue
+
+                # waiting_for_human: 명시적 human interaction 요청
+                if status != "waiting_for_human":
                     continue
 
                 hi = task.get("human_interaction")

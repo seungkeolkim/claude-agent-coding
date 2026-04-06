@@ -53,11 +53,18 @@ claude-agent-coding/
 │   ├── init_project.py            # 대화형 프로젝트 초기화
 │   ├── e2e_watcher.sh             # 테스트장비용 감시 스크립트
 │   │
-│   └── hub_api/                   # 공통 인터페이스 라이브러리
-│       ├── __init__.py
-│       ├── core.py                # HubAPI 클래스 (submit, approve, reject 등)
-│       ├── models.py              # 데이터 모델
-│       └── protocol.py            # Protocol layer (Request/Response, dispatch)
+│   ├── hub_api/                   # 공통 인터페이스 라이브러리
+│   │   ├── __init__.py
+│   │   ├── core.py                # HubAPI 클래스 (submit, approve, reject 등)
+│   │   ├── models.py              # 데이터 모델
+│   │   └── protocol.py            # Protocol layer (Request/Response, dispatch)
+│   │
+│   └── web/                       # Web Monitoring Console (Phase 2.0)
+│       ├── server.py              # FastAPI 웹 서버
+│       ├── db.py                  # SQLite DB 레이어
+│       ├── syncer.py              # 파일→DB sync 엔진
+│       ├── static/                # JS/CSS
+│       └── templates/             # Jinja2 템플릿
 │
 ├── config/
 │   └── agent_prompts/             # 8개 agent 역할 프롬프트
@@ -91,7 +98,8 @@ claude-agent-coding/
 │   └── test_e2e_tm_lifecycle.py   # E2E: TM full lifecycle
 │
 ├── docs_for_claude/               # Claude 세션용 내부 문서
-│   ├── 003-agent-system-spec-v4.md    # 전체 아키텍처 명세 (현행)
+│   ├── 004-agent-system-spec-v5.md    # 전체 아키텍처 명세 (현행)
+│   ├── 010-handoff-phase-2.0-web-console.md
 │   └── 005-design-history-archive.md
 │
 └── docs_history/                  # 이전 버전 아카이브
@@ -133,11 +141,13 @@ source activate_venv.sh
 ### 3. Task Manager 시작
 
 ```bash
-# 백그라운드로 TM 시작
+# 백그라운드로 TM + Web Console 시작
 ./run_system.sh start
 
 # 더미 모드 (Claude 호출 없이 파이프라인 흐름만 검증)
 ./run_system.sh start --dummy
+
+# Web Console: http://localhost:9880
 ```
 
 ### 4. Task 제출 및 관리
@@ -267,7 +277,7 @@ config.yaml (시스템 기본값)
 ## 테스트
 
 ```bash
-./run_test.sh all          # 전체 (140개)
+./run_test.sh all          # 전체 (213개)
 ./run_test.sh unit         # Unit 테스트만
 ./run_test.sh integration  # Integration 테스트만
 ./run_test.sh e2e          # E2E 테스트만
@@ -282,13 +292,14 @@ config.yaml (시스템 기본값)
 | **TM** | Task Manager + CLI + hub_api + human review + 큐 블로킹 | **완료** |
 | **1.4** | 운영 안정화: 알림, Usage check, 재알림, 테스트 스위트 | **완료** |
 | **1.5** | Chatbot 대화형 인터페이스 + Protocol + 세션 관리 | **완료** |
-| 1 잔여 | E2E 테스트장비 연동 | 예정 |
-| 2.0 | scope 파라미터 + chatbot 실행 모델 개선 | 예정 |
-| 2.1 | Web monitor & chat | 예정 |
+| **1.6** | Chatbot 사용성: create_project, resubmit, get_plan (177개 테스트) | **완료** |
+| **2.0** | Web Monitoring Console + SQLite 하이브리드 (213개 테스트) | **진행 중** |
+| 2.1 | 고급 기능: Pipeline resume, user_preferences 등 | 예정 |
 | 2.2 | Messenger (Slack/Telegram) | 예정 |
+| 2.3 | E2E 테스트장비 연동 | 예정 |
 
 ## 상세 명세
 
-- 전체 아키텍처: [`docs_for_claude/003-agent-system-spec-v4.md`](docs_for_claude/003-agent-system-spec-v4.md)
+- 전체 아키텍처: [`docs_for_claude/004-agent-system-spec-v5.md`](docs_for_claude/004-agent-system-spec-v5.md)
 - 설정 레퍼런스: [`docs/configuration-reference.md`](docs/configuration-reference.md)
 - 설계 히스토리: [`docs_for_claude/005-design-history-archive.md`](docs_for_claude/005-design-history-archive.md)

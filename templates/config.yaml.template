@@ -84,3 +84,8 @@ chatbot:
   #   확인 필요: submit, approve, reject, cancel, config (고위험)
   #   즉시 실행: feedback, mark_notification_read, pause, resume (저위험)
   #   조회성 action(list, get_task, pending, status, notifications)은 항상 즉시 실행
+
+# ─── 웹 콘솔 설정 ───
+web:
+  port: 9880                      # 웹 콘솔 포트
+  db_path: "data/ai_agent_coding.db"  # SQLite DB 경로 (상대경로는 agent_hub_root 기준)

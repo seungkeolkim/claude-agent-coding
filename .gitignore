@@ -88,6 +88,10 @@ local_settings.py
 db.sqlite3
 db.sqlite3-journal
 
+# Agent Hub — SQLite DB (런타임 생성물)
+data/
+test_sample.db
+
 # Flask stuff:
 instance/
 .webassets-cache

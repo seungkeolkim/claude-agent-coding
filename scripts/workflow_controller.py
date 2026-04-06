@@ -769,6 +769,31 @@ def update_task_field(task_file, field, value):
     return task
 
 
+def update_pipeline_stage(task_file, stage, detail=None):
+    """
+    파이프라인 진행 단계를 task JSON에 기록한다.
+    웹 콘솔에서 현재 어느 단계인지 표시하기 위한 용도.
+
+    stage 예: "planner", "coder", "reviewer", "git_push", "pr_create", "reporter"
+    detail 예: "subtask 1/3", "attempt 2"
+    """
+    task = load_json(task_file)
+    task["pipeline_stage"] = stage
+    task["pipeline_stage_detail"] = detail
+    task["pipeline_stage_updated_at"] = datetime.now(timezone.utc).isoformat()
+    save_json(task_file, task)
+
+
+def record_failure_reason(task_file, reason):
+    """
+    task 실패 시 원인을 기록한다.
+    웹 콘솔에서 실패 원인을 확인할 수 있다.
+    """
+    task = load_json(task_file)
+    task["failure_reason"] = reason
+    save_json(task_file, task)
+
+
 def run_pipeline(args):
     """메인 파이프라인 실행 로직."""
     agent_hub_root = str(Path(__file__).resolve().parent.parent)
@@ -852,6 +877,7 @@ def run_pipeline(args):
 
     # ─── Phase 1: Planner ───
     log_step("Phase 1: Planner 실행")
+    update_pipeline_stage(task_file, "planner")
 
     success, plan_data = run_agent(
         agent_hub_root, "planner", args.project, task_id,
@@ -860,6 +886,7 @@ def run_pipeline(args):
 
     if not success or not plan_data:
         log_error("Planner 실패. 파이프라인 중단.")
+        record_failure_reason(task_file, "Planner 실패")
         update_task_field(task_file, "status", "failed")
         update_project_state(project_dir, status="idle", last_error=task_id)
         emit_notification(
@@ -874,6 +901,7 @@ def run_pipeline(args):
 
     if not subtasks:
         log_error("Planner가 subtask를 생성하지 않았습니다.")
+        record_failure_reason(task_file, "Planner가 subtask를 생성하지 않음")
         update_task_field(task_file, "status", "failed")
         update_project_state(project_dir, status="idle", last_error=task_id)
         emit_notification(
@@ -887,6 +915,7 @@ def run_pipeline(args):
     # ─── Human Review: Plan 승인 대기 ───
     human_review = effective.get("human_review_policy", {})
     if human_review.get("review_plan", False) and not args.dummy:
+        update_pipeline_stage(task_file, "plan_review", f"subtask {len(subtasks)}개")
         plan_path = os.path.join("tasks", task_id, "plan.json")
         request_human_review(task_file, task_id, "plan_review", plan_path, len(subtasks),
                              project_dir=project_dir)
@@ -933,6 +962,7 @@ def run_pipeline(args):
     # ─── Git: task 브랜치 생성 (Planner 후) ───
     if git_enabled:
         log_step("Git: task 브랜치 생성")
+        update_pipeline_stage(task_file, "git_branch")
         # 우선순위: task JSON branch_name > planner 출력 branch_name > fallback
         branch_name = (
             task.get("branch_name")
@@ -1082,20 +1112,33 @@ def run_pipeline(args):
 
         # ─── Git: subtask 커밋 + push ───
         if git_enabled:
+            update_pipeline_stage(task_file, "git_push", f"subtask {subtask_id}")
             git_remote = git_config.get("remote", "origin")
             subtask_title = subtask.get("title", subtask_id)
-            git_commit_subtask(
-                codebase_path, task_id, subtask_id, subtask_title,
-                git_config.get("author_name", "Agent Hub"),
-                git_config.get("author_email", "agent@hub"),
-                remote=git_remote, branch=task_branch,
-            )
+            try:
+                git_commit_subtask(
+                    codebase_path, task_id, subtask_id, subtask_title,
+                    git_config.get("author_name", "Agent Hub"),
+                    git_config.get("author_email", "agent@hub"),
+                    remote=git_remote, branch=task_branch,
+                )
+            except RuntimeError as e:
+                log_error(f"[git] subtask {subtask_id} 커밋/push 실패: {e}")
+                record_failure_reason(task_file, f"git push 실패: {e}")
+                update_task_field(task_file, "status", "failed")
+                update_project_state(project_dir, status="idle", last_error=task_id)
+                emit_notification(
+                    project_dir=project_dir, event_type="task_failed", task_id=task_id,
+                    message=f"git push 실패 (subtask {subtask_id}): {e}",
+                )
+                sys.exit(1)
 
         completed_subtasks.append(subtask_id)
         update_task_field(task_file, "completed_subtasks", completed_subtasks)
         log_info(f"subtask {subtask_id} 완료 ({i+1}/{len(subtasks)})")
 
     # ─── Phase 3: Summarizer + PR ───
+    update_pipeline_stage(task_file, "finalizing")
     finalize_task(
         agent_hub_root, args.project, task_id, task_file,
         completed_subtasks, git_enabled, git_config,
@@ -1144,14 +1187,23 @@ def run_pipeline_from_subtasks(agent_hub_root, project_name, task_id, task_file,
 
         # ─── Git: subtask 커밋 + push ───
         if git_enabled:
+            update_pipeline_stage(task_file, "git_push", f"subtask {subtask_id}")
             git_remote = git_config.get("remote", "origin")
             subtask_title = subtask.get("title", subtask_id)
-            git_commit_subtask(
-                codebase_path, task_id, subtask_id, subtask_title,
-                git_config.get("author_name", "Agent Hub"),
-                git_config.get("author_email", "agent@hub"),
-                remote=git_remote, branch=task_branch,
-            )
+            try:
+                git_commit_subtask(
+                    codebase_path, task_id, subtask_id, subtask_title,
+                    git_config.get("author_name", "Agent Hub"),
+                    git_config.get("author_email", "agent@hub"),
+                    remote=git_remote, branch=task_branch,
+                )
+            except RuntimeError as e:
+                log_error(f"[git] subtask {subtask_id} 커밋/push 실패: {e}")
+                record_failure_reason(task_file, f"git push 실패: {e}")
+                update_task_field(task_file, "status", "failed")
+                project_dir = os.path.join(agent_hub_root, "projects", project_name)
+                update_project_state(project_dir, status="idle", last_error=task_id)
+                sys.exit(1)
 
         completed_subtasks.append(subtask_id)
         update_task_field(task_file, "completed_subtasks", completed_subtasks)
@@ -1173,6 +1225,7 @@ def finalize_task(agent_hub_root, project_name, task_id, task_file,
     """
     # ─── Summarizer 실행 ───
     log_step("Summarizer 실행")
+    update_pipeline_stage(task_file, "summarizer")
     success, summary_data = run_agent(
         agent_hub_root, "summarizer", project_name, task_id,
         dummy=dummy,
@@ -1209,6 +1262,7 @@ def finalize_task(agent_hub_root, project_name, task_id, task_file,
             ensure_gh_auth(finalize_auth_token, codebase_path=codebase_path)
 
         log_step("Git: PR 생성")
+        update_pipeline_stage(task_file, "pr_create")
         try:
             pr_url = git_create_pr(codebase_path, task_branch, pr_target, pr_title, pr_body)
             update_task_field(task_file, "pr_url", pr_url)
@@ -1232,6 +1286,7 @@ def finalize_task(agent_hub_root, project_name, task_id, task_file,
                 update_task_field(task_file, "status", "pending_review")
         except RuntimeError as e:
             log_error(f"PR 처리 실패: {e}")
+            record_failure_reason(task_file, f"PR 처리 실패: {e}")
             update_task_field(task_file, "status", "failed")
             finalize_project_dir = os.path.join(agent_hub_root, "projects", project_name)
             update_project_state(finalize_project_dir, status="idle", last_error=task_id)
@@ -1244,6 +1299,7 @@ def finalize_task(agent_hub_root, project_name, task_id, task_file,
         update_task_field(task_file, "status", "completed")
 
     update_task_field(task_file, "current_subtask", None)
+    update_pipeline_stage(task_file, "done")
 
     # project_state.json 갱신 (TM 연동용)
     finalize_project_dir = os.path.join(agent_hub_root, "projects", project_name)
@@ -1289,6 +1345,7 @@ def run_subtask_pipeline(agent_hub_root, project_name, task_id, subtask_id,
             )
 
         log_info(f"[{subtask_id}] {agent_type} 실행")
+        update_pipeline_stage(task_file, agent_type, f"subtask {subtask_id}")
 
         success, result = run_agent(
             agent_hub_root, agent_type, project_name, task_id,
@@ -1298,6 +1355,7 @@ def run_subtask_pipeline(agent_hub_root, project_name, task_id, subtask_id,
 
         if not success:
             log_error(f"[{subtask_id}] {agent_type} 실행 실패")
+            record_failure_reason(task_file, f"{agent_type} 실행 실패 (subtask {subtask_id})")
             return False
 
         # 결과에 따른 분기
