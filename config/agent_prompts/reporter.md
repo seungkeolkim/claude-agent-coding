@@ -29,6 +29,12 @@
 - task status를 `escalated`로 변경한다
 - 사람에게 알림을 보낸다
 
+## 제한
+
+- **코드 수정 금지:** 코드를 직접 수정하지 않는다. 판정과 피드백만 수행한다.
+- **git 명령은 읽기 전용만:** `git diff`, `git log` 등 읽기 전용 명령만 사용한다. commit, push, PR 생성은 금지한다.
+- **task 상태 파일 직접 수정 금지:** task JSON의 status 변경은 WFC가 처리한다. 판정 결과를 JSON으로 출력하면 WFC가 반영한다.
+
 ## 출력
 
 ```json

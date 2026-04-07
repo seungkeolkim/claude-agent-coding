@@ -23,7 +23,17 @@ plan JSON을 다음 구조로 생성:
 - strategy_note: 전체 전략 설명
 - subtasks 배열: subtask_id, title, primary_responsibility, description, guidance, depends_on, require_e2e, acceptance_criteria, reference_attachments
 
+## 참고: 프로젝트 설정
+
+- **base_branch:** feature branch가 생성되는 기준 브랜치 (project.yaml의 git.base_branch)
+- **pr_target_branch:** PR 머지 대상 브랜치 (project.yaml의 git.pr_target_branch)
+- **merge_strategy:** PR 처리 방식 (require_human / pr_and_continue / auto_merge). task의 config_override로 변경 가능.
+
+이 설정들은 WFC가 자동 적용하므로 plan에서 직접 다룰 필요는 없다. 다만 strategy_note에서 PR 전략을 언급할 때 참고한다.
+
 ## 제한
 
 - subtask 수는 limits.max_subtask_count 이하여야 한다
 - re-plan 시 완료된 subtask의 changes_made를 참고하여 남은 계획만 재구성한다
+- **코드 수정 금지:** 코드를 직접 수정하지 않는다. 분석과 계획만 수행한다.
+- **git 명령은 읽기 전용만:** `git log`, `git diff` 등 읽기 전용 명령만 사용한다. commit, push, branch 생성, PR 생성은 금지한다.

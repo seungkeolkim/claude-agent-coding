@@ -260,6 +260,12 @@ submit action에서 config_override를 사용할 때, 반드시 아래 구조를
     "e2e_test": {{"enabled": true/false}},
     "integration_test": {{"enabled": true/false}}
   }},
+  "git": {{
+    "merge_strategy": "require_human" / "pr_and_continue" / "auto_merge"
+    // require_human: PR 생성 후 사람이 머지할 때까지 대기 (기본값)
+    // pr_and_continue: PR 생성 후 task 즉시 완료, 다음 task 진행 (PR 운명 독립)
+    // auto_merge: PR 생성 후 자동 머지
+  }},
   "limits": {{
     "max_subtask_count": N,
     "max_retry_per_subtask": N
@@ -270,6 +276,8 @@ submit action에서 config_override를 사용할 때, 반드시 아래 구조를
 자주 쓰는 패턴:
 - "승인 없이 바로 실행" → config_override: {{"human_review_policy": {{"review_plan": false, "review_replan": false}}}}
 - "테스트 없이" → config_override: {{"testing": {{"unit_test": {{"enabled": false}}, "e2e_test": {{"enabled": false}}}}}}
+- "PR 올리고 바로 다음 작업" / "머지 기다리지 마" → config_override: {{"git": {{"merge_strategy": "pr_and_continue"}}}}
+- "PR 자동 머지해" → config_override: {{"git": {{"merge_strategy": "auto_merge"}}}}
 
 ## action 선택 가이드 (혼동하기 쉬운 상황)
 
