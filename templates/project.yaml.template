@@ -27,8 +27,11 @@ git:
   remote: "origin"
   author_name: "agent-bot"
   author_email: "agent@example.com"
-  auto_merge: false               # true: PR 생성 후 자동 머지 / false: PR만 생성 (pending_review)
-  pr_target_branch: "develop"     # PR의 base branch
+  base_branch: "develop"           # feature branch 생성 기준 브랜치
+  pr_target_branch: "develop"     # PR 머지 대상 브랜치
+  merge_strategy: "require_human"  # require_human: PR 생성 후 사람이 머지할 때까지 대기
+                                    # pr_and_continue: PR 생성 후 task 즉시 완료, 다음 task 진행 (PR 운명 독립)
+                                    # auto_merge: PR 생성 후 gh pr merge로 자동 머지
   auth_token: ""                  # provider 인증 토큰 (GitHub PAT 등)
 
 # ─── 테스트 ───
@@ -85,7 +88,7 @@ testing:
 # human_review_policy:
 #   review_plan: true               # Planner 결과를 사람이 확인 후 진행
 #   review_replan: true             # replan 발생 시 사람이 확인 후 진행
-#   review_before_merge: false      # 머지 전 사람 확인 (auto_merge=false면 PR로 대체)
+#   review_before_merge: false      # 머지 전 사람 확인 (merge_strategy=require_human이면 PR로 대체)
 #   auto_approve_timeout_hours: 24  # 사람 응답 없으면 자동 승인까지 대기 시간
 
 # ─── task 큐 override (선택적) ───

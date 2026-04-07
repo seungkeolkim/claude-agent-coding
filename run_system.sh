@@ -350,7 +350,7 @@ try:
     PURPLE = '\033[1;35m'
     if status == 'running':
         print(f'  {PURPLE}{status}{task_str}{NC}{error_str}')
-    elif status == 'waiting_for_human':
+    elif status == 'waiting_for_human_plan_confirm':
         YELLOW = '\033[1;33m'
         print(f'  {YELLOW}{status}{task_str}{NC}{error_str}')
     else:

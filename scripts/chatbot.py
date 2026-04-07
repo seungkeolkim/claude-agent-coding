@@ -63,7 +63,9 @@ READ_ONLY_ACTIONS = frozenset({
 
 # 고위험 실행성 — smart 모드에서 확인 필요
 HIGH_RISK_ACTIONS = frozenset({
-    "submit", "approve", "reject", "cancel", "config", "create_project", "resubmit",
+    "submit", "approve", "reject", "cancel", "config",
+    "create_project", "close_project", "reopen_project", "resubmit",
+    "complete_pr_review",
 })
 
 # 저위험 실행성 — smart 모드에서 즉시 실행
@@ -258,6 +260,12 @@ submit action에서 config_override를 사용할 때, 반드시 아래 구조를
     "e2e_test": {{"enabled": true/false}},
     "integration_test": {{"enabled": true/false}}
   }},
+  "git": {{
+    "merge_strategy": "require_human" / "pr_and_continue" / "auto_merge"
+    // require_human: PR 생성 후 사람이 머지할 때까지 대기 (기본값)
+    // pr_and_continue: PR 생성 후 task 즉시 완료, 다음 task 진행 (PR 운명 독립)
+    // auto_merge: PR 생성 후 자동 머지
+  }},
   "limits": {{
     "max_subtask_count": N,
     "max_retry_per_subtask": N
@@ -268,6 +276,8 @@ submit action에서 config_override를 사용할 때, 반드시 아래 구조를
 자주 쓰는 패턴:
 - "승인 없이 바로 실행" → config_override: {{"human_review_policy": {{"review_plan": false, "review_replan": false}}}}
 - "테스트 없이" → config_override: {{"testing": {{"unit_test": {{"enabled": false}}, "e2e_test": {{"enabled": false}}}}}}
+- "PR 올리고 바로 다음 작업" / "머지 기다리지 마" → config_override: {{"git": {{"merge_strategy": "pr_and_continue"}}}}
+- "PR 자동 머지해" → config_override: {{"git": {{"merge_strategy": "auto_merge"}}}}
 
 ## action 선택 가이드 (혼동하기 쉬운 상황)
 
@@ -468,10 +478,17 @@ def format_confirmation_prompt(parsed: dict) -> str:
     if project:
         lines.append(f"  {BOLD}프로젝트:{NC}    {project}")
     for k, v in params.items():
-        display_v = str(v)
-        if len(display_v) > 80:
-            display_v = display_v[:77] + "..."
-        lines.append(f"  {BOLD}{k}:{NC} {display_v}")
+        if isinstance(v, (dict, list)):
+            # dict/list는 pretty print JSON으로 출력 (들여쓰기 정렬)
+            import json as _json
+            pretty = _json.dumps(v, indent=2, ensure_ascii=False)
+            indented = pretty.replace("\n", "\n    ")  # 4칸 들여쓰기
+            lines.append(f"  {BOLD}{k}:{NC}\n    {indented}")
+        else:
+            display_v = str(v)
+            if len(display_v) > 80:
+                display_v = display_v[:77] + "..."
+            lines.append(f"  {BOLD}{k}:{NC} {display_v}")
     if explanation:
         lines.append(f"\n  {explanation}")
     lines.append(f"{DIM}{'─' * 50}{NC}")
@@ -554,9 +571,9 @@ def format_response_for_display(response: Response, action: str) -> str:
                     extra += f", replan: {replan}회"
                 lines.append(extra)
 
-        # waiting_for_human이면 human_interaction 상세 표시
+        # waiting_for_human_plan_confirm이면 human_interaction 상세 표시
         hi = data.get("human_interaction")
-        if status == "waiting_for_human" and hi and not hi.get("response"):
+        if status == "waiting_for_human_plan_confirm" and hi and not hi.get("response"):
             lines.append(f"\n  {YELLOW}[승인 대기]{NC}")
             lines.append(f"  유형:    {hi.get('type', '?')}")
             lines.append(f"  메시지:  {hi.get('message', '')}")

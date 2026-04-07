@@ -13,7 +13,7 @@ Pipeline 흐름:
 Phase 1.1 범위:
     - testing 전부 disabled 상태: Coder → Reviewer → git commit → 다음 subtask
     - testing 하나라도 enabled: Coder → Reviewer → Reporter → git commit → 다음 subtask
-    - git 자동화: task별 브랜치 생성, subtask별 커밋, auto_merge 시 머지
+    - git 자동화: task별 브랜치 생성, subtask별 커밋, merge_strategy에 따라 PR 처리
     - usage threshold 미포함 (추후)
 """
 
@@ -286,13 +286,13 @@ def update_project_state(project_dir, status, current_task_id=None, last_error=N
 def request_human_review(task_file, task_id, review_type, plan_path, subtask_count,
                          project_dir=None):
     """
-    task JSON에 human_interaction을 기록하고 status를 waiting_for_human으로 변경한다.
+    task JSON에 human_interaction을 기록하고 status를 waiting_for_human_plan_confirm으로 변경한다.
     review_type: "plan_review" | "replan_review"
     project_dir: 프로젝트 디렉토리 (알림 발송용). None이면 task_file에서 추론.
     """
     task = load_json(task_file)
 
-    task["status"] = "waiting_for_human"
+    task["status"] = "waiting_for_human_plan_confirm"
     task["human_interaction"] = {
         "type": review_type,
         "message": f"Plan을 확인해주세요. subtask {subtask_count}개 생성됨.",
@@ -327,8 +327,8 @@ def wait_for_human_response(task_file, project_dir, task_id, timeout_hours,
 
     반환: "approve" | "modify" | "cancel" | "timeout"
     """
-    # project_state.json에 waiting_for_human 상태 기록
-    update_project_state(project_dir, status="waiting_for_human",
+    # project_state.json에 waiting_for_human_plan_confirm 상태 기록
+    update_project_state(project_dir, status="waiting_for_human_plan_confirm",
                          current_task_id=task_id)
 
     start_time = time.time()
@@ -858,6 +858,8 @@ def run_pipeline(args):
     git_enabled = git_config.get("enabled", False) and not args.dummy
     codebase_path = effective.get("codebase", {}).get("path", "")
     default_branch = effective.get("project", {}).get("default_branch", "main")
+    # base_branch: feature branch 생성 기준 (미설정 시 default_branch fallback)
+    base_branch = git_config.get("base_branch", default_branch)
     task_branch = None
 
     # ─── Git provider 인증 ───
@@ -982,7 +984,7 @@ def run_pipeline(args):
                     branch_name = f"feature/{task_id}-{suffix}"
             else:
                 branch_name = f"feature/{task_id}-{branch_name}"
-        task_branch = git_create_task_branch(codebase_path, branch_name, default_branch)
+        task_branch = git_create_task_branch(codebase_path, branch_name, base_branch)
         update_task_field(task_file, "branch", task_branch)
 
     # ─── Usage threshold 설정 로드 ───
@@ -1251,7 +1253,14 @@ def finalize_task(agent_hub_root, project_name, task_id, task_file,
     # ─── PR 생성 + 머지 ───
     if git_enabled and task_branch:
         pr_target = git_config.get("pr_target_branch", default_branch)
-        auto_merge = git_config.get("auto_merge", False)
+        # merge_strategy: require_human | pr_and_continue | auto_merge
+        # 하위 호환: auto_merge(bool) 키가 있으면 변환
+        if "merge_strategy" in git_config:
+            merge_strategy = git_config["merge_strategy"]
+        elif "auto_merge" in git_config:
+            merge_strategy = "auto_merge" if git_config["auto_merge"] else "require_human"
+        else:
+            merge_strategy = "require_human"
 
         # PR 작업 전 gh 인증 재확인
         git_provider = git_config.get("provider", "github")
@@ -1277,13 +1286,16 @@ def finalize_task(agent_hub_root, project_name, task_id, task_file,
                 details={"pr_url": pr_url},
             )
 
-            if auto_merge:
+            if merge_strategy == "auto_merge":
                 log_step("Git: PR 자동 머지")
                 git_merge_pr(codebase_path, pr_url)
                 update_task_field(task_file, "status", "completed")
-            else:
-                log_info(f"[git] auto_merge=false — PR 생성 완료. 수동 머지 대기: {pr_url}")
-                update_task_field(task_file, "status", "pending_review")
+            elif merge_strategy == "pr_and_continue":
+                log_info(f"[git] merge_strategy=pr_and_continue — PR 생성 완료, task 즉시 완료: {pr_url}")
+                update_task_field(task_file, "status", "completed")
+            else:  # require_human (기본값)
+                log_info(f"[git] merge_strategy=require_human — PR 생성 완료. 수동 머지 대기: {pr_url}")
+                update_task_field(task_file, "status", "waiting_for_human_pr_approve")
         except RuntimeError as e:
             log_error(f"PR 처리 실패: {e}")
             record_failure_reason(task_file, f"PR 처리 실패: {e}")

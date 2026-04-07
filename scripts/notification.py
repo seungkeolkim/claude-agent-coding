@@ -7,7 +7,7 @@ TM이 폴링하여 터미널에 출력한다.
 알림 이벤트 종류:
     task_completed          — task 완료 (PR URL 포함)
     task_failed             — task 실패 (에러 요약)
-    pr_created              — PR 생성됨 (auto_merge=false일 때)
+    pr_created              — PR 생성됨
     plan_review_requested   — plan 승인 대기
     replan_review_requested — replan 승인 대기
     escalation              — 에스컬레이션 발생

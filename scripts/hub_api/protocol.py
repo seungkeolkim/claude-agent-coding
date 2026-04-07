@@ -380,6 +380,43 @@ def _handle_resubmit(api, request: Request) -> Response:
     )
 
 
+def _handle_close_project(api, request: Request) -> Response:
+    """프로젝트를 종료한다."""
+    if err := _require_project(request):
+        return err
+
+    api.close_project(request.project)
+    return _ok(True, f"프로젝트 '{request.project}' 종료 완료")
+
+
+def _handle_reopen_project(api, request: Request) -> Response:
+    """종료된 프로젝트를 다시 활성화한다."""
+    if err := _require_project(request):
+        return err
+
+    api.reopen_project(request.project)
+    return _ok(True, f"프로젝트 '{request.project}' 다시 활성화 완료")
+
+
+def _handle_complete_pr_review(api, request: Request) -> Response:
+    """PR 리뷰 결과를 반영한다 (merged → completed, rejected → failed)."""
+    if err := _require_project(request):
+        return err
+    if err := _require_params(request, "task_id", "result"):
+        return err
+
+    ok = api.complete_pr_review(
+        request.project,
+        request.params["task_id"],
+        result=request.params["result"],
+        message=request.params.get("message"),
+    )
+    if ok:
+        result_label = "머지 완료" if request.params["result"] == "merged" else "거부 처리"
+        return _ok(True, f"task {request.params['task_id']} PR {result_label}")
+    return _error(ErrorCode.INVALID_STATE, "PR 리뷰 대기 상태가 아닙니다.")
+
+
 def _handle_create_project(api, request: Request) -> Response:
     """새 프로젝트를 생성한다."""
     if err := _require_params(request, "name", "description", "codebase_path"):
@@ -518,6 +555,27 @@ ACTION_REGISTRY = {
         "required_params": ["name", "description", "codebase_path"],
         "optional_params": ["git_settings"],
         "requires_project": False,
+    },
+    "complete_pr_review": {
+        "handler": _handle_complete_pr_review,
+        "description": "PR 리뷰 결과를 반영한다. 'PR 머지됐어', 'PR 거부해' 등의 요청에 사용.",
+        "required_params": ["task_id", "result"],
+        "optional_params": ["message"],
+        "requires_project": True,
+    },
+    "close_project": {
+        "handler": _handle_close_project,
+        "description": "프로젝트를 종료한다. 모든 task가 종료 상태일 때만 가능. '프로젝트 닫기', '프로젝트 종료' 등의 요청에 사용.",
+        "required_params": [],
+        "optional_params": [],
+        "requires_project": True,
+    },
+    "reopen_project": {
+        "handler": _handle_reopen_project,
+        "description": "종료된(closed) 프로젝트를 다시 활성화한다. '프로젝트 다시 열기', '프로젝트 재활성화' 등의 요청에 사용.",
+        "required_params": [],
+        "optional_params": [],
+        "requires_project": True,
     },
 }
 

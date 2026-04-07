@@ -80,7 +80,7 @@
   - Chat: 기본 구조 (Step 5 예정)
   - SSE EventSource 연결, 모달 시스템
 - **`static/style.css`:** 다크 테마 (남색 배경, 시안 accent)
-  - 상태별 배지 색상 (submitted, queued, in_progress, waiting_for_human, pending_review, completed, cancelled, failed, planned, needs_replan)
+  - 상태별 배지 색상 (submitted, queued, in_progress, waiting_for_human_plan_confirm, waiting_for_human_pr_approve, completed, cancelled, failed, planned, needs_replan)
   - pipeline_stage 배지, failure_reason 표시, inline detail 스타일 + slide-down 애니메이션
 
 ### 5. Pipeline 가시성 (`scripts/workflow_controller.py` 수정)
@@ -101,8 +101,8 @@
 
 ### 7. pending() 확장 (`scripts/hub_api/core.py` 수정)
 
-- `pending_review` 상태 task도 pending 결과에 포함 (기존: waiting_for_human만)
-- interaction_type="pending_review", message="PR 리뷰/머지 대기: {title}"
+- `waiting_for_human_pr_approve` 상태 task도 pending 결과에 포함 (기존: waiting_for_human_plan_confirm만)
+- interaction_type="waiting_for_human_pr_approve", message="PR 리뷰/머지 대기: {title}"
 
 ### 8. DB 테스트 (`tests/test_web_db.py` — 36개)
 
@@ -124,7 +124,7 @@
 | `scripts/web/templates/index.html` | 신규 | SPA 셸 |
 | `tests/test_web_db.py` | 신규 | DB/Syncer 테스트 (36개) |
 | `scripts/workflow_controller.py` | 수정 | pipeline_stage 추적, failure_reason 기록, git push 에러 핸들링 |
-| `scripts/hub_api/core.py` | 수정 | pending()에 pending_review 포함 |
+| `scripts/hub_api/core.py` | 수정 | pending()에 waiting_for_human_pr_approve 포함 |
 | `run_system.sh` | 수정 | Web Console 동시 기동/종료/상태, config.yaml 포트 연동 |
 | `run_agent.sh` | 수정 | `web` 서브커맨드 추가 |
 | `requirements.txt` | 수정 | fastapi, uvicorn, jinja2, aiofiles 추가 |
@@ -150,7 +150,7 @@ web:
 
 | 항목 | 설명 | 우선순위 |
 |------|------|----------|
-| **Task lifecycle 정립** | status 전이 규칙 정비, 비정상 전이 방지, pending_review 처리 흐름 | **높음** |
+| **Task lifecycle 정립** | status 전이 규칙 정비, 비정상 전이 방지, waiting_for_human_pr_approve 처리 흐름 | **높음** |
 | **Web 오류 수정 + 사용성 개선** | 필터/표시 개선, 액션 버튼 동작 검증, UX 다듬기 | **높음** |
 | **웹 채팅** | `scripts/web/web_chatbot.py` — async claude -p 호출, Chat 탭 완성 | 중간 |
 | **핸드오프 문서 최종화** | 이 문서를 lifecycle + UX 완료 후 최종 업데이트 | 낮음 |
@@ -174,7 +174,7 @@ web:
 | `scripts/web/syncer.py` | 파일→DB sync 엔진 (mtime 기반) |
 | `scripts/web/static/app.js` | SPA 프론트엔드 로직 |
 | `scripts/workflow_controller.py` | pipeline_stage/failure_reason 추적 (update_pipeline_stage, record_failure_reason) |
-| `scripts/hub_api/core.py` | pending() 확장 (pending_review 포함) |
+| `scripts/hub_api/core.py` | pending() 확장 (waiting_for_human_pr_approve 포함) |
 | `run_system.sh` | TM + Web Console 동시 기동 |
 | `docs/images/task-lifecycle-fsm.md` | Task 상태 FSM 다이어그램 (Mermaid) |
 

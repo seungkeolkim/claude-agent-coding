@@ -73,7 +73,7 @@ notification:
     plan_review_requested: true
     replan_review_requested: true
     escalation: true
-  # 재알림 설정 (waiting_for_human 상태에서 응답 없을 때)
+  # 재알림 설정 (waiting_for_human_plan_confirm 상태에서 응답 없을 때)
   re_notification_interval_hours: 4   # 0이면 재알림 비활성화
 
 # ─── Chatbot 설정 ───

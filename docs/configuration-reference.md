@@ -124,9 +124,20 @@ Agent Hub의 모든 설정 항목을 정리한 문서입니다.
 | `remote` | `"origin"` | git remote 이름 |
 | `author_name` | — | 커밋 작성자 이름 |
 | `author_email` | — | 커밋 작성자 이메일 |
-| `auto_merge` | `false` | `true`: PR 생성 후 자동 머지 / `false`: PR만 생성 |
-| `pr_target_branch` | `"main"` | PR의 base branch |
+| `base_branch` | `"develop"` | feature branch 생성 기준 브랜치 |
+| `pr_target_branch` | `"develop"` | PR 머지 대상 브랜치 |
+| `merge_strategy` | `"require_human"` | PR 머지 전략 (아래 참조) |
 | `auth_token` | `""` | provider 인증 토큰 (GitHub PAT 등) |
+
+#### merge_strategy 값
+
+| 값 | 동작 |
+|----|------|
+| `require_human` | PR 생성 → task `waiting_for_human_pr_approve` → 사람이 머지/거부 (complete_pr_review 또는 PR Watcher 자동 감지) |
+| `pr_and_continue` | PR 생성 → task 즉시 `completed`, 다음 task 진행 (PR 운명은 task와 독립) |
+| `auto_merge` | PR 생성 → `gh pr merge` 자동 실행 → task `completed` |
+
+> **하위 호환**: 기존 `auto_merge: true/false` 설정은 자동 변환됩니다 (`true` → `auto_merge`, `false` → `require_human`).
 
 ### 테스트 (`testing`)
 
@@ -275,14 +286,21 @@ override 가능한 항목:
 | `submitted` | 제출됨, 실행 대기 |
 | `queued` | 큐에 등록됨 |
 | `planned` | Planner 완료 |
-| `waiting_for_human` | 사람 확인 대기 |
+| `waiting_for_human_plan_confirm` | 사람 확인 대기 |
 | `in_progress` | 실행 중 |
-| `pending_review` | PR 생성됨, 리뷰 대기 (`auto_merge=false`) |
+| `waiting_for_human_pr_approve` | PR 생성됨, 리뷰 대기 (`merge_strategy=require_human`) |
 | `completed` | 완료 |
 | `needs_replan` | replan 필요 |
 | `escalated` | 사람에게 에스컬레이션 |
 | `failed` | 실패 |
 | `cancelled` | 취소 |
+
+### project lifecycle (project_state.json)
+
+| 값 | 설명 |
+|----|------|
+| `active` | 정상 운영 (기본값). task 제출/실행 가능 |
+| `closed` | 종료. task 제출 불가. `reopen_project`로 재활성화 가능 |
 
 ### counters 필드
 
@@ -306,7 +324,7 @@ override 가능한 항목:
 ## 6. 파이프라인 흐름
 
 ```
-Planner → 브랜치 생성 → Subtask Loop → Summarizer → PR 생성 → [auto_merge]
+Planner → 브랜치 생성 → Subtask Loop → Summarizer → PR 생성 → [merge_strategy]
                             │
                     ┌───────┴───────┐
                     │  Coder        │

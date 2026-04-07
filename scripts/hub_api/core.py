@@ -133,14 +133,43 @@ class HubAPI:
                 return m
         return matches[0] if matches else None
 
-    def _list_projects(self) -> list:
-        """projects/ 하위의 모든 프로젝트 이름을 반환한다."""
+    def _get_project_lifecycle(self, project: str) -> str:
+        """프로젝트의 lifecycle 상태를 반환한다. 필드가 없으면 'active'로 간주."""
+        project_dir = os.path.join(self.projects_dir, project)
+        state_path = os.path.join(project_dir, "project_state.json")
+        if os.path.exists(state_path):
+            try:
+                state = self._load_json(state_path)
+                return state.get("lifecycle", "active")
+            except (json.JSONDecodeError, OSError):
+                pass
+        return "active"
+
+    def _require_active_project(self, project: str) -> None:
+        """프로젝트가 active 상태인지 검증한다. closed면 ValueError."""
+        lifecycle = self._get_project_lifecycle(project)
+        if lifecycle != "active":
+            raise ValueError(
+                f"프로젝트 '{project}'는 '{lifecycle}' 상태이므로 이 작업을 수행할 수 없습니다. "
+                f"reopen_project로 다시 활성화하세요."
+            )
+
+    def _list_projects(self, include_closed: bool = False) -> list:
+        """projects/ 하위의 프로젝트 이름을 반환한다.
+
+        Args:
+            include_closed: True이면 closed 프로젝트도 포함. 기본은 active만.
+        """
         if not os.path.isdir(self.projects_dir):
             return []
         projects = []
         for name in sorted(os.listdir(self.projects_dir)):
             project_yaml = os.path.join(self.projects_dir, name, "project.yaml")
             if os.path.isfile(project_yaml):
+                if not include_closed:
+                    lifecycle = self._get_project_lifecycle(name)
+                    if lifecycle != "active":
+                        continue
                 projects.append(name)
         return projects
 
@@ -179,7 +208,7 @@ class HubAPI:
             codebase_path: 코드베이스 절대경로 (없으면 자동 생성)
             git_settings: git 연동 설정 dict. None이면 플레이스홀더 기본값 사용.
                 keys: enabled, remote, author_name, author_email,
-                      auto_merge, pr_target_branch
+                      base_branch, pr_target_branch, merge_strategy
 
         Returns:
             CreateProjectResult
@@ -226,8 +255,9 @@ class HubAPI:
             "remote": "origin",
             "author_name": placeholder,
             "author_email": placeholder,
-            "auto_merge": False,
+            "base_branch": "main",
             "pr_target_branch": "main",
+            "merge_strategy": "require_human",
         }
         if git_settings:
             default_git_settings.update(git_settings)
@@ -270,6 +300,8 @@ class HubAPI:
         3. 첨부파일 복사 (있으면)
         4. .ready sentinel 생성 → TM이 감지하여 WFC spawn
         """
+        self._require_active_project(project)
+
         tasks_dir = self._tasks_dir(project)
         task_id = self._next_task_id(tasks_dir)
         now = datetime.now(timezone.utc).isoformat()
@@ -356,13 +388,17 @@ class HubAPI:
         return self._load_json(task_file)
 
     def list_tasks(self, project: Optional[str] = None,
-                   status: Optional[str] = None) -> list:
+                   status: Optional[str] = None,
+                   include_closed: bool = False) -> list:
         """
         task 목록을 조회한다.
         project를 지정하면 해당 프로젝트만, 아니면 전체.
         status를 지정하면 해당 상태만 필터링.
+
+        Args:
+            include_closed: True이면 closed 프로젝트의 task도 포함.
         """
-        projects = [project] if project else self._list_projects()
+        projects = [project] if project else self._list_projects(include_closed=include_closed)
         results = []
 
         for proj in projects:
@@ -412,7 +448,7 @@ class HubAPI:
             return False
 
         # 아직 실행 전이면 직접 취소
-        if current_status in ("submitted", "queued", "waiting_for_human"):
+        if current_status in ("submitted", "queued", "waiting_for_human_plan_confirm"):
             task["status"] = "cancelled"
             self._save_json_atomic(task_file, task)
             # .ready 파일이 남아있으면 삭제
@@ -512,8 +548,8 @@ class HubAPI:
     def pending(self, project: Optional[str] = None) -> list:
         """
         사용자 응답을 기다리는 항목 목록을 반환한다.
-        - status가 'waiting_for_human'이고 응답이 아직 없는 human interaction
-        - status가 'pending_review'인 task (PR 머지 대기 등)
+        - status가 'waiting_for_human_plan_confirm'이고 응답이 아직 없는 human interaction
+        - status가 'waiting_for_human_pr_approve'인 task (PR 머지 대기 등)
         """
         projects = [project] if project else self._list_projects()
         results = []
@@ -532,12 +568,12 @@ class HubAPI:
 
                 status = task.get("status")
 
-                # pending_review: PR 생성 완료, 수동 머지/리뷰 대기
-                if status == "pending_review":
+                # waiting_for_human_pr_approve: PR 생성 완료, 수동 머지/리뷰 대기
+                if status == "waiting_for_human_pr_approve":
                     results.append(HumanInteractionInfo(
                         task_id=task.get("task_id", ""),
                         project=proj,
-                        interaction_type="pending_review",
+                        interaction_type="waiting_for_human_pr_approve",
                         message=f"PR 리뷰/머지 대기: {task.get('title', '')}",
                         options=["approve", "reject"],
                         requested_at=task.get("pipeline_stage_updated_at"),
@@ -545,8 +581,8 @@ class HubAPI:
                     ))
                     continue
 
-                # waiting_for_human: 명시적 human interaction 요청
-                if status != "waiting_for_human":
+                # waiting_for_human_plan_confirm: 명시적 human interaction 요청
+                if status != "waiting_for_human_plan_confirm":
                     continue
 
                 hi = task.get("human_interaction")
@@ -628,7 +664,7 @@ class HubAPI:
 
         task = self._load_json(task_file)
 
-        if task.get("status") != "waiting_for_human":
+        if task.get("status") != "waiting_for_human_plan_confirm":
             return False
 
         hi = task.get("human_interaction")
@@ -652,6 +688,128 @@ class HubAPI:
             task["status"] = "needs_replan"
 
         self._save_json_atomic(task_file, task)
+        return True
+
+    # ═══════════════════════════════════════════════════════════
+    # PR 리뷰 완료
+    # ═══════════════════════════════════════════════════════════
+
+    def complete_pr_review(self, project: str, task_id: str,
+                           result: str, message: Optional[str] = None) -> bool:
+        """
+        PR 리뷰 결과를 반영하여 waiting_for_human_pr_approve 상태에서 탈출한다.
+
+        Args:
+            project: 프로젝트명
+            task_id: task ID
+            result: "merged" → completed, "rejected" → failed
+            message: 선택적 코멘트
+
+        Returns:
+            True: 성공적으로 상태 전이
+        """
+        if result not in ("merged", "rejected"):
+            raise ValueError(f"result는 'merged' 또는 'rejected'만 가능합니다: {result}")
+
+        tasks_dir = self._tasks_dir(project)
+        task_file = self._find_task_file(tasks_dir, task_id)
+        if not task_file:
+            raise FileNotFoundError(f"task를 찾을 수 없음: {project}/{task_id}")
+
+        task = self._load_json(task_file)
+
+        if task.get("status") != "waiting_for_human_pr_approve":
+            return False
+
+        # PR 리뷰 결과 기록
+        task["pr_review_result"] = result
+        task["pr_reviewed_at"] = datetime.now(timezone.utc).isoformat()
+        if message:
+            task["pr_review_message"] = message
+
+        # 상태 전이
+        if result == "merged":
+            task["status"] = "completed"
+        else:  # rejected
+            task["status"] = "failed"
+            task["failure_reason"] = f"PR 거부됨: {message or '사유 없음'}"
+
+        self._save_json_atomic(task_file, task)
+        return True
+
+    # ═══════════════════════════════════════════════════════════
+    # 프로젝트 lifecycle
+    # ═══════════════════════════════════════════════════════════
+
+    def close_project(self, project: str) -> bool:
+        """
+        프로젝트를 종료(closed)한다.
+
+        모든 task가 종료 상태(completed, cancelled, failed, escalated)일 때만 가능.
+        미완료 task가 있으면 ValueError.
+
+        Returns:
+            True: 성공적으로 closed
+        """
+        project_dir = self._project_dir(project)
+
+        # 이미 closed면 무시
+        if self._get_project_lifecycle(project) == "closed":
+            return True
+
+        # 미완료 task 확인
+        terminal_statuses = {"completed", "cancelled", "failed", "escalated"}
+        tasks_dir = os.path.join(project_dir, "tasks")
+        if os.path.isdir(tasks_dir):
+            for task_file in glob.glob(os.path.join(tasks_dir, "*.json")):
+                try:
+                    task = self._load_json(task_file)
+                except (json.JSONDecodeError, OSError):
+                    continue
+                status = task.get("status", "")
+                if status and status not in terminal_statuses:
+                    raise ValueError(
+                        f"프로젝트 '{project}'에 미완료 task가 있습니다 "
+                        f"(task {task.get('task_id', '?')}: {status}). "
+                        f"모든 task를 완료/취소한 후 다시 시도하세요."
+                    )
+
+        # lifecycle → closed
+        state_path = os.path.join(project_dir, "project_state.json")
+        if os.path.exists(state_path):
+            state = self._load_json(state_path)
+        else:
+            state = {"project_name": project}
+
+        state["lifecycle"] = "closed"
+        state["status"] = "idle"
+        state["current_task_id"] = None
+        state["last_updated"] = datetime.now(timezone.utc).isoformat()
+        self._save_json_atomic(state_path, state)
+        return True
+
+    def reopen_project(self, project: str) -> bool:
+        """
+        종료된(closed) 프로젝트를 다시 활성화한다.
+
+        Returns:
+            True: 성공적으로 active로 전환
+        """
+        project_dir = self._project_dir(project)
+
+        # 이미 active면 무시
+        if self._get_project_lifecycle(project) == "active":
+            return True
+
+        state_path = os.path.join(project_dir, "project_state.json")
+        if os.path.exists(state_path):
+            state = self._load_json(state_path)
+        else:
+            state = {"project_name": project}
+
+        state["lifecycle"] = "active"
+        state["last_updated"] = datetime.now(timezone.utc).isoformat()
+        self._save_json_atomic(state_path, state)
         return True
 
     # ═══════════════════════════════════════════════════════════
@@ -750,10 +908,13 @@ class HubAPI:
     # 조회
     # ═══════════════════════════════════════════════════════════
 
-    def status(self) -> SystemStatus:
+    def status(self, include_closed: bool = False) -> SystemStatus:
         """
         시스템 전체 상태를 조회한다.
         TM 실행 여부 + 프로젝트별 상태.
+
+        Args:
+            include_closed: True이면 closed 프로젝트도 포함.
         """
         # TM PID 확인
         tm_running = False
@@ -789,7 +950,7 @@ class HubAPI:
 
         # 프로젝트별 상태
         projects = []
-        for proj_name in self._list_projects():
+        for proj_name in self._list_projects(include_closed=include_closed):
             proj_dir = os.path.join(self.projects_dir, proj_name)
             state_path = os.path.join(proj_dir, "project_state.json")
 
@@ -799,6 +960,7 @@ class HubAPI:
                     projects.append(ProjectStatus(
                         name=proj_name,
                         status=state.get("status", "unknown"),
+                        lifecycle=state.get("lifecycle", "active"),
                         current_task_id=state.get("current_task_id"),
                         last_error_task_id=state.get("last_error_task_id"),
                         last_updated=state.get("last_updated"),

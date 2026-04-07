@@ -77,7 +77,7 @@ async function loadDashboard() {
             const counts = p.task_counts || {};
             const total = Object.values(counts).reduce((a, b) => a + b, 0);
             const active = (counts.submitted || 0) + (counts.queued || 0) +
-                           (counts.in_progress || 0) + (counts.waiting_for_human || 0);
+                           (counts.in_progress || 0) + (counts.waiting_for_human_plan_confirm || 0);
             return `
                 <div class="project-card">
                     <div class="name">${p.name}</div>
@@ -103,9 +103,15 @@ async function loadDashboard() {
                 </div>
                 <div>${item.message}</div>
                 <div class="pending-actions">
-                    <button class="btn btn-success" onclick="handleApprove('${item.project}', '${item.task_id}')">Approve</button>
-                    <button class="btn btn-danger" onclick="handleReject('${item.project}', '${item.task_id}')">Reject</button>
-                    <button class="btn btn-secondary" onclick="viewPlan('${item.project}', '${item.task_id}')">View Plan</button>
+                    ${item.interaction_type === 'waiting_for_human_pr_approve' ? `
+                        <button class="btn btn-success" onclick="handleCompletePrReview('${item.project}', '${item.task_id}', 'merged')">PR Merged</button>
+                        <button class="btn btn-danger" onclick="handleCompletePrReview('${item.project}', '${item.task_id}', 'rejected')">PR Rejected</button>
+                    ` : `
+                        <button class="btn btn-success" onclick="handleApprove('${item.project}', '${item.task_id}')">Approve</button>
+                        <button class="btn btn-danger" onclick="handleReject('${item.project}', '${item.task_id}')">Reject</button>
+                        <button class="btn btn-secondary" onclick="viewPlan('${item.project}', '${item.task_id}')">View Plan</button>
+                        <button class="btn btn-warning" onclick="handleCancel('${item.project}', '${item.task_id}')">Cancel</button>
+                    `}
                 </div>
             </div>
         `).join('');
@@ -199,11 +205,15 @@ async function toggleTaskDetail(project, taskId, rowEl) {
         ${t.failure_reason ? `<div class="detail-field failure-box"><label>Failure Reason:</label> ${t.failure_reason}</div>` : ''}
         ${t.description ? `<div class="detail-field"><label>Description:</label><br>${t.description}</div>` : ''}
         <div class="detail-actions">
-            ${t.status === 'waiting_for_human' || t.status === 'pending_review' ? `
+            ${t.status === 'waiting_for_human_plan_confirm' ? `
                 <button class="btn btn-success" onclick="handleApprove('${project}', '${taskId}')">Approve</button>
                 <button class="btn btn-danger" onclick="handleReject('${project}', '${taskId}')">Reject</button>
             ` : ''}
-            ${['submitted', 'queued', 'in_progress', 'waiting_for_human'].includes(t.status) ? `
+            ${t.status === 'waiting_for_human_pr_approve' ? `
+                <button class="btn btn-success" onclick="handleCompletePrReview('${project}', '${taskId}', 'merged')">PR Merged</button>
+                <button class="btn btn-danger" onclick="handleCompletePrReview('${project}', '${taskId}', 'rejected')">PR Rejected</button>
+            ` : ''}
+            ${['submitted', 'queued', 'planned', 'in_progress', 'waiting_for_human_plan_confirm'].includes(t.status) ? `
                 <button class="btn btn-warning" onclick="handleCancel('${project}', '${taskId}')">Cancel</button>
             ` : ''}
             ${['cancelled', 'failed'].includes(t.status) ? `
@@ -293,6 +303,26 @@ async function doReject(project, taskId) {
     const msg = document.getElementById('reject-msg').value;
     if (!msg.trim()) { alert('사유를 입력해주세요.'); return; }
     await dispatch('reject', project, { task_id: taskId, message: msg });
+    closeModal();
+    loadDashboard();
+    loadTasks();
+}
+
+async function handleCompletePrReview(project, taskId, result) {
+    const label = result === 'merged' ? 'PR Merged' : 'PR Rejected';
+    const msgLabel = result === 'merged' ? 'Message (optional):' : 'Reason (optional):';
+    showModal(label, `<p>${project} #${taskId} PR을 ${label} 처리합니다.</p>
+        <label>${msgLabel}</label>
+        <input id="pr-review-msg" type="text" />`, [
+        { label: 'Cancel', cls: 'btn-secondary', onclick: 'closeModal()' },
+        { label: label, cls: result === 'merged' ? 'btn-success' : 'btn-danger',
+          onclick: `doCompletePrReview('${project}','${taskId}','${result}')` },
+    ]);
+}
+
+async function doCompletePrReview(project, taskId, result) {
+    const msg = document.getElementById('pr-review-msg').value;
+    await dispatch('complete_pr_review', project, { task_id: taskId, result: result, message: msg || undefined });
     closeModal();
     loadDashboard();
     loadTasks();

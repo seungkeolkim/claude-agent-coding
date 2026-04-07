@@ -173,13 +173,13 @@ h2:first-child {
 .status-submitted { background: #2196F3; color: white; }
 .status-queued { background: #9C27B0; color: white; }
 .status-in_progress { background: var(--warning); color: black; }
-.status-waiting_for_human { background: #FF5722; color: white; }
+.status-waiting_for_human_plan_confirm { background: #FF5722; color: white; }
 .status-completed { background: var(--success); color: white; }
 .status-cancelled { background: var(--text-dim); color: white; }
 .status-failed { background: var(--danger); color: white; }
 .status-planned { background: #00BCD4; color: white; }
 .status-needs_replan { background: #E91E63; color: white; }
-.status-pending_review { background: #FF5722; color: white; }
+.status-waiting_for_human_pr_approve { background: #FF5722; color: white; }
 
 /* ─── Task list ─── */
 
@@ -491,6 +491,9 @@ h2:first-child {
     display: flex;
     gap: 8px;
     margin-top: 12px;
+}
+.pending-item .pending-actions .btn-warning {
+    margin-left: auto;
 }
 
 /* ─── Pipeline Stage ─── */

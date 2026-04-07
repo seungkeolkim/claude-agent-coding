@@ -130,12 +130,14 @@ def ask_git_settings() -> dict:
             "remote": "origin",
             "author_name": "agent-bot",
             "author_email": "agent@example.com",
-            "auto_merge": False,
+            "base_branch": "main",
             "pr_target_branch": "main",
+            "merge_strategy": "require_human",
         }
 
     # git 활성화
     remote = input("  remote 이름 (기본: origin): ").strip() or "origin"
+    base_branch = input("  feature branch 기준 브랜치 (기본: main): ").strip() or "main"
     pr_target = input("  PR 대상 브랜치 (기본: main): ").strip() or "main"
     author_name = input("  커밋 작성자 이름 (기본: agent-bot): ").strip() or "agent-bot"
     author_email = input("  커밋 작성자 이메일 (기본: agent@example.com): ").strip() or "agent@example.com"
@@ -145,8 +147,9 @@ def ask_git_settings() -> dict:
         "remote": remote,
         "author_name": author_name,
         "author_email": author_email,
-        "auto_merge": False,
+        "base_branch": base_branch,
         "pr_target_branch": pr_target,
+        "merge_strategy": "require_human",
     }
 
 
@@ -225,6 +228,7 @@ def initialize_project_state(project_root: Path, project_name: str) -> Path:
     """
     initial_state = {
         "project_name": project_name,
+        "lifecycle": "active",
         "status": "idle",
         "current_task_id": None,
         "last_activity_at": datetime.now(timezone.utc).isoformat(),
