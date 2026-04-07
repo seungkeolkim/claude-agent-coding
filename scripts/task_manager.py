@@ -233,6 +233,7 @@ class TaskManager:
         incomplete_statuses = {
             "in_progress", "planned", "running",
             "waiting_for_human_plan_confirm", "needs_replan",
+            "waiting_for_human_pr_approve",
         }
         incomplete_task_ids = []
 

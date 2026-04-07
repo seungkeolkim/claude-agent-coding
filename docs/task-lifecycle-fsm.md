@@ -170,7 +170,7 @@ planner → plan_review → git_branch → coder → reviewer → git_push → s
 TM이 다음 task spawn을 차단하는 "미완료" 상태 집합:
 
 ```python
-incomplete_statuses = {"in_progress", "planned", "running", "waiting_for_human_plan_confirm", "needs_replan"}
+incomplete_statuses = {"in_progress", "planned", "running", "waiting_for_human_plan_confirm", "needs_replan", "waiting_for_human_pr_approve"}
 ```
 
 이 상태 중 하나라도 있으면 (wait_for_prev_task_done=true일 때) 다음 task를 spawn하지 않음.
