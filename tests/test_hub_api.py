@@ -934,3 +934,191 @@ class TestResumeStateValidation:
         api = HubAPI(agent_hub_root)
         result = api.resume(test_project["name"])
         assert result is True
+
+
+# ═══════════════════════════════════════════════════════════
+# 프로젝트 lifecycle
+# ═══════════════════════════════════════════════════════════
+
+
+class TestProjectLifecycle:
+    """프로젝트 lifecycle (active / closed / reopen)."""
+
+    def test_new_project_is_active(self, agent_hub_root, tmp_path):
+        """새로 생성한 프로젝트의 lifecycle은 active이다."""
+        api = HubAPI(agent_hub_root)
+        name = _test_project_name("lifecycle-new")
+        result = api.create_project(name, "lifecycle 테스트", str(tmp_path / "cb"))
+        try:
+            with open(result.project_state_path) as f:
+                state = json.load(f)
+            assert state["lifecycle"] == "active"
+        finally:
+            shutil.rmtree(result.project_directory, ignore_errors=True)
+
+    def test_close_project_no_tasks(self, agent_hub_root, tmp_path):
+        """task가 없는 프로젝트를 close할 수 있다."""
+        api = HubAPI(agent_hub_root)
+        name = _test_project_name("lifecycle-close")
+        result = api.create_project(name, "close 테스트", str(tmp_path / "cb"))
+        try:
+            assert api.close_project(name) is True
+            assert api._get_project_lifecycle(name) == "closed"
+        finally:
+            shutil.rmtree(result.project_directory, ignore_errors=True)
+
+    def test_close_project_all_tasks_terminal(self, agent_hub_root, tmp_path):
+        """모든 task가 종료 상태이면 close 가능."""
+        api = HubAPI(agent_hub_root)
+        name = _test_project_name("lifecycle-terminal")
+        result = api.create_project(name, "terminal 테스트", str(tmp_path / "cb"))
+        try:
+            sub = api.submit(name, "task1", "desc")
+            api.cancel(name, sub.task_id)
+            assert api.close_project(name) is True
+        finally:
+            shutil.rmtree(result.project_directory, ignore_errors=True)
+
+    def test_close_project_with_active_task_raises(self, agent_hub_root, tmp_path):
+        """미완료 task가 있으면 close 불가."""
+        api = HubAPI(agent_hub_root)
+        name = _test_project_name("lifecycle-active-task")
+        result = api.create_project(name, "active task 테스트", str(tmp_path / "cb"))
+        try:
+            api.submit(name, "진행 중 task", "desc")
+            with pytest.raises(ValueError, match="미완료 task"):
+                api.close_project(name)
+        finally:
+            shutil.rmtree(result.project_directory, ignore_errors=True)
+
+    def test_close_project_already_closed(self, agent_hub_root, tmp_path):
+        """이미 closed인 프로젝트에 close 호출 시 True 반환 (멱등)."""
+        api = HubAPI(agent_hub_root)
+        name = _test_project_name("lifecycle-idempotent")
+        result = api.create_project(name, "멱등 테스트", str(tmp_path / "cb"))
+        try:
+            api.close_project(name)
+            assert api.close_project(name) is True
+        finally:
+            shutil.rmtree(result.project_directory, ignore_errors=True)
+
+    def test_reopen_project(self, agent_hub_root, tmp_path):
+        """closed 프로젝트를 reopen하면 active로 전환된다."""
+        api = HubAPI(agent_hub_root)
+        name = _test_project_name("lifecycle-reopen")
+        result = api.create_project(name, "reopen 테스트", str(tmp_path / "cb"))
+        try:
+            api.close_project(name)
+            assert api._get_project_lifecycle(name) == "closed"
+
+            assert api.reopen_project(name) is True
+            assert api._get_project_lifecycle(name) == "active"
+        finally:
+            shutil.rmtree(result.project_directory, ignore_errors=True)
+
+    def test_reopen_already_active(self, agent_hub_root, tmp_path):
+        """이미 active인 프로젝트에 reopen 호출 시 True 반환 (멱등)."""
+        api = HubAPI(agent_hub_root)
+        name = _test_project_name("lifecycle-reopen-active")
+        result = api.create_project(name, "멱등 reopen", str(tmp_path / "cb"))
+        try:
+            assert api.reopen_project(name) is True
+        finally:
+            shutil.rmtree(result.project_directory, ignore_errors=True)
+
+    def test_submit_to_closed_project_raises(self, agent_hub_root, tmp_path):
+        """closed 프로젝트에 task 제출 시 ValueError."""
+        api = HubAPI(agent_hub_root)
+        name = _test_project_name("lifecycle-submit-closed")
+        result = api.create_project(name, "submit 차단 테스트", str(tmp_path / "cb"))
+        try:
+            api.close_project(name)
+            with pytest.raises(ValueError, match="closed"):
+                api.submit(name, "차단될 task", "desc")
+        finally:
+            shutil.rmtree(result.project_directory, ignore_errors=True)
+
+    def test_submit_after_reopen(self, agent_hub_root, tmp_path):
+        """reopen 후에는 다시 task 제출 가능."""
+        api = HubAPI(agent_hub_root)
+        name = _test_project_name("lifecycle-submit-reopen")
+        result = api.create_project(name, "reopen 후 submit", str(tmp_path / "cb"))
+        try:
+            api.close_project(name)
+            api.reopen_project(name)
+            sub = api.submit(name, "reopen 후 task", "desc")
+            assert sub.task_id == "00001"
+        finally:
+            shutil.rmtree(result.project_directory, ignore_errors=True)
+
+    def test_list_excludes_closed_by_default(self, agent_hub_root, tmp_path):
+        """기본 list에서 closed 프로젝트의 task는 제외된다."""
+        api = HubAPI(agent_hub_root)
+        name = _test_project_name("lifecycle-list")
+        result = api.create_project(name, "list 필터 테스트", str(tmp_path / "cb"))
+        try:
+            api.submit(name, "task in closed", "desc")
+            api.cancel(name, "00001")
+            api.close_project(name)
+
+            # 기본: closed 제외
+            tasks = api.list_tasks()
+            closed_tasks = [t for t in tasks if t.project == name]
+            assert len(closed_tasks) == 0
+
+            # include_closed=True: 포함
+            tasks_all = api.list_tasks(include_closed=True)
+            closed_tasks_all = [t for t in tasks_all if t.project == name]
+            assert len(closed_tasks_all) == 1
+        finally:
+            shutil.rmtree(result.project_directory, ignore_errors=True)
+
+    def test_status_excludes_closed_by_default(self, agent_hub_root, tmp_path):
+        """기본 status에서 closed 프로젝트는 제외된다."""
+        api = HubAPI(agent_hub_root)
+        name = _test_project_name("lifecycle-status")
+        result = api.create_project(name, "status 필터 테스트", str(tmp_path / "cb"))
+        try:
+            api.close_project(name)
+
+            sys_status = api.status()
+            closed_projects = [p for p in sys_status.projects if p.name == name]
+            assert len(closed_projects) == 0
+
+            sys_status_all = api.status(include_closed=True)
+            closed_projects_all = [p for p in sys_status_all.projects if p.name == name]
+            assert len(closed_projects_all) == 1
+            assert closed_projects_all[0].lifecycle == "closed"
+        finally:
+            shutil.rmtree(result.project_directory, ignore_errors=True)
+
+    def test_close_reopen_via_dispatch(self, agent_hub_root, tmp_path):
+        """protocol dispatch 경유 close/reopen."""
+        api = HubAPI(agent_hub_root)
+        name = _test_project_name("lifecycle-dispatch")
+        result = api.create_project(name, "dispatch 테스트", str(tmp_path / "cb"))
+        try:
+            # close
+            resp = dispatch(api, Request(action="close_project", project=name))
+            assert resp.success is True
+            assert api._get_project_lifecycle(name) == "closed"
+
+            # reopen
+            resp = dispatch(api, Request(action="reopen_project", project=name))
+            assert resp.success is True
+            assert api._get_project_lifecycle(name) == "active"
+        finally:
+            shutil.rmtree(result.project_directory, ignore_errors=True)
+
+    def test_close_with_active_task_via_dispatch(self, agent_hub_root, tmp_path):
+        """dispatch 경유: 미완료 task 있으면 INVALID_PARAM 에러."""
+        api = HubAPI(agent_hub_root)
+        name = _test_project_name("lifecycle-dispatch-fail")
+        result = api.create_project(name, "dispatch 실패 테스트", str(tmp_path / "cb"))
+        try:
+            api.submit(name, "active task", "desc")
+            resp = dispatch(api, Request(action="close_project", project=name))
+            assert resp.success is False
+            assert "미완료" in resp.message
+        finally:
+            shutil.rmtree(result.project_directory, ignore_errors=True)

@@ -284,6 +284,13 @@ override 가능한 항목:
 | `failed` | 실패 |
 | `cancelled` | 취소 |
 
+### project lifecycle (project_state.json)
+
+| 값 | 설명 |
+|----|------|
+| `active` | 정상 운영 (기본값). task 제출/실행 가능 |
+| `closed` | 종료. task 제출 불가. `reopen_project`로 재활성화 가능 |
+
 ### counters 필드
 
 | 키 | 설명 |

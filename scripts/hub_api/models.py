@@ -47,6 +47,7 @@ class ProjectStatus:
     """프로젝트 상태 정보."""
     name: str
     status: str                                  # idle | running
+    lifecycle: str = "active"                    # active | closed
     current_task_id: Optional[str] = None
     last_error_task_id: Optional[str] = None
     last_updated: Optional[str] = None

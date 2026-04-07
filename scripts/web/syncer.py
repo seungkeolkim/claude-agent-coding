@@ -48,10 +48,28 @@ class FileSyncer:
         """모든 프로젝트와 세션을 동기화한다."""
         if not os.path.isdir(self.projects_dir):
             return
+
+        # 현재 폴더에 존재하는 프로젝트 목록
+        existing_dirs = set()
         for name in sorted(os.listdir(self.projects_dir)):
             project_dir = os.path.join(self.projects_dir, name)
             if os.path.isdir(project_dir):
+                existing_dirs.add(name)
                 self.sync_project(name)
+
+        # DB에 있지만 폴더가 없는 프로젝트 → closed 처리
+        db_projects = self.db.get_projects()
+        for p in db_projects:
+            if p["name"] not in existing_dirs and p.get("lifecycle", "active") != "closed":
+                self.db.upsert_project(
+                    name=p["name"],
+                    status="idle",
+                    lifecycle="closed",
+                )
+                logger.info("폴더 소실 감지 → 프로젝트 '%s' closed 처리", p["name"])
+                if self.on_change:
+                    self.on_change({"type": "project_updated", "project": p["name"]})
+
         self.sync_sessions()
 
     def sync_project(self, name: str):
@@ -95,6 +113,7 @@ class FileSyncer:
                 last_error_task_id=state.get("last_error_task_id"),
                 last_updated=state.get("last_updated"),
                 config_overrides=state.get("overrides"),
+                lifecycle=state.get("lifecycle", "active"),
             )
             self._mtime_cache[state_path] = mtime
             return True

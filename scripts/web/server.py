@@ -157,9 +157,12 @@ async def api_status():
 
 
 @app.get("/api/projects")
-async def api_projects():
+async def api_projects(include_closed: bool = False):
     """프로젝트 목록 조회 (DB)."""
-    projects = db.get_projects()
+    all_projects = db.get_projects()
+    projects = all_projects if include_closed else [
+        p for p in all_projects if p.get("lifecycle", "active") != "closed"
+    ]
     # 각 프로젝트의 task 개수 추가
     for p in projects:
         counts = db.get_task_count_by_status(p["name"])

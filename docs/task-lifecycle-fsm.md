@@ -142,13 +142,26 @@ planner → plan_review → git_branch → coder → reviewer → git_push → s
 
 ## 프로젝트 상태 (project_state.json)
 
-프로젝트 레벨에도 별도 상태가 있음:
+프로젝트에는 **lifecycle** (관리 상태)과 **status** (운영 상태) 두 가지 상태가 있다.
+
+### lifecycle (프로젝트 lifecycle)
+
+| lifecycle | 의미 | task 제출 | 기본 목록 |
+|-----------|------|:---------:|:---------:|
+| `active` | 정상 운영 (기본값) | O | 표시 |
+| `closed` | 종료 | X (차단) | `--all`로만 표시 |
+
+- `close_project`: 모든 task가 종료 상태일 때만 가능
+- `reopen_project`: closed → active 재전환
+- 폴더 소실 시 syncer가 DB에서 자동 closed 처리
+
+### status (운영 상태, active일 때의 세부 상태)
 
 | 상태 | 설명 |
 |------|------|
 | idle | 실행 중인 task 없음 |
 | running | WFC가 task 실행 중 |
-| waiting_for_human_plan_confirm | 프로젝트 레벨: human review 대기 |
+| waiting_for_human_plan_confirm | human review 대기 |
 
 ---
 

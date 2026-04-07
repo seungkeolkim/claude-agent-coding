@@ -380,6 +380,24 @@ def _handle_resubmit(api, request: Request) -> Response:
     )
 
 
+def _handle_close_project(api, request: Request) -> Response:
+    """프로젝트를 종료한다."""
+    if err := _require_project(request):
+        return err
+
+    api.close_project(request.project)
+    return _ok(True, f"프로젝트 '{request.project}' 종료 완료")
+
+
+def _handle_reopen_project(api, request: Request) -> Response:
+    """종료된 프로젝트를 다시 활성화한다."""
+    if err := _require_project(request):
+        return err
+
+    api.reopen_project(request.project)
+    return _ok(True, f"프로젝트 '{request.project}' 다시 활성화 완료")
+
+
 def _handle_create_project(api, request: Request) -> Response:
     """새 프로젝트를 생성한다."""
     if err := _require_params(request, "name", "description", "codebase_path"):
@@ -518,6 +536,20 @@ ACTION_REGISTRY = {
         "required_params": ["name", "description", "codebase_path"],
         "optional_params": ["git_settings"],
         "requires_project": False,
+    },
+    "close_project": {
+        "handler": _handle_close_project,
+        "description": "프로젝트를 종료한다. 모든 task가 종료 상태일 때만 가능. '프로젝트 닫기', '프로젝트 종료' 등의 요청에 사용.",
+        "required_params": [],
+        "optional_params": [],
+        "requires_project": True,
+    },
+    "reopen_project": {
+        "handler": _handle_reopen_project,
+        "description": "종료된(closed) 프로젝트를 다시 활성화한다. '프로젝트 다시 열기', '프로젝트 재활성화' 등의 요청에 사용.",
+        "required_params": [],
+        "optional_params": [],
+        "requires_project": True,
     },
 }
 

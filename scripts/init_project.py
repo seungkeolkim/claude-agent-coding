@@ -225,6 +225,7 @@ def initialize_project_state(project_root: Path, project_name: str) -> Path:
     """
     initial_state = {
         "project_name": project_name,
+        "lifecycle": "active",
         "status": "idle",
         "current_task_id": None,
         "last_activity_at": datetime.now(timezone.utc).isoformat(),
