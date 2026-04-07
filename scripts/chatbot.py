@@ -554,9 +554,9 @@ def format_response_for_display(response: Response, action: str) -> str:
                     extra += f", replan: {replan}회"
                 lines.append(extra)
 
-        # waiting_for_human이면 human_interaction 상세 표시
+        # waiting_for_human_plan_confirm이면 human_interaction 상세 표시
         hi = data.get("human_interaction")
-        if status == "waiting_for_human" and hi and not hi.get("response"):
+        if status == "waiting_for_human_plan_confirm" and hi and not hi.get("response"):
             lines.append(f"\n  {YELLOW}[승인 대기]{NC}")
             lines.append(f"  유형:    {hi.get('type', '?')}")
             lines.append(f"  메시지:  {hi.get('message', '')}")

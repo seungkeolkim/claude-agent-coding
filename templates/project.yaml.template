@@ -27,7 +27,7 @@ git:
   remote: "origin"
   author_name: "agent-bot"
   author_email: "agent@example.com"
-  auto_merge: false               # true: PR 생성 후 자동 머지 / false: PR만 생성 (pending_review)
+  auto_merge: false               # true: PR 생성 후 자동 머지 / false: PR만 생성 (waiting_for_human_pr_approve)
   pr_target_branch: "develop"     # PR의 base branch
   auth_token: ""                  # provider 인증 토큰 (GitHub PAT 등)
 

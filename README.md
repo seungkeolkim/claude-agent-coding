@@ -231,7 +231,7 @@ source activate_venv.sh
 ### 8. 결과 확인
 
 - 로그: `projects/{name}/logs/{task_id}/` 아래에 agent별 로그 파일 생성
-- PR: `auto_merge=true`면 자동 머지, `false`면 PR만 생성 (status=`pending_review`)
+- PR: `auto_merge=true`면 자동 머지, `false`면 PR만 생성 (status=`waiting_for_human_pr_approve`)
 - task 요약: task JSON의 `summary` 필드에 Summarizer가 생성한 한국어 요약
 
 ## 설정 체계

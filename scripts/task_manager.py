@@ -216,7 +216,7 @@ class TaskManager:
         """
         해당 프로젝트에 아직 완료되지 않은 task가 있는지 확인한다.
         WFC 파이프라인이 아직 실행 중인 상태만 미완료로 판단.
-        pending_review는 WFC가 끝난 상태 (PR 수동 머지 대기)이므로 블로킹하지 않는다.
+        waiting_for_human_pr_approve는 WFC가 끝난 상태 (PR 수동 머지 대기)이므로 블로킹하지 않는다.
 
         Returns:
             (bool, list[str]): (미완료 task 존재 여부, 미완료 task ID 목록)
@@ -227,7 +227,7 @@ class TaskManager:
 
         incomplete_statuses = {
             "in_progress", "planned", "running",
-            "waiting_for_human", "needs_replan",
+            "waiting_for_human_plan_confirm", "needs_replan",
         }
         incomplete_task_ids = []
 

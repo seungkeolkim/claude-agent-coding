@@ -412,7 +412,7 @@ class HubAPI:
             return False
 
         # 아직 실행 전이면 직접 취소
-        if current_status in ("submitted", "queued", "waiting_for_human"):
+        if current_status in ("submitted", "queued", "waiting_for_human_plan_confirm"):
             task["status"] = "cancelled"
             self._save_json_atomic(task_file, task)
             # .ready 파일이 남아있으면 삭제
@@ -512,8 +512,8 @@ class HubAPI:
     def pending(self, project: Optional[str] = None) -> list:
         """
         사용자 응답을 기다리는 항목 목록을 반환한다.
-        - status가 'waiting_for_human'이고 응답이 아직 없는 human interaction
-        - status가 'pending_review'인 task (PR 머지 대기 등)
+        - status가 'waiting_for_human_plan_confirm'이고 응답이 아직 없는 human interaction
+        - status가 'waiting_for_human_pr_approve'인 task (PR 머지 대기 등)
         """
         projects = [project] if project else self._list_projects()
         results = []
@@ -532,12 +532,12 @@ class HubAPI:
 
                 status = task.get("status")
 
-                # pending_review: PR 생성 완료, 수동 머지/리뷰 대기
-                if status == "pending_review":
+                # waiting_for_human_pr_approve: PR 생성 완료, 수동 머지/리뷰 대기
+                if status == "waiting_for_human_pr_approve":
                     results.append(HumanInteractionInfo(
                         task_id=task.get("task_id", ""),
                         project=proj,
-                        interaction_type="pending_review",
+                        interaction_type="waiting_for_human_pr_approve",
                         message=f"PR 리뷰/머지 대기: {task.get('title', '')}",
                         options=["approve", "reject"],
                         requested_at=task.get("pipeline_stage_updated_at"),
@@ -545,8 +545,8 @@ class HubAPI:
                     ))
                     continue
 
-                # waiting_for_human: 명시적 human interaction 요청
-                if status != "waiting_for_human":
+                # waiting_for_human_plan_confirm: 명시적 human interaction 요청
+                if status != "waiting_for_human_plan_confirm":
                     continue
 
                 hi = task.get("human_interaction")
@@ -628,7 +628,7 @@ class HubAPI:
 
         task = self._load_json(task_file)
 
-        if task.get("status") != "waiting_for_human":
+        if task.get("status") != "waiting_for_human_plan_confirm":
             return False
 
         hi = task.get("human_interaction")

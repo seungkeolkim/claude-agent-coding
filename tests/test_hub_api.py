@@ -129,11 +129,11 @@ class TestApproveReject:
     """approve / reject."""
 
     def _make_waiting_task(self, api, project_name):
-        """waiting_for_human 상태의 task를 만든다."""
+        """waiting_for_human_plan_confirm 상태의 task를 만든다."""
         result = api.submit(project_name, "승인 대기 task", "desc")
         with open(result.file_path) as f:
             task = json.load(f)
-        task["status"] = "waiting_for_human"
+        task["status"] = "waiting_for_human_plan_confirm"
         task["human_interaction"] = {
             "type": "plan_review",
             "message": "plan을 확인해 주세요",
@@ -176,7 +176,7 @@ class TestApproveReject:
         assert "API 설계" in task["human_interaction"]["response"]["message"]
 
     def test_approve_non_waiting_task(self, test_project, agent_hub_root):
-        """waiting_for_human이 아닌 task에 approve하면 False."""
+        """waiting_for_human_plan_confirm이 아닌 task에 approve하면 False."""
         api = HubAPI(agent_hub_root)
         api.submit(test_project["name"], "일반 task", "desc")
 
@@ -196,13 +196,13 @@ class TestPending:
         assert pending == []
 
     def test_pending_with_waiting_task(self, test_project, agent_hub_root):
-        """waiting_for_human task가 있으면 조회된다."""
+        """waiting_for_human_plan_confirm task가 있으면 조회된다."""
         api = HubAPI(agent_hub_root)
         result = api.submit(test_project["name"], "승인 대기", "desc")
 
         with open(result.file_path) as f:
             task = json.load(f)
-        task["status"] = "waiting_for_human"
+        task["status"] = "waiting_for_human_plan_confirm"
         task["human_interaction"] = {
             "type": "plan_review",
             "message": "확인 요청",

@@ -77,7 +77,7 @@ async function loadDashboard() {
             const counts = p.task_counts || {};
             const total = Object.values(counts).reduce((a, b) => a + b, 0);
             const active = (counts.submitted || 0) + (counts.queued || 0) +
-                           (counts.in_progress || 0) + (counts.waiting_for_human || 0);
+                           (counts.in_progress || 0) + (counts.waiting_for_human_plan_confirm || 0);
             return `
                 <div class="project-card">
                     <div class="name">${p.name}</div>
@@ -106,6 +106,7 @@ async function loadDashboard() {
                     <button class="btn btn-success" onclick="handleApprove('${item.project}', '${item.task_id}')">Approve</button>
                     <button class="btn btn-danger" onclick="handleReject('${item.project}', '${item.task_id}')">Reject</button>
                     <button class="btn btn-secondary" onclick="viewPlan('${item.project}', '${item.task_id}')">View Plan</button>
+                    <button class="btn btn-warning" onclick="handleCancel('${item.project}', '${item.task_id}')">Cancel</button>
                 </div>
             </div>
         `).join('');
@@ -199,11 +200,11 @@ async function toggleTaskDetail(project, taskId, rowEl) {
         ${t.failure_reason ? `<div class="detail-field failure-box"><label>Failure Reason:</label> ${t.failure_reason}</div>` : ''}
         ${t.description ? `<div class="detail-field"><label>Description:</label><br>${t.description}</div>` : ''}
         <div class="detail-actions">
-            ${t.status === 'waiting_for_human' || t.status === 'pending_review' ? `
+            ${t.status === 'waiting_for_human_plan_confirm' || t.status === 'waiting_for_human_pr_approve' ? `
                 <button class="btn btn-success" onclick="handleApprove('${project}', '${taskId}')">Approve</button>
                 <button class="btn btn-danger" onclick="handleReject('${project}', '${taskId}')">Reject</button>
             ` : ''}
-            ${['submitted', 'queued', 'in_progress', 'waiting_for_human'].includes(t.status) ? `
+            ${['submitted', 'queued', 'planned', 'in_progress', 'waiting_for_human_plan_confirm'].includes(t.status) ? `
                 <button class="btn btn-warning" onclick="handleCancel('${project}', '${taskId}')">Cancel</button>
             ` : ''}
             ${['cancelled', 'failed'].includes(t.status) ? `

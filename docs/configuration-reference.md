@@ -275,9 +275,9 @@ override 가능한 항목:
 | `submitted` | 제출됨, 실행 대기 |
 | `queued` | 큐에 등록됨 |
 | `planned` | Planner 완료 |
-| `waiting_for_human` | 사람 확인 대기 |
+| `waiting_for_human_plan_confirm` | 사람 확인 대기 |
 | `in_progress` | 실행 중 |
-| `pending_review` | PR 생성됨, 리뷰 대기 (`auto_merge=false`) |
+| `waiting_for_human_pr_approve` | PR 생성됨, 리뷰 대기 (`auto_merge=false`) |
 | `completed` | 완료 |
 | `needs_replan` | replan 필요 |
 | `escalated` | 사람에게 에스컬레이션 |

@@ -1,36 +1,38 @@
 digraph TaskLifecycle {
     // 전체 설정
     rankdir=TB;
-    bgcolor="#1a1a2e";
+    bgcolor="white";
     fontname="Segoe UI, Arial, sans-serif";
-    pad=0.5;
-    nodesep=0.6;
-    ranksep=0.8;
+    pad=0.3;
+    nodesep=0.35;
+    ranksep=0.55;
 
     // 노드 기본 스타일
     node [
         fontname="Segoe UI, Arial, sans-serif"
-        fontsize=11
+        fontsize=16
         style="filled,rounded"
         shape=box
-        penwidth=1.5
+        penwidth=2
+        margin="0.15,0.08"
+        height=0.5
     ];
 
     // 엣지 기본 스타일
     edge [
         fontname="Segoe UI, Arial, sans-serif"
-        fontsize=9
-        fontcolor="#b0b0b0"
-        color="#555577"
-        penwidth=1.2
-        arrowsize=0.8
+        fontsize=13
+        fontcolor="#333333"
+        color="#666688"
+        penwidth=1.5
+        arrowsize=1.0
     ];
 
     // ─── 노드 정의 ───
 
     // 시작/종료 마커
-    start [label="" shape=circle width=0.3 fillcolor="#00d2ff" color="#00d2ff" penwidth=2];
-    end [label="" shape=doublecircle width=0.25 fillcolor="#333355" color="#888888" penwidth=2];
+    start [label="" shape=circle width=0.4 fillcolor="#0077aa" color="#0077aa" penwidth=2.5];
+    end [label="" shape=doublecircle width=0.35 fillcolor="#555577" color="#888888" penwidth=2.5];
 
     // 초기 상태
     submitted [
@@ -49,8 +51,8 @@ digraph TaskLifecycle {
     ];
 
     // 대기 상태
-    waiting_for_human [
-        label="waiting_for_human\n(승인 대기)"
+    waiting_for_human_plan_confirm [
+        label="waiting_for_human_plan_confirm\n(승인 대기)"
         fillcolor="#FF5722"
         fontcolor="white"
         color="#BF360C"
@@ -69,12 +71,12 @@ digraph TaskLifecycle {
         fillcolor="#FF9800"
         fontcolor="black"
         color="#E65100"
-        penwidth=2.5
+        penwidth=3
     ];
 
     // 리뷰 상태
-    pending_review [
-        label="pending_review\n(PR 머지 대기)"
+    waiting_for_human_pr_approve [
+        label="waiting_for_human_pr_approve\n(PR 머지 대기)"
         fillcolor="#FF5722"
         fontcolor="white"
         color="#BF360C"
@@ -86,7 +88,7 @@ digraph TaskLifecycle {
         fillcolor="#4CAF50"
         fontcolor="white"
         color="#2E7D32"
-        penwidth=2
+        penwidth=2.5
     ];
 
     failed [
@@ -94,7 +96,7 @@ digraph TaskLifecycle {
         fillcolor="#F44336"
         fontcolor="white"
         color="#B71C1C"
-        penwidth=2
+        penwidth=2.5
     ];
 
     cancelled [
@@ -102,7 +104,7 @@ digraph TaskLifecycle {
         fillcolor="#888888"
         fontcolor="white"
         color="#555555"
-        penwidth=2
+        penwidth=2.5
     ];
 
     escalated [
@@ -110,63 +112,63 @@ digraph TaskLifecycle {
         fillcolor="#9C27B0"
         fontcolor="white"
         color="#6A1B9A"
-        penwidth=2
+        penwidth=2.5
     ];
 
     // resubmit 안내
     resubmit_note [
         label="resubmit →\n새 task 생성"
         shape=note
-        fillcolor="#2a2a4a"
-        fontcolor="#00d2ff"
-        color="#555577"
-        fontsize=9
+        fillcolor="#e8e8f0"
+        fontcolor="#0077aa"
+        color="#666688"
+        fontsize=13
     ];
 
     // ─── 전이 ───
 
     // 시작
-    start -> submitted [label="submit" color="#00d2ff" fontcolor="#00d2ff"];
+    start -> submitted [label="submit" color="#0077aa" fontcolor="#0077aa"];
 
     // submitted →
     submitted -> planned [label="Planner 성공\n(review=false)"];
-    submitted -> waiting_for_human [label="Planner 성공\n(review=true)"];
-    submitted -> failed [label="Planner 실패" color="#F44336" fontcolor="#ef9a9a"];
-    submitted -> cancelled [label="cancel" style=dashed color="#888888" fontcolor="#888888"];
+    submitted -> waiting_for_human_plan_confirm [label="Planner 성공\n(review=true)"];
+    submitted -> failed [label="Planner 실패" color="#F44336" fontcolor="#B71C1C"];
+    submitted -> cancelled [label="cancel" style=dashed color="#888888" fontcolor="#555555"];
 
-    // waiting_for_human →
-    waiting_for_human -> planned [label="approve /\ntimeout 자동승인" color="#4CAF50" fontcolor="#81C784"];
-    waiting_for_human -> needs_replan [label="reject (modify)" color="#E91E63" fontcolor="#F48FB1"];
-    waiting_for_human -> cancelled [label="cancel" style=dashed color="#888888" fontcolor="#888888"];
+    // waiting_for_human_plan_confirm →
+    waiting_for_human_plan_confirm -> planned [label="approve /\ntimeout 자동승인" color="#4CAF50" fontcolor="#2E7D32"];
+    waiting_for_human_plan_confirm -> needs_replan [label="reject (modify)" color="#E91E63" fontcolor="#880E4F"];
+    waiting_for_human_plan_confirm -> cancelled [label="cancel" style=dashed color="#888888" fontcolor="#555555"];
 
     // needs_replan →
-    needs_replan -> waiting_for_human [label="Replanner 성공\n(review=true)"];
+    needs_replan -> waiting_for_human_plan_confirm [label="Replanner 성공\n(review=true)"];
     needs_replan -> planned [label="Replanner 성공\n(review=false)"];
-    needs_replan -> failed [label="Replanner 실패" color="#F44336" fontcolor="#ef9a9a"];
+    needs_replan -> failed [label="Replanner 실패" color="#F44336" fontcolor="#B71C1C"];
 
     // planned →
-    planned -> in_progress [label="git branch →\nsubtask loop" color="#FF9800" fontcolor="#FFB74D"];
-    planned -> failed [label="branch 생성 실패" color="#F44336" fontcolor="#ef9a9a"];
+    planned -> in_progress [label="git branch →\nsubtask loop" color="#FF9800" fontcolor="#E65100"];
+    planned -> failed [label="branch 생성 실패" color="#F44336" fontcolor="#B71C1C"];
 
     // in_progress → (self-loop)
     in_progress -> in_progress [
         label="subtask 완료 → 다음\nReviewer 거절 → Coder 재시도"
         color="#FF9800"
-        fontcolor="#FFB74D"
+        fontcolor="#E65100"
         style=dashed
     ];
 
     // in_progress → 다른 상태
-    in_progress -> completed [label="모든 subtask 완료\n+ auto_merge=true" color="#4CAF50" fontcolor="#81C784"];
-    in_progress -> pending_review [label="모든 subtask 완료\n+ auto_merge=false"];
-    in_progress -> needs_replan [label="Reporter:\nreplan 요청" color="#E91E63" fontcolor="#F48FB1"];
-    in_progress -> escalated [label="한도 초과\n에스컬레이션" color="#9C27B0" fontcolor="#CE93D8"];
-    in_progress -> failed [label="Agent/git/PR\n실패" color="#F44336" fontcolor="#ef9a9a"];
-    in_progress -> cancelled [label="cancel" style=dashed color="#888888" fontcolor="#888888"];
+    in_progress -> completed [label="모든 subtask 완료\n+ auto_merge=true" color="#4CAF50" fontcolor="#2E7D32"];
+    in_progress -> waiting_for_human_pr_approve [label="모든 subtask 완료\n+ auto_merge=false"];
+    in_progress -> needs_replan [label="Reporter:\nreplan 요청" color="#E91E63" fontcolor="#880E4F"];
+    in_progress -> escalated [label="한도 초과\n에스컬레이션" color="#9C27B0" fontcolor="#6A1B9A"];
+    in_progress -> failed [label="Agent/git/PR\n실패" color="#F44336" fontcolor="#B71C1C"];
+    in_progress -> cancelled [label="cancel" style=dashed color="#888888" fontcolor="#555555"];
 
-    // pending_review →
-    pending_review -> completed [label="PR 수동 머지\n(외부)" color="#4CAF50" fontcolor="#81C784" style=dashed];
-    pending_review -> failed [label="PR 거부/닫힘\n(외부)" color="#F44336" fontcolor="#ef9a9a" style=dashed];
+    // waiting_for_human_pr_approve →
+    waiting_for_human_pr_approve -> completed [label="PR 수동 머지\n(외부)" color="#4CAF50" fontcolor="#2E7D32" style=dashed];
+    waiting_for_human_pr_approve -> failed [label="PR 거부/닫힘\n(외부)" color="#F44336" fontcolor="#B71C1C" style=dashed];
 
     // 종료 → end
     completed -> end [color="#4CAF50"];
@@ -175,20 +177,20 @@ digraph TaskLifecycle {
     escalated -> end [color="#9C27B0"];
 
     // resubmit
-    failed -> resubmit_note [style=dotted color="#00d2ff" arrowhead=none];
-    cancelled -> resubmit_note [style=dotted color="#00d2ff" arrowhead=none];
-    resubmit_note -> submitted [style=dotted color="#00d2ff" label="새 task"];
+    failed -> resubmit_note [style=dotted color="#0077aa" arrowhead=none];
+    cancelled -> resubmit_note [style=dotted color="#0077aa" arrowhead=none];
+    resubmit_note -> submitted [style=dotted color="#0077aa" label="새 task"];
 
     // ─── 레이아웃 힌트 ───
     { rank=same; submitted }
-    { rank=same; waiting_for_human; planned; needs_replan }
+    { rank=same; waiting_for_human_plan_confirm; planned; needs_replan }
     { rank=same; in_progress }
-    { rank=same; pending_review }
+    { rank=same; waiting_for_human_pr_approve }
     { rank=same; completed; failed; cancelled; escalated }
 
     // 타이틀
     labelloc=t;
     label="Task Lifecycle — Finite State Machine";
-    fontsize=16;
-    fontcolor="#00d2ff";
+    fontsize=22;
+    fontcolor="#0055aa";
 }

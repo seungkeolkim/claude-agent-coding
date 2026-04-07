@@ -286,13 +286,13 @@ def update_project_state(project_dir, status, current_task_id=None, last_error=N
 def request_human_review(task_file, task_id, review_type, plan_path, subtask_count,
                          project_dir=None):
     """
-    task JSON에 human_interaction을 기록하고 status를 waiting_for_human으로 변경한다.
+    task JSON에 human_interaction을 기록하고 status를 waiting_for_human_plan_confirm으로 변경한다.
     review_type: "plan_review" | "replan_review"
     project_dir: 프로젝트 디렉토리 (알림 발송용). None이면 task_file에서 추론.
     """
     task = load_json(task_file)
 
-    task["status"] = "waiting_for_human"
+    task["status"] = "waiting_for_human_plan_confirm"
     task["human_interaction"] = {
         "type": review_type,
         "message": f"Plan을 확인해주세요. subtask {subtask_count}개 생성됨.",
@@ -327,8 +327,8 @@ def wait_for_human_response(task_file, project_dir, task_id, timeout_hours,
 
     반환: "approve" | "modify" | "cancel" | "timeout"
     """
-    # project_state.json에 waiting_for_human 상태 기록
-    update_project_state(project_dir, status="waiting_for_human",
+    # project_state.json에 waiting_for_human_plan_confirm 상태 기록
+    update_project_state(project_dir, status="waiting_for_human_plan_confirm",
                          current_task_id=task_id)
 
     start_time = time.time()
@@ -1283,7 +1283,7 @@ def finalize_task(agent_hub_root, project_name, task_id, task_file,
                 update_task_field(task_file, "status", "completed")
             else:
                 log_info(f"[git] auto_merge=false — PR 생성 완료. 수동 머지 대기: {pr_url}")
-                update_task_field(task_file, "status", "pending_review")
+                update_task_field(task_file, "status", "waiting_for_human_pr_approve")
         except RuntimeError as e:
             log_error(f"PR 처리 실패: {e}")
             record_failure_reason(task_file, f"PR 처리 실패: {e}")
