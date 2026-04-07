@@ -410,7 +410,7 @@ class TestCreateProject:
             "remote": "upstream",
             "author_name": "my-bot",
             "author_email": "bot@test.com",
-            "auto_merge": True,
+            "merge_strategy": "auto_merge",
             "pr_target_branch": "develop",
         }
         result = api.create_project(
@@ -426,7 +426,7 @@ class TestCreateProject:
             assert config["git"]["enabled"] is True
             assert config["git"]["remote"] == "upstream"
             assert config["git"]["author_name"] == "my-bot"
-            assert config["git"]["auto_merge"] is True
+            assert config["git"]["merge_strategy"] == "auto_merge"
             assert config["project"]["default_branch"] == "develop"
         finally:
             shutil.rmtree(result.project_directory, ignore_errors=True)
@@ -1122,3 +1122,110 @@ class TestProjectLifecycle:
             assert "미완료" in resp.message
         finally:
             shutil.rmtree(result.project_directory, ignore_errors=True)
+
+
+# ═══════════════════════════════════════════════════════════
+# PR 리뷰 완료 (complete_pr_review)
+# ═══════════════════════════════════════════════════════════
+
+
+class TestCompletePrReview:
+    """complete_pr_review 액션 — waiting_for_human_pr_approve 상태 탈출."""
+
+    def _make_pr_waiting_task(self, api, project_name):
+        """waiting_for_human_pr_approve 상태의 task를 생성하는 헬퍼."""
+        result = api.submit(project_name, "PR 리뷰 대기 task", "desc")
+        task_file = result.file_path
+        with open(task_file) as f:
+            task = json.load(f)
+        task["status"] = "waiting_for_human_pr_approve"
+        task["pr_url"] = "https://github.com/test/repo/pull/1"
+        with open(task_file, "w") as f:
+            json.dump(task, f, indent=2)
+        return result.task_id, task_file
+
+    def test_merged_completes_task(self, test_project, agent_hub_root):
+        """result='merged'이면 task가 completed로 전이된다."""
+        api = HubAPI(agent_hub_root)
+        task_id, task_file = self._make_pr_waiting_task(api, test_project["name"])
+
+        ok = api.complete_pr_review(test_project["name"], task_id, result="merged")
+        assert ok is True
+
+        with open(task_file) as f:
+            task = json.load(f)
+        assert task["status"] == "completed"
+        assert task["pr_review_result"] == "merged"
+        assert "pr_reviewed_at" in task
+
+    def test_rejected_fails_task(self, test_project, agent_hub_root):
+        """result='rejected'이면 task가 failed로 전이된다."""
+        api = HubAPI(agent_hub_root)
+        task_id, task_file = self._make_pr_waiting_task(api, test_project["name"])
+
+        ok = api.complete_pr_review(
+            test_project["name"], task_id,
+            result="rejected", message="코드 품질 부족",
+        )
+        assert ok is True
+
+        with open(task_file) as f:
+            task = json.load(f)
+        assert task["status"] == "failed"
+        assert task["pr_review_result"] == "rejected"
+        assert "코드 품질 부족" in task["failure_reason"]
+
+    def test_wrong_status_returns_false(self, test_project, agent_hub_root):
+        """waiting_for_human_pr_approve가 아닌 상태에서는 False를 반환한다."""
+        api = HubAPI(agent_hub_root)
+        result = api.submit(test_project["name"], "일반 task", "desc")
+
+        ok = api.complete_pr_review(test_project["name"], result.task_id, result="merged")
+        assert ok is False
+
+    def test_invalid_result_raises(self, test_project, agent_hub_root):
+        """result가 merged/rejected가 아니면 ValueError."""
+        api = HubAPI(agent_hub_root)
+        task_id, _ = self._make_pr_waiting_task(api, test_project["name"])
+
+        with pytest.raises(ValueError, match="merged.*rejected"):
+            api.complete_pr_review(test_project["name"], task_id, result="invalid")
+
+    def test_via_dispatch_merged(self, test_project, agent_hub_root):
+        """dispatch 경유: merged 처리."""
+        api = HubAPI(agent_hub_root)
+        task_id, task_file = self._make_pr_waiting_task(api, test_project["name"])
+
+        resp = dispatch(api, Request(
+            action="complete_pr_review",
+            project=test_project["name"],
+            params={"task_id": task_id, "result": "merged"},
+        ))
+        assert resp.success is True
+        assert "머지 완료" in resp.message
+
+    def test_via_dispatch_rejected(self, test_project, agent_hub_root):
+        """dispatch 경유: rejected 처리."""
+        api = HubAPI(agent_hub_root)
+        task_id, task_file = self._make_pr_waiting_task(api, test_project["name"])
+
+        resp = dispatch(api, Request(
+            action="complete_pr_review",
+            project=test_project["name"],
+            params={"task_id": task_id, "result": "rejected", "message": "변경 필요"},
+        ))
+        assert resp.success is True
+        assert "거부 처리" in resp.message
+
+    def test_via_dispatch_wrong_status(self, test_project, agent_hub_root):
+        """dispatch 경유: PR 리뷰 대기 상태가 아니면 에러."""
+        api = HubAPI(agent_hub_root)
+        result = api.submit(test_project["name"], "일반 task", "desc")
+
+        resp = dispatch(api, Request(
+            action="complete_pr_review",
+            project=test_project["name"],
+            params={"task_id": result.task_id, "result": "merged"},
+        ))
+        assert resp.success is False
+        assert "대기 상태가 아닙니다" in resp.message

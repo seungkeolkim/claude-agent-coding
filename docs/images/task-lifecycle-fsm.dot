@@ -159,16 +159,16 @@ digraph TaskLifecycle {
     ];
 
     // in_progress → 다른 상태
-    in_progress -> completed [label="모든 subtask 완료\n+ auto_merge=true" color="#4CAF50" fontcolor="#2E7D32"];
-    in_progress -> waiting_for_human_pr_approve [label="모든 subtask 완료\n+ auto_merge=false"];
+    in_progress -> completed [label="모든 subtask 완료\n+ merge: auto / pr_and_continue" color="#4CAF50" fontcolor="#2E7D32"];
+    in_progress -> waiting_for_human_pr_approve [label="모든 subtask 완료\n+ require_human"];
     in_progress -> needs_replan [label="Reporter:\nreplan 요청" color="#E91E63" fontcolor="#880E4F"];
     in_progress -> escalated [label="한도 초과\n에스컬레이션" color="#9C27B0" fontcolor="#6A1B9A"];
     in_progress -> failed [label="Agent/git/PR\n실패" color="#F44336" fontcolor="#B71C1C"];
     in_progress -> cancelled [label="cancel" style=dashed color="#888888" fontcolor="#555555"];
 
     // waiting_for_human_pr_approve →
-    waiting_for_human_pr_approve -> completed [label="PR 수동 머지\n(외부)" color="#4CAF50" fontcolor="#2E7D32" style=dashed];
-    waiting_for_human_pr_approve -> failed [label="PR 거부/닫힘\n(외부)" color="#F44336" fontcolor="#B71C1C" style=dashed];
+    waiting_for_human_pr_approve -> completed [label="complete_pr_review(merged)\n/ PR Watcher: MERGED" color="#4CAF50" fontcolor="#2E7D32"];
+    waiting_for_human_pr_approve -> failed [label="complete_pr_review(rejected)\n/ PR Watcher: CLOSED" color="#F44336" fontcolor="#B71C1C"];
 
     // 종료 → end
     completed -> end [color="#4CAF50"];

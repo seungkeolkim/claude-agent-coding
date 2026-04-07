@@ -201,6 +201,24 @@ def cmd_reject(args):
         sys.exit(1)
 
 
+def cmd_complete_pr_review(args):
+    """PR 리뷰 결과를 반영한다."""
+    api = get_hub_api()
+    try:
+        ok = api.complete_pr_review(
+            args.project, args.task_id,
+            result=args.result, message=args.message,
+        )
+        if ok:
+            label = "머지 완료" if args.result == "merged" else "거부 처리"
+            print(f"{GREEN}[OK]{NC} task {args.task_id} PR {label}")
+        else:
+            print(f"{YELLOW}[WARN]{NC} task {args.task_id}가 PR 리뷰 대기 상태가 아닙니다.")
+    except (FileNotFoundError, ValueError) as e:
+        print(f"{RED}[ERROR]{NC} {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_feedback(args):
     """실행 중인 task에 피드백을 추가한다."""
     api = get_hub_api()
@@ -387,6 +405,15 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--message", required=True, help="거부 사유 및 수정 요청 내용")
     sp.add_argument("--attach", action="append", help="첨부파일 경로")
     sp.set_defaults(func=cmd_reject)
+
+    # ─── complete-pr-review ───
+    sp = subparsers.add_parser("complete-pr-review", help="PR 리뷰 결과 반영 (merged/rejected)")
+    sp.add_argument("task_id", help="task ID")
+    sp.add_argument("--project", required=True, help="프로젝트명")
+    sp.add_argument("--result", required=True, choices=["merged", "rejected"],
+                    help="PR 결과 (merged: 머지 완료, rejected: 거부)")
+    sp.add_argument("--message", help="코멘트 (선택)")
+    sp.set_defaults(func=cmd_complete_pr_review)
 
     # ─── feedback ───
     sp = subparsers.add_parser("feedback", help="실행 중 task에 피드백 추가")

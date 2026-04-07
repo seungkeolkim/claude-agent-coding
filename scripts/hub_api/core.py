@@ -208,7 +208,7 @@ class HubAPI:
             codebase_path: 코드베이스 절대경로 (없으면 자동 생성)
             git_settings: git 연동 설정 dict. None이면 플레이스홀더 기본값 사용.
                 keys: enabled, remote, author_name, author_email,
-                      auto_merge, pr_target_branch
+                      base_branch, pr_target_branch, merge_strategy
 
         Returns:
             CreateProjectResult
@@ -255,8 +255,9 @@ class HubAPI:
             "remote": "origin",
             "author_name": placeholder,
             "author_email": placeholder,
-            "auto_merge": False,
+            "base_branch": "main",
             "pr_target_branch": "main",
+            "merge_strategy": "require_human",
         }
         if git_settings:
             default_git_settings.update(git_settings)
@@ -685,6 +686,53 @@ class HubAPI:
         # 거부(modify)면 WFC가 replan 처리
         elif action == "modify":
             task["status"] = "needs_replan"
+
+        self._save_json_atomic(task_file, task)
+        return True
+
+    # ═══════════════════════════════════════════════════════════
+    # PR 리뷰 완료
+    # ═══════════════════════════════════════════════════════════
+
+    def complete_pr_review(self, project: str, task_id: str,
+                           result: str, message: Optional[str] = None) -> bool:
+        """
+        PR 리뷰 결과를 반영하여 waiting_for_human_pr_approve 상태에서 탈출한다.
+
+        Args:
+            project: 프로젝트명
+            task_id: task ID
+            result: "merged" → completed, "rejected" → failed
+            message: 선택적 코멘트
+
+        Returns:
+            True: 성공적으로 상태 전이
+        """
+        if result not in ("merged", "rejected"):
+            raise ValueError(f"result는 'merged' 또는 'rejected'만 가능합니다: {result}")
+
+        tasks_dir = self._tasks_dir(project)
+        task_file = self._find_task_file(tasks_dir, task_id)
+        if not task_file:
+            raise FileNotFoundError(f"task를 찾을 수 없음: {project}/{task_id}")
+
+        task = self._load_json(task_file)
+
+        if task.get("status") != "waiting_for_human_pr_approve":
+            return False
+
+        # PR 리뷰 결과 기록
+        task["pr_review_result"] = result
+        task["pr_reviewed_at"] = datetime.now(timezone.utc).isoformat()
+        if message:
+            task["pr_review_message"] = message
+
+        # 상태 전이
+        if result == "merged":
+            task["status"] = "completed"
+        else:  # rejected
+            task["status"] = "failed"
+            task["failure_reason"] = f"PR 거부됨: {message or '사유 없음'}"
 
         self._save_json_atomic(task_file, task)
         return True

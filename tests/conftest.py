@@ -103,7 +103,7 @@ def _minimal_project_yaml(project_name, codebase_path):
             "remote": "origin",
             "default_branch": "main",
             "branch_prefix": "agent/",
-            "auto_merge": False,
+            "merge_strategy": "require_human",
             "author_name": "Test Agent",
             "author_email": "test@agent.hub",
         },

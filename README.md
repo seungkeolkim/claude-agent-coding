@@ -8,7 +8,7 @@ Claude Code CLI 기반 자동 개발 시스템.
 ## 파이프라인
 
 ```
-Planner → [Plan 승인 대기] → 브랜치 생성 → Subtask Loop → Summarizer → PR 생성 → [auto_merge]
+Planner → [Plan 승인 대기] → 브랜치 생성 → Subtask Loop → Summarizer → PR 생성 → [merge_strategy]
                                                 │
                                         ┌───────┴───────┐
                                         │  Coder        │
@@ -231,7 +231,7 @@ source activate_venv.sh
 ### 8. 결과 확인
 
 - 로그: `projects/{name}/logs/{task_id}/` 아래에 agent별 로그 파일 생성
-- PR: `auto_merge=true`면 자동 머지, `false`면 PR만 생성 (status=`waiting_for_human_pr_approve`)
+- PR: `merge_strategy`에 따라 자동 머지(`auto_merge`), 즉시 완료(`pr_and_continue`), 수동 대기(`require_human`)
 - task 요약: task JSON의 `summary` 필드에 Summarizer가 생성한 한국어 요약
 
 ## 설정 체계
@@ -261,7 +261,7 @@ config.yaml (시스템 기본값)
 | 브랜치 생성 | Planner가 영문 이름 제안, `feature/{task_id}-{설명}` 형식 |
 | subtask 커밋 | 각 subtask 완료 시 자동 commit + push |
 | PR 생성 | Summarizer가 한국어 title/body 생성, `[{task_id}]` 접두사 자동 |
-| 자동 머지 | `auto_merge: true`면 `gh pr merge`, `false`면 PR만 생성 |
+| 머지 전략 | `merge_strategy`: `auto_merge`(자동 머지), `pr_and_continue`(PR만 생성 후 다음 task), `require_human`(수동 대기) |
 | 인증 | project.yaml의 `auth_token`으로 `gh` CLI 자동 로그인 |
 
 ## 핵심 설계 원칙

@@ -13,7 +13,7 @@
 | **대기** | needs_replan | 사용자가 plan 거부, 재계획 필요 |
 | **실행** | in_progress | subtask 실행 중 (Coder → Reviewer → 테스트 루프) |
 | **리뷰** | waiting_for_human_pr_approve | PR 생성 완료, 수동 머지 대기 |
-| **종료** | completed | 정상 완료 (auto_merge 또는 수동 머지 후) |
+| **종료** | completed | 정상 완료 (merge_strategy에 따라 자동/수동 머지 후) |
 | **종료** | failed | 실행 실패 (planner/coder/git/PR 등) |
 | **종료** | cancelled | 사용자 취소 |
 | **종료** | escalated | 한도 초과 에스컬레이션 (수동 개입 필요) |
@@ -45,13 +45,13 @@ stateDiagram-v2
     in_progress --> in_progress : subtask 완료 → 다음 subtask\n/ Reviewer 거절 → Coder 재시도\n/ Reporter fail → Coder 재시도
     in_progress --> needs_replan : Reporter: replan 요청\n(retry 한도 초과)
     in_progress --> escalated : 에스컬레이션\n(replan 한도 초과 등)
-    in_progress --> completed : 모든 subtask 완료\n+ PR auto_merge=true\n(또는 git 미사용)
-    in_progress --> waiting_for_human_pr_approve : 모든 subtask 완료\n+ PR auto_merge=false
+    in_progress --> completed : 모든 subtask 완료\n+ merge_strategy=auto_merge\n/ merge_strategy=pr_and_continue\n(또는 git 미사용)
+    in_progress --> waiting_for_human_pr_approve : 모든 subtask 완료\n+ merge_strategy=require_human
     in_progress --> failed : Agent 실행 실패\n/ git push 실패\n/ PR 생성 실패
     in_progress --> cancelled : 사용자 cancel
 
-    waiting_for_human_pr_approve --> completed : PR 수동 머지 (외부)
-    waiting_for_human_pr_approve --> failed : PR 거부/닫힘 (외부)
+    waiting_for_human_pr_approve --> completed : complete_pr_review(merged)\n/ PR Watcher: MERGED 감지
+    waiting_for_human_pr_approve --> failed : complete_pr_review(rejected)\n/ PR Watcher: CLOSED 감지
 
     completed --> [*]
     failed --> [*]
@@ -100,16 +100,16 @@ stateDiagram-v2
 | in_progress | subtask 간 전환, Coder 재시도 (self-loop) | `workflow_controller.py` run_pipeline_from_subtasks() |
 | needs_replan | Reporter: replan 요청 (retry 한도 초과) | `workflow_controller.py` run_pipeline_from_subtasks() |
 | escalated | replan 한도 초과 에스컬레이션 | `workflow_controller.py` run_pipeline_from_subtasks() |
-| completed | 모든 subtask 완료 + auto_merge=true (또는 git 미사용) | `workflow_controller.py` finalize_task() |
-| waiting_for_human_pr_approve | 모든 subtask 완료 + auto_merge=false | `workflow_controller.py` finalize_task() |
+| completed | 모든 subtask 완료 + merge_strategy=auto_merge/pr_and_continue (또는 git 미사용) | `workflow_controller.py` finalize_task() |
+| waiting_for_human_pr_approve | 모든 subtask 완료 + merge_strategy=require_human | `workflow_controller.py` finalize_task() |
 | failed | Agent 실행 실패 / git push 실패 / PR 생성 실패 | `workflow_controller.py` 각 agent 실행 지점 |
 | cancelled | cancel 명령 파일 감지 | `workflow_controller.py` check_cancel_command() |
 
 ### waiting_for_human_pr_approve →
 | 대상 | 트리거 | 위치 |
 |------|--------|------|
-| completed | 사용자가 PR 수동 머지 | 외부 (GitHub) |
-| failed | 사용자가 PR 거부/닫힘 | 외부 (GitHub) |
+| completed | complete_pr_review(merged) / PR Watcher: MERGED 감지 | `hub_api/core.py` complete_pr_review(), `task_manager.py` _check_pr_state() |
+| failed | complete_pr_review(rejected) / PR Watcher: CLOSED 감지 | `hub_api/core.py` complete_pr_review(), `task_manager.py` _check_pr_state() |
 
 ### 종료 상태 (completed, failed, cancelled, escalated)
 - **더 이상 자동 전이 없음** (terminal state)

@@ -65,6 +65,7 @@ READ_ONLY_ACTIONS = frozenset({
 HIGH_RISK_ACTIONS = frozenset({
     "submit", "approve", "reject", "cancel", "config",
     "create_project", "close_project", "reopen_project", "resubmit",
+    "complete_pr_review",
 })
 
 # 저위험 실행성 — smart 모드에서 즉시 실행
