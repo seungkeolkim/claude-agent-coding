@@ -470,10 +470,17 @@ def format_confirmation_prompt(parsed: dict) -> str:
     if project:
         lines.append(f"  {BOLD}프로젝트:{NC}    {project}")
     for k, v in params.items():
-        display_v = str(v)
-        if len(display_v) > 80:
-            display_v = display_v[:77] + "..."
-        lines.append(f"  {BOLD}{k}:{NC} {display_v}")
+        if isinstance(v, (dict, list)):
+            # dict/list는 pretty print JSON으로 출력 (들여쓰기 정렬)
+            import json as _json
+            pretty = _json.dumps(v, indent=2, ensure_ascii=False)
+            indented = pretty.replace("\n", "\n    ")  # 4칸 들여쓰기
+            lines.append(f"  {BOLD}{k}:{NC}\n    {indented}")
+        else:
+            display_v = str(v)
+            if len(display_v) > 80:
+                display_v = display_v[:77] + "..."
+            lines.append(f"  {BOLD}{k}:{NC} {display_v}")
     if explanation:
         lines.append(f"\n  {explanation}")
     lines.append(f"{DIM}{'─' * 50}{NC}")
