@@ -346,8 +346,8 @@ async function doMergePr(project, taskId) {
     const msg = document.getElementById('merge-pr-msg').value;
     await dispatch('merge_pr', project, { task_id: taskId, message: msg || undefined });
     closeModal();
-    loadDashboard();
-    loadTasks();
+    // 즉시 UI를 Processing 상태로 전환
+    setPrProcessing(project, taskId);
 }
 
 async function handleClosePr(project, taskId) {
@@ -364,8 +364,69 @@ async function doClosePr(project, taskId) {
     const msg = document.getElementById('close-pr-msg').value;
     await dispatch('close_pr', project, { task_id: taskId, message: msg || undefined });
     closeModal();
-    loadDashboard();
-    loadTasks();
+    // 즉시 UI를 Processing 상태로 전환
+    setPrProcessing(project, taskId);
+}
+
+// ─── PR 비동기 처리 UI ───
+
+function setPrProcessing(project, taskId) {
+    // pending-list 카드의 버튼 영역을 Processing 메시지로 교체
+    document.querySelectorAll('.pending-item').forEach(item => {
+        const header = item.querySelector('.pending-header span');
+        if (header && header.textContent.trim() === `${project} #${taskId}`) {
+            const actions = item.querySelector('.pending-actions');
+            if (actions) {
+                actions.innerHTML = '<div class="pr-processing">Processing PR...</div>';
+            }
+        }
+    });
+    // task detail 영역의 버튼도 교체
+    document.querySelectorAll('.task-detail-inline').forEach(detail => {
+        const row = detail.previousElementSibling;
+        if (row && row.dataset.project === project && row.dataset.taskId === taskId) {
+            const actions = detail.querySelector('.detail-actions');
+            if (actions) {
+                actions.innerHTML = '<div class="pr-processing">Processing PR...</div>';
+            }
+        }
+    });
+}
+
+function showPrError(project, taskId, errorMsg) {
+    // pending-list 카드에 버튼 복원 + 에러 메시지 표시
+    document.querySelectorAll('.pending-item').forEach(item => {
+        const header = item.querySelector('.pending-header span');
+        if (header && header.textContent.trim() === `${project} #${taskId}`) {
+            const actions = item.querySelector('.pending-actions');
+            if (actions) {
+                actions.innerHTML = `
+                    <button class="btn btn-success" onclick="handleMergePr('${project}', '${taskId}')">Merge PR Now</button>
+                    <button class="btn btn-danger" onclick="handleClosePr('${project}', '${taskId}')">Close PR Now</button>
+                    <button class="btn btn-outline-success" onclick="handleCompletePrReview('${project}', '${taskId}', 'merged')">Mark as Merged</button>
+                    <button class="btn btn-outline-danger" onclick="handleCompletePrReview('${project}', '${taskId}', 'rejected')">Mark as Rejected</button>
+                    <div class="pr-error">${errorMsg}</div>
+                `;
+            }
+        }
+    });
+    // task detail 영역도 복원
+    document.querySelectorAll('.task-detail-inline').forEach(detail => {
+        const row = detail.previousElementSibling;
+        if (row && row.dataset.project === project && row.dataset.taskId === taskId) {
+            const actions = detail.querySelector('.detail-actions');
+            if (actions) {
+                actions.innerHTML = `
+                    <button class="btn btn-success" onclick="handleMergePr('${project}', '${taskId}')">Merge PR Now</button>
+                    <button class="btn btn-danger" onclick="handleClosePr('${project}', '${taskId}')">Close PR Now</button>
+                    <button class="btn btn-secondary" onclick="handleCompletePrReview('${project}', '${taskId}', 'merged')">Mark as Merged</button>
+                    <button class="btn btn-secondary" onclick="handleCompletePrReview('${project}', '${taskId}', 'rejected')">Mark as Rejected</button>
+                    <button class="btn btn-warning" onclick="handleCancel('${project}', '${taskId}')">Cancel</button>
+                    <div class="pr-error">${errorMsg}</div>
+                `;
+            }
+        }
+    });
 }
 
 async function handleCancel(project, taskId) {
@@ -513,6 +574,18 @@ function connectSSE() {
             }
         });
         if (document.querySelector('.nav-btn.active').dataset.tab === 'notifications') loadNotifications();
+    });
+
+    source.addEventListener('pr_action_result', (e) => {
+        const data = JSON.parse(e.data);
+        if (data.success) {
+            // 성공 — dashboard/task list 갱신 (카드가 자연스럽게 사라짐)
+            loadDashboard();
+            loadTasks();
+        } else {
+            // 실패 — 버튼 복원 + 에러 메시지 표시
+            showPrError(data.project, data.task_id, data.error || '알 수 없는 오류');
+        }
     });
 
     source.onerror = () => {

@@ -302,6 +302,30 @@ h2:first-child {
 .btn-outline-danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
 .btn-outline-danger:hover { background: var(--danger); color: white; }
 
+/* ─── PR 비동기 처리 상태 ─── */
+
+.pr-processing {
+    color: var(--warning);
+    font-weight: 600;
+    padding: 8px 0;
+    animation: pr-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pr-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+.pr-error {
+    color: var(--danger);
+    font-size: 0.85rem;
+    margin-top: 8px;
+    padding: 6px 10px;
+    background: rgba(231, 76, 60, 0.15);
+    border: 1px solid var(--danger);
+    border-radius: 4px;
+}
+
 /* ─── Notifications ─── */
 
 .notification-item {

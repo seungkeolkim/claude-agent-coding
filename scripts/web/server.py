@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import sys
+import threading
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -126,6 +127,60 @@ async def index(request: FastAPIRequest):
     return templates.TemplateResponse(request, "index.html")
 
 
+# ─── PR 비동기 액션 처리 ───
+
+# PR 작업 중인 task 추적 (key: "project/task_id")
+_pr_processing: dict[str, bool] = {}
+
+PR_ASYNC_ACTIONS = {"merge_pr", "close_pr"}
+
+
+def _run_pr_action_background(action: str, project: str, task_id: str, message: Optional[str]):
+    """백그라운드 스레드에서 gh PR 액션을 실행하고 결과를 SSE로 전달한다."""
+    key = f"{project}/{task_id}"
+    try:
+        params = {"task_id": task_id}
+        if message:
+            params["message"] = message
+        request = HubRequest(action=action, project=project, params=params, source="web")
+        response = hub_dispatch(hub_api, request)
+
+        if response.success:
+            # 성공 — syncer로 DB 갱신 후 SSE 이벤트 발행
+            if syncer:
+                syncer.sync_project(project)
+            _on_change({
+                "type": "pr_action_result",
+                "project": project,
+                "task_id": task_id,
+                "action": action,
+                "success": True,
+            })
+        else:
+            # hub_api 레벨 에러 (상태 불일치 등)
+            error_msg = response.error.get("message", "알 수 없는 오류") if response.error else "알 수 없는 오류"
+            _on_change({
+                "type": "pr_action_result",
+                "project": project,
+                "task_id": task_id,
+                "action": action,
+                "success": False,
+                "error": error_msg,
+            })
+    except Exception as exc:
+        # subprocess 실패, 네트워크 오류 등
+        _on_change({
+            "type": "pr_action_result",
+            "project": project,
+            "task_id": task_id,
+            "action": action,
+            "success": False,
+            "error": str(exc),
+        })
+    finally:
+        _pr_processing.pop(key, None)
+
+
 # ─── Protocol dispatch (mutation) ───
 
 @app.post("/api/dispatch")
@@ -133,9 +188,31 @@ async def api_dispatch(body: dict):
     """
     기존 protocol.py dispatch()를 그대로 호출한다.
     모든 mutation(submit, approve, reject 등)은 이 엔드포인트를 통한다.
+
+    merge_pr, close_pr 액션은 비동기로 처리한다:
+    즉시 accepted 응답을 반환하고, 결과는 SSE pr_action_result 이벤트로 전달.
     """
     request = HubRequest.from_dict(body)
     request.source = "web"
+
+    # merge_pr / close_pr → 비동기 처리
+    if request.action in PR_ASYNC_ACTIONS:
+        task_id = (request.params or {}).get("task_id", "")
+        key = f"{request.project}/{task_id}"
+
+        if key in _pr_processing:
+            return {"success": False, "error": {"code": "ALREADY_PROCESSING", "message": "이미 처리 중입니다."}}
+
+        _pr_processing[key] = True
+        message = (request.params or {}).get("message")
+        thread = threading.Thread(
+            target=_run_pr_action_background,
+            args=(request.action, request.project, task_id, message),
+            daemon=True,
+        )
+        thread.start()
+        return {"success": True, "message": "요청 접수됨. 처리 결과는 알림으로 전달됩니다.", "accepted": True}
+
     response = hub_dispatch(hub_api, request)
 
     # mutation 후 즉시 sync
