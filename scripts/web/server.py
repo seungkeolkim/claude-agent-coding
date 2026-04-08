@@ -64,11 +64,19 @@ agent_hub_root: str = ""
 
 
 def _on_change(event: dict):
-    """syncer 변경 콜백 → SSE event queue에 push."""
+    """syncer 변경 콜백 → SSE event queue에 push + chat 세션에 notification 주입."""
     try:
         event_queue.put_nowait(event)
     except asyncio.QueueFull:
         pass  # 큐가 가득 차면 무시
+
+    # notification 이벤트를 활성 chat 세션에 주입
+    if event.get("type") == "notification":
+        try:
+            from scripts.web.web_chatbot import broadcast_system_event
+            broadcast_system_event(event)
+        except Exception:
+            pass
 
 
 # ═══════════════════════════════════════════════════════════
@@ -307,6 +315,86 @@ async def api_pending():
     request = HubRequest(action="pending", source="web")
     response = hub_dispatch(hub_api, request)
     return response.to_dict()
+
+
+# ─── Chat API ───
+
+
+def _chat_on_message(event: dict):
+    """ChatProcessor의 on_message 콜백 → SSE event queue에 push."""
+    try:
+        event_queue.put_nowait(event)
+    except asyncio.QueueFull:
+        pass
+
+
+@app.post("/api/chat/session")
+async def api_chat_session(body: dict = {}):
+    """
+    Chat 세션을 생성하거나 복원한다.
+
+    Request body: {"session_id": "optional_existing_id"}
+    Response: {"success": true, "session_id": "...", "history": [...]}
+    """
+    from scripts.web.web_chatbot import get_or_create_session
+
+    session_id = body.get("session_id")
+    processor = get_or_create_session(
+        agent_hub_root=agent_hub_root,
+        session_id=session_id,
+        on_message=_chat_on_message,
+    )
+    return {
+        "success": True,
+        "session_id": processor.session_id,
+        "history": processor.conversation_history,
+    }
+
+
+@app.post("/api/chat/send")
+async def api_chat_send(body: dict):
+    """
+    Chat 메시지를 전송한다 (fire-and-forget).
+
+    Request body: {"session_id": "...", "message": "..."}
+    Response: {"success": true} (실제 응답은 SSE chat_message로 전달)
+    """
+    from scripts.web.web_chatbot import get_or_create_session
+
+    session_id = body.get("session_id")
+    message = body.get("message", "").strip()
+
+    if not session_id:
+        return {"success": False, "error": {"code": "MISSING_SESSION", "message": "session_id가 필요합니다."}}
+    if not message:
+        return {"success": False, "error": {"code": "EMPTY_MESSAGE", "message": "메시지가 비어있습니다."}}
+
+    processor = get_or_create_session(
+        agent_hub_root=agent_hub_root,
+        session_id=session_id,
+        on_message=_chat_on_message,
+    )
+    processor.submit_message(message)
+
+    return {"success": True}
+
+
+@app.get("/api/chat/sessions")
+async def api_chat_sessions():
+    """Chat 세션 목록을 반환한다."""
+    from chatbot import list_sessions as _list_sessions
+    sessions = _list_sessions(agent_hub_root, frontend="web")
+    return {"success": True, "data": sessions}
+
+
+@app.get("/api/chat/history/{session_id}")
+async def api_chat_history(session_id: str):
+    """Chat 세션 히스토리를 반환한다."""
+    from chatbot import load_session as _load_session
+    history = _load_session(agent_hub_root, session_id, frontend="web")
+    if history is None:
+        return {"success": False, "error": {"code": "SESSION_NOT_FOUND", "message": f"세션 '{session_id}'을 찾을 수 없습니다."}}
+    return {"success": True, "data": history}
 
 
 # ─── SSE 실시간 이벤트 스트림 ───

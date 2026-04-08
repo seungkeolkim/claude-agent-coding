@@ -721,8 +721,8 @@ web:
 - `run_system.sh start` → TM + Web Console 동시 백그라운드 기동
 - `run_system.sh stop` → Web Console 종료 → TM 종료
 - `run_system.sh status` → TM + Web Console 상태 표시
-- 로그: `logs/web_console.log`
-- PID: `.pids/web_console.pid`
+- 로그: `logs/web_console_chat.log`
+- PID: `.pids/web_console_chat.{PID}.pid`
 
 ---
 

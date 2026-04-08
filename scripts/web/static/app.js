@@ -507,43 +507,146 @@ document.getElementById('filter-project').addEventListener('change', loadTasks);
 document.getElementById('filter-status').addEventListener('change', loadTasks);
 
 // ═══════════════════════════════════════════════════════════
-// Chat (기본 구조 — Step 5에서 완성)
+// Chat — 실시간 양방향 채팅
 // ═══════════════════════════════════════════════════════════
+
+let chatSessionId = localStorage.getItem('chat_session_id');
 
 document.getElementById('btn-chat-send').addEventListener('click', sendChat);
 document.getElementById('chat-input').addEventListener('keydown', e => {
     if (e.key === 'Enter') sendChat();
 });
+document.getElementById('btn-new-chat-session').addEventListener('click', newChatSession);
+
+async function initChatSession() {
+    // 세션 생성/복원
+    const body = chatSessionId ? { session_id: chatSessionId } : {};
+    const resp = await api('/api/chat/session', {
+        method: 'POST',
+        body: JSON.stringify(body),
+    });
+    if (resp.success) {
+        chatSessionId = resp.session_id;
+        localStorage.setItem('chat_session_id', chatSessionId);
+
+        // 기존 히스토리 렌더링
+        const messagesEl = document.getElementById('chat-messages');
+        messagesEl.innerHTML = '';
+        if (resp.history && resp.history.length > 0) {
+            resp.history.forEach(entry => {
+                appendChatMsg(entry.role, entry.content);
+            });
+        }
+    }
+}
+
+async function newChatSession() {
+    // 새 세션 생성
+    localStorage.removeItem('chat_session_id');
+    chatSessionId = null;
+    await initChatSession();
+}
 
 async function sendChat() {
     const input = document.getElementById('chat-input');
     const msg = input.value.trim();
     if (!msg) return;
 
+    // 세션이 없으면 먼저 생성
+    if (!chatSessionId) {
+        await initChatSession();
+    }
+
     appendChatMsg('user', msg);
     input.value = '';
 
-    try {
-        const resp = await api('/api/chat/send', {
-            method: 'POST',
-            body: JSON.stringify({ message: msg }),
-        });
-        if (resp.message) {
-            appendChatMsg('assistant', resp.message);
-        } else if (resp.error) {
-            appendChatMsg('assistant', `Error: ${resp.error.message || JSON.stringify(resp.error)}`);
-        }
-    } catch (e) {
-        appendChatMsg('assistant', 'Chat is not yet available. (Step 5)');
-    }
+    // fire-and-forget — 응답은 SSE로 수신
+    api('/api/chat/send', {
+        method: 'POST',
+        body: JSON.stringify({ session_id: chatSessionId, message: msg }),
+    });
 }
 
 function appendChatMsg(role, text) {
+    // typing indicator가 있으면 그 앞에 삽입
+    const messagesEl = document.getElementById('chat-messages');
+    const typingEl = messagesEl.querySelector('.chat-typing');
+
     const el = document.createElement('div');
     el.className = `chat-msg ${role}`;
-    el.textContent = text;
-    document.getElementById('chat-messages').appendChild(el);
+    // 줄바꿈 보존
+    el.innerHTML = escapeHtml(text).replace(/\n/g, '<br>');
+
+    if (typingEl) {
+        messagesEl.insertBefore(el, typingEl);
+    } else {
+        messagesEl.appendChild(el);
+    }
     el.scrollIntoView({ behavior: 'smooth' });
+}
+
+function appendConfirmationCard(data) {
+    const messagesEl = document.getElementById('chat-messages');
+    const typingEl = messagesEl.querySelector('.chat-typing');
+
+    const el = document.createElement('div');
+    el.className = 'chat-msg assistant chat-confirmation';
+
+    const details = data.action_details || {};
+    let paramsHtml = '';
+    if (details.params && Object.keys(details.params).length > 0) {
+        paramsHtml = `<pre>${escapeHtml(JSON.stringify(details.params, null, 2))}</pre>`;
+    }
+
+    el.innerHTML = `
+        <div class="confirmation-header">실행 확인</div>
+        <div class="confirmation-body">
+            <div><strong>작업:</strong> ${escapeHtml(details.action || '')}</div>
+            ${details.project ? `<div><strong>프로젝트:</strong> ${escapeHtml(details.project)}</div>` : ''}
+            ${paramsHtml}
+            ${details.explanation ? `<div class="confirmation-explanation">${escapeHtml(details.explanation)}</div>` : ''}
+        </div>
+        <div class="confirmation-actions">
+            <button class="btn btn-success" onclick="confirmAction('확인')">확인</button>
+            <button class="btn btn-danger" onclick="confirmAction('취소')">취소</button>
+        </div>
+    `;
+
+    if (typingEl) {
+        messagesEl.insertBefore(el, typingEl);
+    } else {
+        messagesEl.appendChild(el);
+    }
+    el.scrollIntoView({ behavior: 'smooth' });
+}
+
+function confirmAction(response) {
+    // 확인/취소를 chat 메시지로 전송
+    const input = document.getElementById('chat-input');
+    input.value = response;
+    sendChat();
+}
+
+function showTypingIndicator() {
+    const messagesEl = document.getElementById('chat-messages');
+    if (messagesEl.querySelector('.chat-typing')) return; // 이미 있으면 무시
+
+    const el = document.createElement('div');
+    el.className = 'chat-msg assistant chat-typing';
+    el.innerHTML = '<span class="typing-dots"><span>.</span><span>.</span><span>.</span></span>';
+    messagesEl.appendChild(el);
+    el.scrollIntoView({ behavior: 'smooth' });
+}
+
+function hideTypingIndicator() {
+    const el = document.querySelector('.chat-typing');
+    if (el) el.remove();
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -588,6 +691,29 @@ function connectSSE() {
         }
     });
 
+    // Chat 이벤트
+    source.addEventListener('chat_message', (e) => {
+        const data = JSON.parse(e.data);
+        // 현재 세션의 메시지만 표시
+        if (data.session_id !== chatSessionId) return;
+        hideTypingIndicator();
+        if (data.confirmation) {
+            appendConfirmationCard(data);
+        } else {
+            appendChatMsg(data.role, data.content);
+        }
+    });
+
+    source.addEventListener('chat_typing', (e) => {
+        const data = JSON.parse(e.data);
+        if (data.session_id !== chatSessionId) return;
+        if (data.active) {
+            showTypingIndicator();
+        } else {
+            hideTypingIndicator();
+        }
+    });
+
     source.onerror = () => {
         // 자동 재연결 (EventSource 기본 동작)
     };
@@ -598,4 +724,5 @@ function connectSSE() {
 // ═══════════════════════════════════════════════════════════
 
 loadDashboard();
+initChatSession();
 connectSSE();

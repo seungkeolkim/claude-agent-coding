@@ -27,10 +27,10 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
 CONFIG_FILE="${SCRIPT_DIR}/config.yaml"
 PID_DIR="${SCRIPT_DIR}/.pids"
 # TM PID 파일: task_manager.{PID}.pid 패턴
+# Web PID 파일: web_console_chat.{PID}.pid 패턴
 LOG_DIR="${SCRIPT_DIR}/logs"
 TM_LOG="${LOG_DIR}/task_manager.log"
-WEB_LOG="${LOG_DIR}/web_console.log"
-WEB_PID_FILE="${PID_DIR}/web_console.pid"
+WEB_LOG="${LOG_DIR}/web_console_chat.log"
 
 read_web_port() {
     # config.yaml에서 web.port를 읽는다. 없으면 기본값 9880.
@@ -66,7 +66,44 @@ show_help() {
     echo ""
     echo "로그 확인:"
     echo "  tail -f logs/task_manager.log"
-    echo "  tail -f logs/web_console.log"
+    echo "  tail -f logs/web_console_chat.log"
+}
+
+# ═══════════════════════════════════════════════════════════
+# Web Console Chat PID 읽기 헬퍼
+# ═══════════════════════════════════════════════════════════
+find_web_pid_file() {
+    # web_console_chat.{PID}.pid 패턴으로 Web PID 파일을 찾아 경로를 출력한다.
+    local found
+    found=$(ls "${PID_DIR}"/web_console_chat.*.pid 2>/dev/null | head -1)
+    echo "${found:-}"
+}
+
+read_web_pid() {
+    # Web Console Chat PID를 찾아 stdout에 출력한다.
+    local pid_file
+    pid_file=$(find_web_pid_file)
+    if [[ -n "$pid_file" ]]; then
+        local basename
+        basename=$(basename "$pid_file")
+        local pid
+        pid=$(echo "$basename" | sed 's/^web_console_chat\.\(.*\)\.pid$/\1/')
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            echo "$pid"
+            return
+        fi
+    fi
+    echo ""
+}
+
+is_web_running() {
+    # Web Console Chat 프로세스가 실행 중이면 0(true), 아니면 1(false)를 반환한다.
+    local pid
+    pid=$(read_web_pid)
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        return 0
+    fi
+    return 1
 }
 
 # ═══════════════════════════════════════════════════════════
@@ -139,6 +176,7 @@ cmd_start() {
 
     # stale PID 파일 정리
     rm -f "${PID_DIR}"/task_manager.*.pid 2>/dev/null
+    rm -f "${PID_DIR}"/web_console_chat.*.pid 2>/dev/null
 
     # config.yaml 존재 확인
     if [[ ! -f "$CONFIG_FILE" ]]; then
@@ -182,16 +220,16 @@ cmd_start() {
     local web_port
     web_port=$(read_web_port)
     if kill -0 "$web_pid" 2>/dev/null; then
-        echo "$web_pid" > "$WEB_PID_FILE"
-        log_info "Web Console 시작됨 (PID: ${web_pid}, http://localhost:${web_port})"
+        touch "${PID_DIR}/web_console_chat.${web_pid}.pid"
+        log_info "Web Console Chat 시작됨 (PID: ${web_pid}, http://localhost:${web_port})"
     else
-        log_warn "Web Console 시작 실패. 로그를 확인하세요: ${WEB_LOG}"
+        log_warn "Web Console Chat 시작 실패. 로그를 확인하세요: ${WEB_LOG}"
     fi
 
     echo ""
     log_info "Task Manager 시작됨 (PID: ${tm_pid})"
-    log_info "  TM 로그:  tail -f ${TM_LOG}"
-    log_info "  Web 로그: tail -f ${WEB_LOG}"
+    log_info "  TM 로그:   tail -f ${TM_LOG}"
+    log_info "  Chat 로그: tail -f ${WEB_LOG}"
     log_info "  상태 확인: ./run_system.sh status"
     log_info "  종료 방법: ./run_system.sh stop"
     echo ""
@@ -201,16 +239,14 @@ cmd_start() {
 # stop 명령
 # ═══════════════════════════════════════════════════════════
 stop_web_console() {
-    # Web Console 프로세스를 종료한다.
-    if [[ -f "$WEB_PID_FILE" ]]; then
-        local web_pid
-        web_pid=$(cat "$WEB_PID_FILE")
-        if kill -0 "$web_pid" 2>/dev/null; then
-            kill "$web_pid" 2>/dev/null || true
-            log_info "Web Console 종료됨 (PID: ${web_pid})"
-        fi
-        rm -f "$WEB_PID_FILE"
+    # Web Console Chat 프로세스를 종료한다.
+    local web_pid
+    web_pid=$(read_web_pid)
+    if [[ -n "$web_pid" ]] && kill -0 "$web_pid" 2>/dev/null; then
+        kill "$web_pid" 2>/dev/null || true
+        log_info "Web Console Chat 종료됨 (PID: ${web_pid})"
     fi
+    rm -f "${PID_DIR}"/web_console_chat.*.pid 2>/dev/null
 }
 
 cmd_stop() {
@@ -302,19 +338,17 @@ cmd_status() {
         log_warn "Task Manager: 미실행"
     fi
 
-    # Web Console 상태
-    if [[ -f "$WEB_PID_FILE" ]]; then
+    # Web Console Chat 상태
+    if is_web_running; then
         local web_pid
-        web_pid=$(cat "$WEB_PID_FILE")
-        if kill -0 "$web_pid" 2>/dev/null; then
-            local web_port
-            web_port=$(read_web_port)
-            log_info "Web Console:  ${GREEN}실행 중${NC} (PID ${web_pid}, http://localhost:${web_port})"
-        else
-            log_warn "Web Console:  종료됨 (stale PID 파일)"
-        fi
+        web_pid=$(read_web_pid)
+        local web_port
+        web_port=$(read_web_port)
+        log_info "Web Console Chat: ${GREEN}실행 중${NC} (PID ${web_pid}, http://localhost:${web_port})"
+    elif [[ -n "$(find_web_pid_file)" ]]; then
+        log_warn "Web Console Chat: 종료됨 (stale PID 파일)"
     else
-        log_warn "Web Console:  미실행"
+        log_warn "Web Console Chat: 미실행"
     fi
 
     # 프로젝트별 상태
