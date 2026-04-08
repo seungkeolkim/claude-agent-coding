@@ -417,6 +417,36 @@ def _handle_complete_pr_review(api, request: Request) -> Response:
     return _error(ErrorCode.INVALID_STATE, "PR 리뷰 대기 상태가 아닙니다.")
 
 
+def _handle_merge_pr(api, request: Request) -> Response:
+    """PR을 실제로 머지한다 (gh pr merge 실행)."""
+    if err := _require_project(request):
+        return err
+    if err := _require_params(request, "task_id"):
+        return err
+
+    api.merge_pr(
+        request.project,
+        request.params["task_id"],
+        message=request.params.get("message"),
+    )
+    return _ok(True, f"task {request.params['task_id']} PR 머지 완료")
+
+
+def _handle_close_pr(api, request: Request) -> Response:
+    """PR을 실제로 닫는다 (gh pr close 실행)."""
+    if err := _require_project(request):
+        return err
+    if err := _require_params(request, "task_id"):
+        return err
+
+    api.close_pr(
+        request.project,
+        request.params["task_id"],
+        message=request.params.get("message"),
+    )
+    return _ok(True, f"task {request.params['task_id']} PR 닫기 완료")
+
+
 def _handle_create_project(api, request: Request) -> Response:
     """새 프로젝트를 생성한다."""
     if err := _require_params(request, "name", "description", "codebase_path"):
@@ -558,8 +588,22 @@ ACTION_REGISTRY = {
     },
     "complete_pr_review": {
         "handler": _handle_complete_pr_review,
-        "description": "PR 리뷰 결과를 반영한다. 'PR 머지됐어', 'PR 거부해' 등의 요청에 사용.",
+        "description": "PR 리뷰 결과를 수동 반영한다 (이미 머지/거부한 경우). 'PR 머지됐어', 'PR 거부했어' 등.",
         "required_params": ["task_id", "result"],
+        "optional_params": ["message"],
+        "requires_project": True,
+    },
+    "merge_pr": {
+        "handler": _handle_merge_pr,
+        "description": "PR을 실제로 머지한다 (gh pr merge 실행). 'PR 머지해줘', 'PR 승인해줘' 등의 요청에 사용.",
+        "required_params": ["task_id"],
+        "optional_params": ["message"],
+        "requires_project": True,
+    },
+    "close_pr": {
+        "handler": _handle_close_pr,
+        "description": "PR을 실제로 닫는다 (gh pr close 실행). 'PR 닫아줘', 'PR 거부해줘' 등의 요청에 사용.",
+        "required_params": ["task_id"],
         "optional_params": ["message"],
         "requires_project": True,
     },

@@ -104,8 +104,10 @@ async function loadDashboard() {
                 <div>${item.message}</div>
                 <div class="pending-actions">
                     ${item.interaction_type === 'waiting_for_human_pr_approve' ? `
-                        <button class="btn btn-success" onclick="handleCompletePrReview('${item.project}', '${item.task_id}', 'merged')">PR Merged</button>
-                        <button class="btn btn-danger" onclick="handleCompletePrReview('${item.project}', '${item.task_id}', 'rejected')">PR Rejected</button>
+                        <button class="btn btn-success" onclick="handleMergePr('${item.project}', '${item.task_id}')">Merge PR Now</button>
+                        <button class="btn btn-danger" onclick="handleClosePr('${item.project}', '${item.task_id}')">Close PR Now</button>
+                        <button class="btn btn-outline-success" onclick="handleCompletePrReview('${item.project}', '${item.task_id}', 'merged')">Mark as Merged</button>
+                        <button class="btn btn-outline-danger" onclick="handleCompletePrReview('${item.project}', '${item.task_id}', 'rejected')">Mark as Rejected</button>
                     ` : `
                         <button class="btn btn-success" onclick="handleApprove('${item.project}', '${item.task_id}')">Approve</button>
                         <button class="btn btn-danger" onclick="handleReject('${item.project}', '${item.task_id}')">Reject</button>
@@ -210,8 +212,10 @@ async function toggleTaskDetail(project, taskId, rowEl) {
                 <button class="btn btn-danger" onclick="handleReject('${project}', '${taskId}')">Reject</button>
             ` : ''}
             ${t.status === 'waiting_for_human_pr_approve' ? `
-                <button class="btn btn-success" onclick="handleCompletePrReview('${project}', '${taskId}', 'merged')">PR Merged</button>
-                <button class="btn btn-danger" onclick="handleCompletePrReview('${project}', '${taskId}', 'rejected')">PR Rejected</button>
+                <button class="btn btn-success" onclick="handleMergePr('${project}', '${taskId}')">Merge PR Now</button>
+                <button class="btn btn-danger" onclick="handleClosePr('${project}', '${taskId}')">Close PR Now</button>
+                <button class="btn btn-secondary" onclick="handleCompletePrReview('${project}', '${taskId}', 'merged')">Mark as Merged</button>
+                <button class="btn btn-secondary" onclick="handleCompletePrReview('${project}', '${taskId}', 'rejected')">Mark as Rejected</button>
             ` : ''}
             ${['submitted', 'queued', 'planned', 'in_progress', 'waiting_for_human_plan_confirm'].includes(t.status) ? `
                 <button class="btn btn-warning" onclick="handleCancel('${project}', '${taskId}')">Cancel</button>
@@ -309,13 +313,13 @@ async function doReject(project, taskId) {
 }
 
 async function handleCompletePrReview(project, taskId, result) {
-    const label = result === 'merged' ? 'PR Merged' : 'PR Rejected';
+    const label = result === 'merged' ? 'Mark as Merged' : 'Mark as Rejected';
     const msgLabel = result === 'merged' ? 'Message (optional):' : 'Reason (optional):';
-    showModal(label, `<p>${project} #${taskId} PR을 ${label} 처리합니다.</p>
+    showModal(label, `<p>${project} #${taskId} PR 상태를 수동 반영합니다.</p>
         <label>${msgLabel}</label>
         <input id="pr-review-msg" type="text" />`, [
         { label: 'Cancel', cls: 'btn-secondary', onclick: 'closeModal()' },
-        { label: label, cls: result === 'merged' ? 'btn-success' : 'btn-danger',
+        { label: label, cls: result === 'merged' ? 'btn-outline-success' : 'btn-outline-danger',
           onclick: `doCompletePrReview('${project}','${taskId}','${result}')` },
     ]);
 }
@@ -323,6 +327,42 @@ async function handleCompletePrReview(project, taskId, result) {
 async function doCompletePrReview(project, taskId, result) {
     const msg = document.getElementById('pr-review-msg').value;
     await dispatch('complete_pr_review', project, { task_id: taskId, result: result, message: msg || undefined });
+    closeModal();
+    loadDashboard();
+    loadTasks();
+}
+
+async function handleMergePr(project, taskId) {
+    showModal('Merge PR Now', `<p>${project} #${taskId} PR을 직접 머지합니다.</p>
+        <label>Message (optional):</label>
+        <input id="merge-pr-msg" type="text" />`, [
+        { label: 'Cancel', cls: 'btn-secondary', onclick: 'closeModal()' },
+        { label: 'Merge PR Now', cls: 'btn-success',
+          onclick: `doMergePr('${project}','${taskId}')` },
+    ]);
+}
+
+async function doMergePr(project, taskId) {
+    const msg = document.getElementById('merge-pr-msg').value;
+    await dispatch('merge_pr', project, { task_id: taskId, message: msg || undefined });
+    closeModal();
+    loadDashboard();
+    loadTasks();
+}
+
+async function handleClosePr(project, taskId) {
+    showModal('Close PR Now', `<p>${project} #${taskId} PR을 직접 닫습니다.</p>
+        <label>Reason (optional):</label>
+        <input id="close-pr-msg" type="text" />`, [
+        { label: 'Cancel', cls: 'btn-secondary', onclick: 'closeModal()' },
+        { label: 'Close PR Now', cls: 'btn-danger',
+          onclick: `doClosePr('${project}','${taskId}')` },
+    ]);
+}
+
+async function doClosePr(project, taskId) {
+    const msg = document.getElementById('close-pr-msg').value;
+    await dispatch('close_pr', project, { task_id: taskId, message: msg || undefined });
     closeModal();
     loadDashboard();
     loadTasks();

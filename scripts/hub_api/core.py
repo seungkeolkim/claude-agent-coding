@@ -10,6 +10,7 @@ import glob
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 from datetime import datetime, timezone
 from typing import Optional
@@ -736,6 +737,153 @@ class HubAPI:
 
         self._save_json_atomic(task_file, task)
         return True
+
+    def merge_pr(self, project: str, task_id: str,
+                 message: Optional[str] = None) -> bool:
+        """
+        waiting_for_human_pr_approve 상태의 task PR을 실제로 머지한다.
+
+        gh pr merge를 실행하고, 성공 시 task를 completed로 전이한다.
+
+        Args:
+            project: 프로젝트명
+            task_id: task ID
+            message: 선택적 코멘트
+
+        Returns:
+            True: 성공적으로 머지 및 상태 전이
+
+        Raises:
+            FileNotFoundError: task 없음
+            ValueError: pr_url 없음
+            RuntimeError: gh pr merge 실패
+        """
+        task_file, task = self._load_pr_task(project, task_id)
+        pr_url = task.get("pr_url")
+        if not pr_url:
+            raise ValueError(f"task에 pr_url이 없습니다: {project}/{task_id}")
+
+        # project.yaml에서 codebase_path 읽기
+        codebase_path = self._get_codebase_path(project)
+
+        # gh pr merge 실행
+        cmd = ["gh", "pr", "merge", pr_url, "--merge", "--delete-branch"]
+        result = subprocess.run(
+            cmd, cwd=codebase_path,
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"gh pr merge 실패: {result.stderr.strip()}")
+
+        # 상태 전이
+        task["status"] = "completed"
+        task["pr_review_result"] = "merged"
+        task["pr_reviewed_at"] = datetime.now(timezone.utc).isoformat()
+        if message:
+            task["pr_review_message"] = message
+
+        self._save_json_atomic(task_file, task)
+        return True
+
+    def close_pr(self, project: str, task_id: str,
+                 message: Optional[str] = None) -> bool:
+        """
+        waiting_for_human_pr_approve 상태의 task PR을 실제로 닫는다.
+
+        gh pr close를 실행하고, 성공 시 task를 failed로 전이한다.
+
+        Args:
+            project: 프로젝트명
+            task_id: task ID
+            message: 선택적 코멘트
+
+        Returns:
+            True: 성공적으로 닫기 및 상태 전이
+
+        Raises:
+            FileNotFoundError: task 없음
+            ValueError: pr_url 없음
+            RuntimeError: gh pr close 실패
+        """
+        task_file, task = self._load_pr_task(project, task_id)
+        pr_url = task.get("pr_url")
+        if not pr_url:
+            raise ValueError(f"task에 pr_url이 없습니다: {project}/{task_id}")
+
+        # project.yaml에서 codebase_path 읽기
+        codebase_path = self._get_codebase_path(project)
+
+        # gh pr close 실행
+        cmd = ["gh", "pr", "close", pr_url]
+        result = subprocess.run(
+            cmd, cwd=codebase_path,
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"gh pr close 실패: {result.stderr.strip()}")
+
+        # 상태 전이
+        task["status"] = "failed"
+        task["failure_reason"] = f"PR 닫힘: {message or '사용자가 Close PR Now 실행'}"
+        task["pr_review_result"] = "rejected"
+        task["pr_reviewed_at"] = datetime.now(timezone.utc).isoformat()
+        if message:
+            task["pr_review_message"] = message
+
+        self._save_json_atomic(task_file, task)
+        return True
+
+    def _load_pr_task(self, project: str, task_id: str) -> tuple:
+        """
+        waiting_for_human_pr_approve 상태의 task를 로드한다.
+
+        Returns:
+            (task_file_path, task_dict) 튜플
+
+        Raises:
+            FileNotFoundError: task 없음
+            ValueError: 상태가 waiting_for_human_pr_approve가 아님
+        """
+        tasks_dir = self._tasks_dir(project)
+        task_file = self._find_task_file(tasks_dir, task_id)
+        if not task_file:
+            raise FileNotFoundError(f"task를 찾을 수 없음: {project}/{task_id}")
+
+        task = self._load_json(task_file)
+        if task.get("status") != "waiting_for_human_pr_approve":
+            raise ValueError(
+                f"task 상태가 waiting_for_human_pr_approve가 아닙니다: "
+                f"{task.get('status')}"
+            )
+        return task_file, task
+
+    def _get_codebase_path(self, project: str) -> str:
+        """
+        project.yaml에서 codebase.path를 읽어 반환한다.
+
+        Raises:
+            FileNotFoundError: project.yaml 없음
+            ValueError: codebase.path 미설정
+        """
+        project_yaml_path = os.path.join(
+            self.projects_dir, project, "project.yaml"
+        )
+        if not os.path.isfile(project_yaml_path):
+            raise FileNotFoundError(
+                f"project.yaml을 찾을 수 없음: {project_yaml_path}"
+            )
+
+        # yaml 파싱 — 가벼운 의존성이므로 여기서 import
+        import yaml
+        with open(project_yaml_path) as f:
+            project_config = yaml.safe_load(f)
+
+        codebase_path = (project_config or {}).get("codebase", {}).get("path")
+        if not codebase_path:
+            raise ValueError(
+                f"project.yaml에 codebase.path가 설정되지 않았습니다: {project}"
+            )
+        return codebase_path
 
     # ═══════════════════════════════════════════════════════════
     # 프로젝트 lifecycle

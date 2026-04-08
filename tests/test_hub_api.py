@@ -9,6 +9,7 @@ notifications / create_project 검증.
 import json
 import os
 import shutil
+import unittest.mock
 from datetime import datetime
 
 import pytest
@@ -1229,3 +1230,165 @@ class TestCompletePrReview:
         ))
         assert resp.success is False
         assert "대기 상태가 아닙니다" in resp.message
+
+
+# ═══════════════════════════════════════════════════════════
+# merge_pr / close_pr — PR을 직접 머지/닫기 (gh CLI 실행)
+# ═══════════════════════════════════════════════════════════
+
+
+class TestMergePr:
+    """merge_pr 액션 — gh pr merge를 실행하여 PR을 직접 머지한다."""
+
+    def _make_pr_waiting_task(self, api, project_name):
+        """waiting_for_human_pr_approve 상태의 task를 생성하는 헬퍼."""
+        result = api.submit(project_name, "PR 머지 대기 task", "desc")
+        task_file = result.file_path
+        with open(task_file) as f:
+            task = json.load(f)
+        task["status"] = "waiting_for_human_pr_approve"
+        task["pr_url"] = "https://github.com/test/repo/pull/99"
+        with open(task_file, "w") as f:
+            json.dump(task, f, indent=2)
+        return result.task_id, task_file
+
+    def test_merge_pr_success(self, test_project, agent_hub_root):
+        """gh pr merge 성공 시 task가 completed로 전이된다."""
+        api = HubAPI(agent_hub_root)
+        task_id, task_file = self._make_pr_waiting_task(api, test_project["name"])
+
+        with unittest.mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = unittest.mock.Mock(returncode=0, stdout="", stderr="")
+            ok = api.merge_pr(test_project["name"], task_id, message="LGTM")
+
+        assert ok is True
+        with open(task_file) as f:
+            task = json.load(f)
+        assert task["status"] == "completed"
+        assert task["pr_review_result"] == "merged"
+        assert task["pr_review_message"] == "LGTM"
+        assert "pr_reviewed_at" in task
+
+        # gh pr merge 명령이 올바른 인자로 호출되었는지 확인
+        mock_run.assert_called_once()
+        call_args = mock_run.call_args
+        assert "gh" in call_args[0][0][0]
+        assert "merge" in call_args[0][0]
+
+    def test_merge_pr_gh_failure(self, test_project, agent_hub_root):
+        """gh pr merge 실패 시 RuntimeError가 발생한다."""
+        api = HubAPI(agent_hub_root)
+        task_id, task_file = self._make_pr_waiting_task(api, test_project["name"])
+
+        with unittest.mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = unittest.mock.Mock(returncode=1, stdout="", stderr="merge conflict")
+            with pytest.raises(RuntimeError, match="gh pr merge 실패"):
+                api.merge_pr(test_project["name"], task_id)
+
+        # task 상태가 변경되지 않았는지 확인
+        with open(task_file) as f:
+            task = json.load(f)
+        assert task["status"] == "waiting_for_human_pr_approve"
+
+    def test_merge_pr_wrong_status(self, test_project, agent_hub_root):
+        """waiting_for_human_pr_approve가 아닌 상태에서는 ValueError."""
+        api = HubAPI(agent_hub_root)
+        result = api.submit(test_project["name"], "일반 task", "desc")
+
+        with pytest.raises(ValueError, match="waiting_for_human_pr_approve"):
+            api.merge_pr(test_project["name"], result.task_id)
+
+    def test_merge_pr_no_pr_url(self, test_project, agent_hub_root):
+        """pr_url이 없으면 ValueError."""
+        api = HubAPI(agent_hub_root)
+        result = api.submit(test_project["name"], "PR URL 없는 task", "desc")
+        task_file = result.file_path
+        with open(task_file) as f:
+            task = json.load(f)
+        task["status"] = "waiting_for_human_pr_approve"
+        with open(task_file, "w") as f:
+            json.dump(task, f, indent=2)
+
+        with pytest.raises(ValueError, match="pr_url"):
+            api.merge_pr(test_project["name"], result.task_id)
+
+    def test_merge_pr_via_dispatch(self, test_project, agent_hub_root):
+        """dispatch 경유: merge_pr 처리."""
+        api = HubAPI(agent_hub_root)
+        task_id, task_file = self._make_pr_waiting_task(api, test_project["name"])
+
+        with unittest.mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = unittest.mock.Mock(returncode=0, stdout="", stderr="")
+            resp = dispatch(api, Request(
+                action="merge_pr",
+                project=test_project["name"],
+                params={"task_id": task_id},
+            ))
+        assert resp.success is True
+        assert "머지 완료" in resp.message
+
+
+class TestClosePr:
+    """close_pr 액션 — gh pr close를 실행하여 PR을 직접 닫는다."""
+
+    def _make_pr_waiting_task(self, api, project_name):
+        """waiting_for_human_pr_approve 상태의 task를 생성하는 헬퍼."""
+        result = api.submit(project_name, "PR 닫기 대기 task", "desc")
+        task_file = result.file_path
+        with open(task_file) as f:
+            task = json.load(f)
+        task["status"] = "waiting_for_human_pr_approve"
+        task["pr_url"] = "https://github.com/test/repo/pull/100"
+        with open(task_file, "w") as f:
+            json.dump(task, f, indent=2)
+        return result.task_id, task_file
+
+    def test_close_pr_success(self, test_project, agent_hub_root):
+        """gh pr close 성공 시 task가 failed로 전이된다."""
+        api = HubAPI(agent_hub_root)
+        task_id, task_file = self._make_pr_waiting_task(api, test_project["name"])
+
+        with unittest.mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = unittest.mock.Mock(returncode=0, stdout="", stderr="")
+            ok = api.close_pr(test_project["name"], task_id, message="방향 변경")
+
+        assert ok is True
+        with open(task_file) as f:
+            task = json.load(f)
+        assert task["status"] == "failed"
+        assert task["pr_review_result"] == "rejected"
+        assert "방향 변경" in task["failure_reason"]
+        assert task["pr_review_message"] == "방향 변경"
+
+    def test_close_pr_gh_failure(self, test_project, agent_hub_root):
+        """gh pr close 실패 시 RuntimeError가 발생한다."""
+        api = HubAPI(agent_hub_root)
+        task_id, task_file = self._make_pr_waiting_task(api, test_project["name"])
+
+        with unittest.mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = unittest.mock.Mock(returncode=1, stdout="", stderr="not found")
+            with pytest.raises(RuntimeError, match="gh pr close 실패"):
+                api.close_pr(test_project["name"], task_id)
+
+    def test_close_pr_wrong_status(self, test_project, agent_hub_root):
+        """waiting_for_human_pr_approve가 아닌 상태에서는 ValueError."""
+        api = HubAPI(agent_hub_root)
+        result = api.submit(test_project["name"], "일반 task", "desc")
+
+        with pytest.raises(ValueError, match="waiting_for_human_pr_approve"):
+            api.close_pr(test_project["name"], result.task_id)
+
+    def test_close_pr_via_dispatch(self, test_project, agent_hub_root):
+        """dispatch 경유: close_pr 처리."""
+        api = HubAPI(agent_hub_root)
+        task_id, task_file = self._make_pr_waiting_task(api, test_project["name"])
+
+        with unittest.mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = unittest.mock.Mock(returncode=0, stdout="", stderr="")
+            resp = dispatch(api, Request(
+                action="close_pr",
+                project=test_project["name"],
+                params={"task_id": task_id},
+            ))
+        assert resp.success is True
+        assert "닫기 완료" in resp.message

@@ -219,6 +219,34 @@ def cmd_complete_pr_review(args):
         sys.exit(1)
 
 
+def cmd_merge_pr(args):
+    """PR을 실제로 머지한다 (gh pr merge 실행)."""
+    api = get_hub_api()
+    try:
+        api.merge_pr(args.project, args.task_id, message=args.message)
+        print(f"{GREEN}[OK]{NC} task {args.task_id} PR 머지 완료")
+    except (FileNotFoundError, ValueError) as e:
+        print(f"{RED}[ERROR]{NC} {e}", file=sys.stderr)
+        sys.exit(1)
+    except RuntimeError as e:
+        print(f"{RED}[ERROR]{NC} {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_close_pr(args):
+    """PR을 실제로 닫는다 (gh pr close 실행)."""
+    api = get_hub_api()
+    try:
+        api.close_pr(args.project, args.task_id, message=args.message)
+        print(f"{GREEN}[OK]{NC} task {args.task_id} PR 닫기 완료")
+    except (FileNotFoundError, ValueError) as e:
+        print(f"{RED}[ERROR]{NC} {e}", file=sys.stderr)
+        sys.exit(1)
+    except RuntimeError as e:
+        print(f"{RED}[ERROR]{NC} {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_feedback(args):
     """실행 중인 task에 피드백을 추가한다."""
     api = get_hub_api()
@@ -414,6 +442,20 @@ def build_parser() -> argparse.ArgumentParser:
                     help="PR 결과 (merged: 머지 완료, rejected: 거부)")
     sp.add_argument("--message", help="코멘트 (선택)")
     sp.set_defaults(func=cmd_complete_pr_review)
+
+    # ─── merge-pr ───
+    sp = subparsers.add_parser("merge-pr", help="PR을 실제로 머지 (gh pr merge 실행)")
+    sp.add_argument("task_id", help="task ID")
+    sp.add_argument("--project", required=True, help="프로젝트명")
+    sp.add_argument("--message", help="코멘트 (선택)")
+    sp.set_defaults(func=cmd_merge_pr)
+
+    # ─── close-pr ───
+    sp = subparsers.add_parser("close-pr", help="PR을 실제로 닫기 (gh pr close 실행)")
+    sp.add_argument("task_id", help="task ID")
+    sp.add_argument("--project", required=True, help="프로젝트명")
+    sp.add_argument("--message", help="코멘트 (선택)")
+    sp.set_defaults(func=cmd_close_pr)
 
     # ─── feedback ───
     sp = subparsers.add_parser("feedback", help="실행 중 task에 피드백 추가")

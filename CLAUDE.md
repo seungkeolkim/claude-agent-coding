@@ -16,7 +16,7 @@ Claude Code 기반 자동 개발 시스템.
 - `data/` — SQLite DB 등 런타임 데이터 (gitignored)
 - `config/agent_prompts/` — agent별 역할 프롬프트
 - `docs/` — 사용자용 문서 (설정 레퍼런스 등)
-- `docs_for_claude/004-agent-system-spec-v6.md` — 전체 아키텍처 명세
+- `docs/agent-system-spec-v07.md` — 전체 아키텍처 명세
 - `docs/images/task-lifecycle-fsm.md` — Task 상태 FSM 다이어그램
 - `tests/` — Unit/Integration/E2E 테스트 스위트 (197개)
 
@@ -84,5 +84,5 @@ Claude Code 기반 자동 개발 시스템.
 
 ## 상세 명세가 필요하면
 - v1~v3 스펙은 `docs_history/`에 아카이브되었습니다. 읽을 필요가 없습니다.
-- 상세 명세를 위해 `docs_for_claude/004-agent-system-spec-v6.md`를 읽으세요.
+- 상세 명세를 위해 `docs/agent-system-spec-v07.md`를 읽으세요.
 - Task 상태 전이: `docs/images/task-lifecycle-fsm.md`를 읽으세요.
