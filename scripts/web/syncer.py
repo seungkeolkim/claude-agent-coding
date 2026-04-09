@@ -114,6 +114,7 @@ class FileSyncer:
                 last_updated=state.get("last_updated"),
                 config_overrides=state.get("overrides"),
                 lifecycle=state.get("lifecycle", "active"),
+                wfc_pid=state.get("wfc_pid"),
             )
             self._mtime_cache[state_path] = mtime
             return True

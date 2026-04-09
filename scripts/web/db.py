@@ -144,6 +144,9 @@ class Database:
         if "lifecycle" not in proj_columns:
             conn.execute("ALTER TABLE projects ADD COLUMN lifecycle TEXT NOT NULL DEFAULT 'active'")
             logger.info("마이그레이션: projects.lifecycle 컬럼 추가")
+        if "wfc_pid" not in proj_columns:
+            conn.execute("ALTER TABLE projects ADD COLUMN wfc_pid INTEGER")
+            logger.info("마이그레이션: projects.wfc_pid 컬럼 추가")
 
     @contextmanager
     def connect(self):
@@ -165,14 +168,16 @@ class Database:
 
     def upsert_project(self, name: str, status: str, current_task_id: str = None,
                        last_error_task_id: str = None, last_updated: str = None,
-                       config_overrides: dict = None, lifecycle: str = "active"):
+                       config_overrides: dict = None, lifecycle: str = "active",
+                       wfc_pid: int = None):
         """프로젝트 상태를 삽입하거나 갱신한다."""
         overrides_json = json.dumps(config_overrides, ensure_ascii=False) if config_overrides else None
         with self.connect() as conn:
             conn.execute("""
                 INSERT INTO projects (name, status, current_task_id, last_error_task_id,
-                                      last_updated, config_overrides, lifecycle, synced_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                      last_updated, config_overrides, lifecycle, wfc_pid,
+                                      synced_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(name) DO UPDATE SET
                     status=excluded.status,
                     current_task_id=excluded.current_task_id,
@@ -180,9 +185,10 @@ class Database:
                     last_updated=excluded.last_updated,
                     config_overrides=excluded.config_overrides,
                     lifecycle=excluded.lifecycle,
+                    wfc_pid=excluded.wfc_pid,
                     synced_at=excluded.synced_at
             """, (name, status, current_task_id, last_error_task_id,
-                  last_updated, overrides_json, lifecycle, _now()))
+                  last_updated, overrides_json, lifecycle, wfc_pid, _now()))
 
     def get_projects(self) -> list[dict]:
         """모든 프로젝트를 조회한다."""

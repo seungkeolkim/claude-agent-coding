@@ -78,11 +78,15 @@ async function loadDashboard() {
             const total = Object.values(counts).reduce((a, b) => a + b, 0);
             const active = (counts.submitted || 0) + (counts.queued || 0) +
                            (counts.in_progress || 0) + (counts.waiting_for_human_plan_confirm || 0);
+            const wfcInfo = p.wfc_pid
+                ? `<div class="counts" style="opacity:0.7">WFC PID: ${p.wfc_pid}</div>`
+                : '';
             return `
                 <div class="project-card">
                     <div class="name">${p.name}</div>
                     <div class="status status-${p.status}">${p.status}</div>
                     ${p.current_task_id ? `<div class="counts">Current: #${p.current_task_id}</div>` : ''}
+                    ${wfcInfo}
                     <div class="counts">${active} active / ${total} total</div>
                     ${p.unread_notifications > 0 ? `<div class="counts" style="color:var(--warning)">Unread: ${p.unread_notifications}</div>` : ''}
                 </div>`;
@@ -461,7 +465,7 @@ async function viewPlan(project, taskId) {
     const resp = await api(`/api/tasks/${project}/${taskId}/plan`);
     if (resp.success) {
         showModal(`Plan — ${project} #${taskId}`,
-            `<pre>${JSON.stringify(resp.data, null, 2)}</pre>`, [
+            `<pre>${escapeHtml(JSON.stringify(resp.data, null, 2))}</pre>`, [
             { label: 'Close', cls: 'btn-secondary', onclick: 'closeModal()' },
         ]);
     } else {

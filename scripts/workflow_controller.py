@@ -23,12 +23,25 @@ import json
 import logging
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+
+# ─── Graceful Shutdown ───
+# SIGTERM 수신 시 wait_for_human_response() 폴링 루프에서 감지하여
+# 현재 상태를 유지한 채 깨끗하게 종료한다.
+# TM 재시작 시 --resume 플래그로 중단 지점부터 재개.
+_shutdown_requested = False
+
+
+def _handle_sigterm(signum, frame):
+    """SIGTERM/SIGINT 핸들러. 종료 플래그만 세팅한다."""
+    global _shutdown_requested
+    _shutdown_requested = True
 
 import yaml
 
@@ -347,6 +360,12 @@ def wait_for_human_response(task_file, project_dir, task_id, timeout_hours,
     commands_dir = os.path.join(project_dir, "commands")
 
     while True:
+        # SIGTERM 종료 확인 — 상태는 이미 task JSON에 저장되어 있으므로
+        # 추가 저장 없이 깨끗하게 종료한다. TM 재시작 시 --resume으로 재개.
+        if _shutdown_requested:
+            log_info("SIGTERM 수신 — 대기 상태 유지, WFC 종료")
+            sys.exit(0)
+
         elapsed = time.time() - start_time
 
         # 타임아웃 확인
@@ -422,8 +441,12 @@ def wait_for_human_response(task_file, project_dir, task_id, timeout_hours,
                 last_re_notification_time = time.time()
                 log_info(f"재알림 발송 ({hours_waiting:.1f}시간 경과)")
 
-        # 대기
-        time.sleep(poll_interval)
+        # 대기 (0.5초 단위로 분할하여 SIGTERM 빠르게 감지)
+        for _ in range(poll_interval * 2):
+            if _shutdown_requested:
+                log_info("SIGTERM 수신 — 대기 상태 유지, WFC 종료")
+                sys.exit(0)
+            time.sleep(0.5)
 
 
 # ─── Git 헬퍼 ───
@@ -794,8 +817,18 @@ def record_failure_reason(task_file, reason):
     save_json(task_file, task)
 
 
-def run_pipeline(args):
-    """메인 파이프라인 실행 로직."""
+def _load_pipeline_context(args):
+    """
+    파이프라인 실행에 필요한 공통 컨텍스트를 로드한다.
+
+    설정 파일 로드, effective config 생성, git 인증 등
+    run_pipeline()과 run_pipeline_resume() 양쪽에서 사용.
+
+    Returns:
+        dict: 파이프라인 컨텍스트 (agent_hub_root, project_dir, task_file, task,
+              effective, pipeline, git_config, git_enabled, codebase_path,
+              default_branch, base_branch, config 등)
+    """
     agent_hub_root = str(Path(__file__).resolve().parent.parent)
     project_dir = os.path.join(agent_hub_root, "projects", args.project)
     tasks_dir = os.path.join(project_dir, "tasks")
@@ -836,43 +869,76 @@ def run_pipeline(args):
     task = load_json(task_file)
     task_id = task.get("task_id", args.task)
 
-    log_step(f"파이프라인 시작: project={args.project} task={task_id}")
-
-    # project_state.json 갱신 (TM 연동용)
-    update_project_state(project_dir, status="running", current_task_id=task_id)
-
     # 4계층 설정 merge → effective config
     effective = resolve_effective_config(config, project_yaml, project_state, task)
-    log_info(f"effective config 생성 완료 (4계층 merge)")
+    log_info("effective config 생성 완료 (4계층 merge)")
 
     # pipeline 구성 결정
     pipeline = determine_pipeline(effective)
     log_info(f"pipeline 구성: {' → '.join(pipeline)}")
 
-    if args.dry_run:
-        log_warn("DRY-RUN: 실제 실행 없이 pipeline 구성만 확인")
-        return
-
-    # ─── Git 설정 로드 (effective config에서) ───
+    # Git 설정
     git_config = effective.get("git", {})
     git_enabled = git_config.get("enabled", False) and not args.dummy
     codebase_path = effective.get("codebase", {}).get("path", "")
     default_branch = effective.get("project", {}).get("default_branch", "main")
-    # base_branch: feature branch 생성 기준 (미설정 시 default_branch fallback)
     base_branch = git_config.get("base_branch", default_branch)
-    task_branch = None
 
-    # ─── Git provider 인증 ───
+    # Git provider 인증
     if git_enabled:
         git_provider = git_config.get("provider", "github")
         auth_token = git_config.get("auth_token", "")
-        # project.yaml의 auth_token이 비어있으면 config.yaml의 github_token을 fallback으로 사용
         if not auth_token:
             auth_token = config.get("machines", {}).get("executor", {}).get("github_token", "")
         if git_provider == "github":
             ensure_gh_auth(auth_token, codebase_path=codebase_path)
         elif git_provider != "github":
             log_warn(f"[git] provider '{git_provider}'는 아직 미구현. github만 지원합니다.")
+
+    return {
+        "agent_hub_root": agent_hub_root,
+        "project_dir": project_dir,
+        "tasks_dir": tasks_dir,
+        "task_file": task_file,
+        "task": task,
+        "task_id": task_id,
+        "config": config,
+        "effective": effective,
+        "pipeline": pipeline,
+        "git_config": git_config,
+        "git_enabled": git_enabled,
+        "codebase_path": codebase_path,
+        "default_branch": default_branch,
+        "base_branch": base_branch,
+    }
+
+
+def run_pipeline(args):
+    """메인 파이프라인 실행 로직."""
+    ctx = _load_pipeline_context(args)
+    agent_hub_root = ctx["agent_hub_root"]
+    project_dir = ctx["project_dir"]
+    task_file = ctx["task_file"]
+    task = ctx["task"]
+    task_id = ctx["task_id"]
+    config = ctx["config"]
+    effective = ctx["effective"]
+    pipeline = ctx["pipeline"]
+    git_config = ctx["git_config"]
+    git_enabled = ctx["git_enabled"]
+    codebase_path = ctx["codebase_path"]
+    default_branch = ctx["default_branch"]
+    base_branch = ctx["base_branch"]
+    task_branch = None
+
+    log_step(f"파이프라인 시작: project={args.project} task={task_id}")
+
+    # project_state.json 갱신 (TM 연동용)
+    update_project_state(project_dir, status="running", current_task_id=task_id)
+
+    if args.dry_run:
+        log_warn("DRY-RUN: 실제 실행 없이 pipeline 구성만 확인")
+        return
 
     if args.dummy:
         log_info("DUMMY 모드: git 작업 스킵")
@@ -1145,6 +1211,431 @@ def run_pipeline(args):
         agent_hub_root, args.project, task_id, task_file,
         completed_subtasks, git_enabled, git_config,
         codebase_path, task_branch, default_branch, args.dummy,
+    )
+
+
+def _load_subtasks_from_disk(project_dir, task_id):
+    """
+    디스���에서 plan.json과 subtask 파일들을 복구한다.
+
+    resume 시 in-memory 상태를 복원하는 데 사용.
+
+    Returns:
+        tuple: (plan_data, subtasks) — plan_data는 plan.json dict,
+               subtasks는 subtask dict 리스트
+    """
+    internal_dir = os.path.join(project_dir, "tasks", task_id)
+    plan_path = os.path.join(internal_dir, "plan.json")
+
+    if not os.path.isfile(plan_path):
+        log_error(f"plan.json을 찾을 수 없음: {plan_path}")
+        return None, []
+
+    plan_data = load_json(plan_path)
+
+    # subtask 파일 복구
+    subtask_pattern = os.path.join(internal_dir, "subtask-*.json")
+    subtask_files = sorted(glob_module.glob(subtask_pattern))
+    if subtask_files:
+        subtasks = [load_json(f) for f in subtask_files]
+    else:
+        # subtask 파일이 없으면 plan_data에서 복원
+        subtasks = plan_data.get("subtasks", [])
+
+    return plan_data, subtasks
+
+
+def _calculate_remaining_timeout(human_interaction, default_timeout_hours):
+    """
+    human_interaction의 requested_at 기준으로 남은 타임아웃 시간을 계산한다.
+
+    Returns:
+        float: 남은 타임아웃 시간(hours). 최소 0.01h (36초).
+    """
+    requested_at = human_interaction.get("requested_at", "")
+    if not requested_at:
+        return default_timeout_hours
+
+    try:
+        req_time = datetime.fromisoformat(requested_at)
+        # timezone-naive이면 UTC로 간주
+        if req_time.tzinfo is None:
+            req_time = req_time.replace(tzinfo=timezone.utc)
+        elapsed_hours = (datetime.now(timezone.utc) - req_time).total_seconds() / 3600
+        remaining = max(0.01, default_timeout_hours - elapsed_hours)
+        log_info(f"대기 경과: {elapsed_hours:.1f}h, ���은 timeout: {remaining:.1f}h")
+        return remaining
+    except (ValueError, TypeError):
+        return default_timeout_hours
+
+
+def run_pipeline_resume(args):
+    """
+    중단된 파이프라인을 재개한다.
+
+    WFC가 SIGTERM으로 종료된 후 TM이 --resume 플래그로 재시작할 때 호출.
+    task JSON의 status와 human_interaction을 확��하여 중단 지점부터 이어서 실행한���.
+
+    지원하는 resume 지점:
+    - waiting_for_human_plan_confirm (plan_review): plan 승인 대기 → 승인 후 파이프라인 계속
+    - waiting_for_human_plan_confirm (replan_review): replan 승인 대기 → 승인 후 subtask loop 계속
+    """
+    ctx = _load_pipeline_context(args)
+    agent_hub_root = ctx["agent_hub_root"]
+    project_dir = ctx["project_dir"]
+    task_file = ctx["task_file"]
+    task = ctx["task"]
+    task_id = ctx["task_id"]
+    effective = ctx["effective"]
+    pipeline = ctx["pipeline"]
+    git_config = ctx["git_config"]
+    git_enabled = ctx["git_enabled"]
+    codebase_path = ctx["codebase_path"]
+    default_branch = ctx["default_branch"]
+    base_branch = ctx["base_branch"]
+
+    status = task.get("status", "")
+    hi = task.get("human_interaction", {})
+    review_type = hi.get("type", "plan_review") if hi else "plan_review"
+
+    log_step(
+        f"파이프라인 재개: project={args.project} task={task_id} "
+        f"status={status} review_type={review_type}"
+    )
+
+    # 상태 검증
+    if status not in ("waiting_for_human_plan_confirm", "needs_replan"):
+        log_error(f"resume 불가: task status가 '{status}'입니다. "
+                  f"waiting_for_human_plan_confirm 또는 needs_replan이어야 합니다.")
+        sys.exit(1)
+
+    # project_state.json 갱신 — resume 중임을 기록
+    update_project_state(project_dir, status=status, current_task_id=task_id)
+
+    # 디스크에서 plan과 subtask 복구
+    plan_data, subtasks = _load_subtasks_from_disk(project_dir, task_id)
+    if not plan_data:
+        sys.exit(1)
+
+    log_info(f"디스크에서 복구: plan + subtask {len(subtasks)}개")
+
+    # 설정 로드
+    human_review = effective.get("human_review_policy", {})
+    notification_config = effective.get("notification", {})
+    re_noti_hours = notification_config.get("re_notification_interval_hours", 0)
+    timeout_hours = human_review.get("auto_approve_timeout_hours", 24)
+
+    # 사용자 응답 ��인 (WFC 중단 중에 도착했을 수 있음)
+    response = hi.get("response") if hi else None
+
+    if not response:
+        # 아직 응답 없음 → 대기 루프 재진입 (남은 시간 계산)
+        remaining_timeout = _calculate_remaining_timeout(hi, timeout_hours)
+        log_info("사용자 응답 없음 — 대기 루프 재진입")
+        result = wait_for_human_response(
+            task_file, project_dir, task_id, remaining_timeout,
+            re_notification_interval_hours=re_noti_hours,
+        )
+    else:
+        # 응답이 이미 도착 — 바로 처리
+        result = response.get("action", "approve")
+        log_info(f"기존 응답 발견: action={result}")
+
+    # review_type에 따라 후속 처리 분기
+    if review_type == "plan_review":
+        _continue_after_plan_review(
+            result, args, ctx, plan_data, subtasks,
+            human_review, re_noti_hours,
+        )
+    elif review_type == "replan_review":
+        _continue_after_replan_review(
+            result, args, ctx, plan_data, subtasks,
+        )
+    else:
+        log_error(f"알 수 없는 review_type: {review_type}")
+        sys.exit(1)
+
+
+def _continue_after_plan_review(result, args, ctx, plan_data, subtasks,
+                                human_review, re_noti_hours):
+    """
+    plan_review 응답 처리 후 파이프라인을 계속 실행한다.
+
+    run_pipeline()의 plan_review 이후 로직과 동일.
+    cancel/modify/approve 분��� 처리 → git branch → subtask loop → finalize.
+    """
+    agent_hub_root = ctx["agent_hub_root"]
+    project_dir = ctx["project_dir"]
+    task_file = ctx["task_file"]
+    task_id = ctx["task_id"]
+    effective = ctx["effective"]
+    pipeline = ctx["pipeline"]
+    git_config = ctx["git_config"]
+    git_enabled = ctx["git_enabled"]
+    codebase_path = ctx["codebase_path"]
+    default_branch = ctx["default_branch"]
+    base_branch = ctx["base_branch"]
+
+    if result == "cancel":
+        log_warn("사용자가 plan을 취소했습니다.")
+        update_task_field(task_file, "status", "cancelled")
+        update_project_state(project_dir, status="idle")
+        sys.exit(0)
+    elif result == "modify":
+        log_warn("사용자가 plan 수정을 요청했습니다. replan 실행.")
+        update_task_counter(task_file, "replan_count", increment=True)
+        success, plan_data = run_agent(
+            agent_hub_root, "planner", args.project, task_id,
+            dummy=args.dummy,
+        )
+        if not success or not plan_data:
+            log_error("Re-plan 실패. 파이프라인 중단.")
+            update_task_field(task_file, "status", "failed")
+            update_project_state(project_dir, status="idle", last_error=task_id)
+            sys.exit(1)
+        save_plan_file(project_dir, task_id, plan_data)
+        subtasks = create_subtask_files(project_dir, task_id, plan_data)
+        if not subtasks:
+            log_error("Re-plan 후 subtask가 없습니다.")
+            update_task_field(task_file, "status", "failed")
+            update_project_state(project_dir, status="idle", last_error=task_id)
+            sys.exit(1)
+        log_info(f"re-plan 완료: subtask {len(subtasks)}개 재생성")
+
+    # 승인 후 running 상태�� 복귀
+    update_project_state(project_dir, status="running", current_task_id=task_id)
+    update_task_field(task_file, "status", "in_progress")
+
+    # Git: task 브랜치 생성 (이미 존재하면 checkout)
+    task = load_json(task_file)
+    task_branch = task.get("branch")
+
+    if git_enabled and not task_branch:
+        log_step("Git: task 브랜치 생성")
+        update_pipeline_stage(task_file, "git_branch")
+        branch_name = (
+            task.get("branch_name")
+            or plan_data.get("branch_name")
+            or f"feature/{task_id}"
+        )
+        prefix = f"feature/{task_id}-"
+        if not branch_name.startswith(prefix):
+            if branch_name.startswith("feature/"):
+                suffix = branch_name[len("feature/"):]
+                if not suffix.startswith(task_id):
+                    branch_name = f"feature/{task_id}-{suffix}"
+            else:
+                branch_name = f"feature/{task_id}-{branch_name}"
+        task_branch = git_create_task_branch(codebase_path, branch_name, base_branch)
+        update_task_field(task_file, "branch", task_branch)
+    elif git_enabled and task_branch:
+        log_info(f"[git] 기존 브랜치 사용: {task_branch}")
+
+    # Usage threshold 설정 로드
+    claude_config = effective.get("claude", {})
+    usage_thresholds = claude_config.get("usage_thresholds", {})
+    usage_check_interval = claude_config.get("usage_check_interval_seconds", 60)
+
+    # Subtask loop
+    completed_subtasks = task.get("completed_subtasks", [])
+
+    for i, subtask in enumerate(subtasks):
+        subtask_id = subtask.get("subtask_id", f"{task_id}-{i+1}")
+
+        # 이미 완료된 subtask ��너뜀
+        if subtask_id in completed_subtasks:
+            log_info(f"subtask {subtask_id} 이미 완료됨 — 건너뜀")
+            continue
+
+        log_step(f"Subtask {i+1}/{len(subtasks)}: {subtask_id}")
+
+        if not args.dummy:
+            new_subtask_threshold = usage_thresholds.get("new_subtask", 0.80)
+            wait_until_below_threshold(
+                new_subtask_threshold,
+                check_interval_seconds=usage_check_interval,
+                level_name="new_subtask",
+                log_fn=log_info,
+            )
+
+        update_task_field(task_file, "current_subtask", subtask_id)
+        update_task_counter(task_file, "current_subtask_retry", value=0)
+
+        subtask_success = run_subtask_pipeline(
+            agent_hub_root, args.project, task_id, subtask_id,
+            task_file, pipeline, args.dummy,
+            usage_thresholds=usage_thresholds,
+            usage_check_interval=usage_check_interval,
+        )
+
+        if not subtask_success:
+            # replan 필요 여부 확인
+            task_current = load_json(task_file)
+            if task_current.get("_needs_replan", False):
+                replan_count = task_current["counters"].get("replan_count", 0)
+                log_warn(f"replan 요청 (현재 {replan_count}회)")
+                update_task_counter(task_file, "replan_count", increment=True)
+                update_task_field(task_file, "_needs_replan", False)
+
+                log_step("Re-plan: Planner 재실행")
+                success, new_plan = run_agent(
+                    agent_hub_root, "planner", args.project, task_id,
+                    dummy=args.dummy,
+                )
+                if not success or not new_plan:
+                    log_error("Re-plan 실패. 파이프라인 중단.")
+                    update_task_field(task_file, "status", "failed")
+                    update_project_state(project_dir, status="idle", last_error=task_id)
+                    sys.exit(1)
+
+                save_plan_file(project_dir, task_id, new_plan)
+                new_subtasks = create_subtask_files(project_dir, task_id, new_plan)
+
+                # replan_review 대기
+                if human_review.get("review_replan", False) and not args.dummy:
+                    plan_path = os.path.join("tasks", task_id, "plan.json")
+                    request_human_review(
+                        task_file, task_id, "replan_review",
+                        plan_path, len(new_subtasks),
+                        project_dir=project_dir,
+                    )
+                    replan_timeout = human_review.get("auto_approve_timeout_hours", 24)
+                    replan_result = wait_for_human_response(
+                        task_file, project_dir, task_id, replan_timeout,
+                        re_notification_interval_hours=re_noti_hours,
+                    )
+                    if replan_result == "cancel":
+                        log_warn("사용자가 replan을 취소했습니다.")
+                        update_task_field(task_file, "status", "cancelled")
+                        update_project_state(project_dir, status="idle")
+                        sys.exit(0)
+                    elif replan_result == "modify":
+                        log_error("replan 후 재수정 요청. 에스컬레이션이 필요합니다.")
+                        update_task_field(task_file, "status", "escalated")
+                        update_project_state(project_dir, status="idle",
+                                             last_error=task_id)
+                        emit_notification(
+                            project_dir=project_dir, event_type="escalation",
+                            task_id=task_id,
+                            message="replan 후 재수정 요청으로 에스컬레이션 발생",
+                        )
+                        sys.exit(1)
+                    update_project_state(project_dir, status="running",
+                                         current_task_id=task_id)
+                    update_task_field(task_file, "status", "in_progress")
+
+                log_info(f"새 plan으로 subtask {len(new_subtasks)}개 재구성")
+                update_task_field(task_file, "completed_subtasks", completed_subtasks)
+
+                run_pipeline_from_subtasks(
+                    agent_hub_root, args.project, task_id, task_file,
+                    new_subtasks, pipeline, args.dummy, completed_subtasks,
+                    git_enabled=git_enabled, git_config=git_config,
+                    codebase_path=codebase_path, task_branch=task_branch,
+                    default_branch=default_branch,
+                    usage_thresholds=usage_thresholds,
+                    usage_check_interval=usage_check_interval,
+                )
+                return
+            else:
+                log_error(f"subtask {subtask_id} 실패. 파이프라인 중단.")
+                update_task_field(task_file, "status", "failed")
+                update_project_state(project_dir, status="idle", last_error=task_id)
+                emit_notification(
+                    project_dir=project_dir, event_type="task_failed",
+                    task_id=task_id,
+                    message=f"subtask {subtask_id} 실패로 파이프라인 중단",
+                    details={"failed_subtask": subtask_id},
+                )
+                sys.exit(1)
+
+        # Git: subtask 커밋
+        if git_enabled:
+            update_pipeline_stage(task_file, "git_push", f"subtask {subtask_id}")
+            git_remote = git_config.get("remote", "origin")
+            subtask_title = subtask.get("title", subtask_id)
+            try:
+                git_commit_subtask(
+                    codebase_path, task_id, subtask_id, subtask_title,
+                    git_config.get("author_name", "Agent Hub"),
+                    git_config.get("author_email", "agent@hub"),
+                    remote=git_remote, branch=task_branch,
+                )
+            except RuntimeError as e:
+                log_error(f"[git] subtask {subtask_id} 커밋/push 실패: {e}")
+                record_failure_reason(task_file, f"git push 실패: {e}")
+                update_task_field(task_file, "status", "failed")
+                update_project_state(project_dir, status="idle", last_error=task_id)
+                sys.exit(1)
+
+        completed_subtasks.append(subtask_id)
+        update_task_field(task_file, "completed_subtasks", completed_subtasks)
+        log_info(f"subtask {subtask_id} 완료 ({i+1}/{len(subtasks)})")
+
+    # Summarizer + PR
+    update_pipeline_stage(task_file, "finalizing")
+    finalize_task(
+        agent_hub_root, args.project, task_id, task_file,
+        completed_subtasks, git_enabled, git_config,
+        codebase_path, task_branch, default_branch, args.dummy,
+    )
+
+
+def _continue_after_replan_review(result, args, ctx, plan_data, subtasks):
+    """
+    replan_review 응답 처리 후 파이프라인을 계속 실행한다.
+
+    cancel/modify → 종료, approve → run_pipeline_from_subtasks()로 진행.
+    """
+    agent_hub_root = ctx["agent_hub_root"]
+    project_dir = ctx["project_dir"]
+    task_file = ctx["task_file"]
+    task = ctx["task"]
+    task_id = ctx["task_id"]
+    effective = ctx["effective"]
+    pipeline = ctx["pipeline"]
+    git_config = ctx["git_config"]
+    git_enabled = ctx["git_enabled"]
+    codebase_path = ctx["codebase_path"]
+    default_branch = ctx["default_branch"]
+
+    if result == "cancel":
+        log_warn("사용자가 replan을 취소했습니다.")
+        update_task_field(task_file, "status", "cancelled")
+        update_project_state(project_dir, status="idle")
+        sys.exit(0)
+    elif result == "modify":
+        log_error("replan 후 재수정 요청. 에스컬레이션이 필요합니다.")
+        update_task_field(task_file, "status", "escalated")
+        update_project_state(project_dir, status="idle", last_error=task_id)
+        emit_notification(
+            project_dir=project_dir, event_type="escalation", task_id=task_id,
+            message="replan 후 재수정 요청으로 에스컬레이션 발생",
+        )
+        sys.exit(1)
+
+    # approve/timeout → subtask loop 계속
+    update_project_state(project_dir, status="running", current_task_id=task_id)
+    update_task_field(task_file, "status", "in_progress")
+
+    completed_subtasks = task.get("completed_subtasks", [])
+    task_branch = task.get("branch")
+
+    claude_config = effective.get("claude", {})
+    usage_thresholds = claude_config.get("usage_thresholds", {})
+    usage_check_interval = claude_config.get("usage_check_interval_seconds", 60)
+
+    log_info(f"replan 승인 — subtask {len(subtasks)}개로 재구성, "
+             f"완료된 subtask: {len(completed_subtasks)}개")
+
+    run_pipeline_from_subtasks(
+        agent_hub_root, args.project, task_id, task_file,
+        subtasks, pipeline, args.dummy, completed_subtasks,
+        git_enabled=git_enabled, git_config=git_config,
+        codebase_path=codebase_path, task_branch=task_branch,
+        default_branch=default_branch,
+        usage_thresholds=usage_thresholds,
+        usage_check_interval=usage_check_interval,
     )
 
 
@@ -1423,9 +1914,18 @@ def main():
     parser.add_argument("--task", required=True, help="task ID (5자리 숫자)")
     parser.add_argument("--dummy", action="store_true", help="모든 agent를 dummy 모드로 실행")
     parser.add_argument("--dry-run", action="store_true", help="pipeline 구성만 확인 (실행 안 함)")
+    parser.add_argument("--resume", action="store_true",
+                        help="중단된 대기 상태에서 파이프라인 재개")
     args = parser.parse_args()
 
-    run_pipeline(args)
+    # SIGTERM/SIGINT 핸들러 등록 — 대기 루프에서 깨끗한 종료를 위해
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+    signal.signal(signal.SIGINT, _handle_sigterm)
+
+    if args.resume:
+        run_pipeline_resume(args)
+    else:
+        run_pipeline(args)
 
 
 if __name__ == "__main__":

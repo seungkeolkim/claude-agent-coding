@@ -81,6 +81,7 @@ find_web_pid_file() {
 
 read_web_pid() {
     # Web Console Chat PID를 찾아 stdout에 출력한다.
+    # 1차: PID 파일에서 읽기
     local pid_file
     pid_file=$(find_web_pid_file)
     if [[ -n "$pid_file" ]]; then
@@ -93,7 +94,10 @@ read_web_pid() {
             return
         fi
     fi
-    echo ""
+    # 2차 fallback: pgrep으로 실제 프로세스 탐색 (PID 파일 유실 대비)
+    local pgrep_pid
+    pgrep_pid=$(pgrep -f "scripts\.web\.server" 2>/dev/null | head -1)
+    echo "${pgrep_pid:-}"
 }
 
 is_web_running() {
@@ -240,11 +244,23 @@ cmd_start() {
 # ═══════════════════════════════════════════════════════════
 stop_web_console() {
     # Web Console Chat 프로세스를 종료한다.
+    # PID 파일 없어도 pgrep fallback으로 찾아서 확실히 종료.
     local web_pid
     web_pid=$(read_web_pid)
     if [[ -n "$web_pid" ]] && kill -0 "$web_pid" 2>/dev/null; then
         kill "$web_pid" 2>/dev/null || true
-        log_info "Web Console Chat 종료됨 (PID: ${web_pid})"
+        # 종료 대기 (최대 5초)
+        local waited=0
+        while kill -0 "$web_pid" 2>/dev/null && [[ $waited -lt 5 ]]; do
+            sleep 1
+            waited=$((waited + 1))
+        done
+        if kill -0 "$web_pid" 2>/dev/null; then
+            log_warn "Web Console Chat 5초 타임아웃 — SIGKILL 전송 (PID: ${web_pid})"
+            kill -9 "$web_pid" 2>/dev/null || true
+        else
+            log_info "Web Console Chat 종료됨 (PID: ${web_pid})"
+        fi
     fi
     rm -f "${PID_DIR}"/web_console_chat.*.pid 2>/dev/null
 }
@@ -367,10 +383,11 @@ cmd_status() {
 
         if [[ -f "$state_file" ]]; then
             python3 -c "
-import json, sys
+import json, sys, os
 CYAN = '\033[0;36m'
 BLUE = '\033[1;34m'
 RED = '\033[0;31m'
+GREEN = '\033[0;32m'
 NC = '\033[0m'
 try:
     with open('${state_file}') as f:
@@ -382,13 +399,25 @@ try:
     error_str = f' ({RED}마지막 오류: task {last_error}{NC})' if last_error else ''
     # running 상태는 보라색 bold로 강조 (task 정보 포함)
     PURPLE = '\033[1;35m'
+    YELLOW = '\033[1;33m'
+    DIM = '\033[2m'
     if status == 'running':
         print(f'  {PURPLE}{status}{task_str}{NC}{error_str}')
     elif status == 'waiting_for_human_plan_confirm':
-        YELLOW = '\033[1;33m'
         print(f'  {YELLOW}{status}{task_str}{NC}{error_str}')
     else:
         print(f'  {status}{task_str}{error_str}')
+    # WFC 프로세스 상태 표시
+    wfc_pid = s.get('wfc_pid')
+    if wfc_pid:
+        try:
+            os.kill(wfc_pid, 0)
+            print(f'    └─ WFC: {GREEN}실행 중{NC} (PID {wfc_pid})')
+        except (ProcessLookupError, PermissionError, OSError):
+            if status in ('waiting_for_human_plan_confirm', 'needs_replan'):
+                print(f'    └─ WFC: {DIM}종료됨{NC} (응답 시 자동 재시작)')
+            else:
+                print(f'    └─ WFC: {DIM}종료됨{NC}')
 except Exception as e:
     print(f'  (상태 파일 읽기 실패: {e})', file=sys.stderr)
     print('  unknown')
