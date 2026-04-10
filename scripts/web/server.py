@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import queue
 import sys
 import threading
 from contextlib import asynccontextmanager
@@ -59,7 +60,8 @@ def load_web_config(agent_hub_root: str) -> dict:
 hub_api: Optional[HubAPI] = None
 db: Optional[Database] = None
 syncer: Optional[FileSyncer] = None
-event_queue: asyncio.Queue = asyncio.Queue()
+# thread-safe queue — ChatProcessor 등 백그라운드 스레드에서도 안전하게 push 가능
+event_queue: queue.Queue = queue.Queue(maxsize=500)
 agent_hub_root: str = ""
 
 
@@ -67,16 +69,11 @@ def _on_change(event: dict):
     """syncer 변경 콜백 → SSE event queue에 push + chat 세션에 notification 주입."""
     try:
         event_queue.put_nowait(event)
-    except asyncio.QueueFull:
+    except queue.Full:
         pass  # 큐가 가득 차면 무시
 
-    # notification 이벤트를 활성 chat 세션에 주입
-    if event.get("type") == "notification":
-        try:
-            from scripts.web.web_chatbot import broadcast_system_event
-            broadcast_system_event(event)
-        except Exception:
-            pass
+    # notification 이벤트는 Notification 탭에서 표시.
+    # chat 세션에 주입하지 않음 (무관한 프로젝트의 이벤트가 섞이는 문제 방지).
 
 
 # ═══════════════════════════════════════════════════════════
@@ -324,7 +321,7 @@ def _chat_on_message(event: dict):
     """ChatProcessor의 on_message 콜백 → SSE event queue에 push."""
     try:
         event_queue.put_nowait(event)
-    except asyncio.QueueFull:
+    except queue.Full:
         pass
 
 
@@ -397,6 +394,34 @@ async def api_chat_history(session_id: str):
     return {"success": True, "data": history}
 
 
+@app.patch("/api/chat/sessions/{session_id}")
+async def api_chat_session_rename(session_id: str, body: dict):
+    """Chat 세션 제목을 변경한다."""
+    from chatbot import rename_session as _rename_session
+
+    title = body.get("title")
+    if not title or not title.strip():
+        return {"success": False, "error": {"code": "INVALID_TITLE", "message": "제목이 비어있습니다."}}
+
+    ok = _rename_session(agent_hub_root, session_id, title.strip(), frontend="web")
+    if not ok:
+        return {"success": False, "error": {"code": "SESSION_NOT_FOUND", "message": f"세션 '{session_id}'을 찾을 수 없습니다."}}
+    return {"success": True}
+
+
+@app.delete("/api/chat/sessions/{session_id}")
+async def api_chat_session_delete(session_id: str):
+    """Chat 세션을 삭제한다."""
+    from chatbot import delete_session as _delete_session
+    from scripts.web.web_chatbot import remove_session
+
+    remove_session(session_id)
+    ok = _delete_session(agent_hub_root, session_id, frontend="web")
+    if not ok:
+        return {"success": False, "error": {"code": "SESSION_NOT_FOUND", "message": f"세션 '{session_id}'을 찾을 수 없습니다."}}
+    return {"success": True}
+
+
 # ─── SSE 실시간 이벤트 스트림 ───
 
 @app.get("/api/events")
@@ -404,14 +429,20 @@ async def api_events():
     """Server-Sent Events 스트림. syncer의 변경 이벤트를 실시간 전달."""
 
     async def event_generator():
+        heartbeat_interval = 5.0  # 초
+        elapsed = 0.0
+        poll_interval = 0.1  # 100ms 간격 폴링
         while True:
             try:
-                # 5초 타임아웃으로 heartbeat 겸용
-                event = await asyncio.wait_for(event_queue.get(), timeout=5.0)
+                event = event_queue.get_nowait()
                 yield f"event: {event.get('type', 'update')}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
-            except asyncio.TimeoutError:
-                # heartbeat (연결 유지용)
-                yield ": heartbeat\n\n"
+                elapsed = 0.0
+            except queue.Empty:
+                await asyncio.sleep(poll_interval)
+                elapsed += poll_interval
+                if elapsed >= heartbeat_interval:
+                    yield ": heartbeat\n\n"
+                    elapsed = 0.0
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 

@@ -130,17 +130,19 @@ def save_session(agent_hub_root: str, session_id: str,
     data = {
         "session_id": session_id,
         "frontend": frontend,
+        "title": "",
         "created_at": None,
         "updated_at": datetime.now().isoformat(),
         "turn_count": sum(1 for e in conversation_history if e["role"] == "user"),
         "history": conversation_history,
     }
-    # created_at은 기존 파일에서 유지, 없으면 현재 시각
+    # created_at, title은 기존 파일에서 유지
     if os.path.isfile(session_path):
         try:
             with open(session_path) as f:
                 existing = json.load(f)
             data["created_at"] = existing.get("created_at")
+            data["title"] = existing.get("title", "")
         except (json.JSONDecodeError, IOError):
             pass
     if data["created_at"] is None:
@@ -164,8 +166,17 @@ def load_session(agent_hub_root: str, session_id: str,
         return None
 
 
+def _extract_first_message(history: list) -> str:
+    """대화 이력에서 첫 번째 user 메시지를 50자로 잘라 반환한다."""
+    for entry in history:
+        if entry.get("role") == "user":
+            content = entry.get("content", "")
+            return content[:50] + ("..." if len(content) > 50 else "")
+    return ""
+
+
 def list_sessions(agent_hub_root: str, frontend: str = "chatbot") -> list:
-    """세션 목록을 반환한다. 최신순 정렬."""
+    """세션 목록을 반환한다. session_id 최신순 정렬."""
     session_dir = get_session_dir(agent_hub_root, frontend)
     sessions = []
     for filename in os.listdir(session_dir):
@@ -178,6 +189,8 @@ def list_sessions(agent_hub_root: str, frontend: str = "chatbot") -> list:
                 data = json.load(f)
             sessions.append({
                 "session_id": session_id,
+                "title": data.get("title", ""),
+                "first_message": _extract_first_message(data.get("history", [])),
                 "created_at": data.get("created_at", ""),
                 "updated_at": data.get("updated_at", ""),
                 "turn_count": data.get("turn_count", 0),
@@ -185,6 +198,8 @@ def list_sessions(agent_hub_root: str, frontend: str = "chatbot") -> list:
         except (json.JSONDecodeError, IOError):
             sessions.append({
                 "session_id": session_id,
+                "title": "",
+                "first_message": "",
                 "created_at": "",
                 "updated_at": "",
                 "turn_count": 0,
@@ -192,6 +207,36 @@ def list_sessions(agent_hub_root: str, frontend: str = "chatbot") -> list:
     # 최신순 정렬 (session_id가 타임스탬프 기반이라 역순 정렬로 충분)
     sessions.sort(key=lambda s: s["session_id"], reverse=True)
     return sessions
+
+
+def rename_session(agent_hub_root: str, session_id: str, title: str,
+                   frontend: str = "chatbot") -> bool:
+    """세션 제목을 변경한다. 성공 시 True."""
+    session_path = get_session_path(agent_hub_root, session_id, frontend)
+    if not os.path.isfile(session_path):
+        return False
+    try:
+        with open(session_path) as f:
+            data = json.load(f)
+        data["title"] = title
+        with open(session_path, "w") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return True
+    except (json.JSONDecodeError, IOError):
+        return False
+
+
+def delete_session(agent_hub_root: str, session_id: str,
+                   frontend: str = "chatbot") -> bool:
+    """세션 파일을 삭제한다. 성공 시 True."""
+    session_path = get_session_path(agent_hub_root, session_id, frontend)
+    if not os.path.isfile(session_path):
+        return False
+    try:
+        os.remove(session_path)
+        return True
+    except OSError:
+        return False
 
 
 # ═══════════════════════════════════════════════════════════

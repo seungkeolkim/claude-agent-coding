@@ -375,13 +375,17 @@ class ChatProcessor:
             elif intent == "action":
                 action = parsed.get("action", "")
                 if needs_confirmation(action, self._confirmation_mode):
-                    # 확인 필요 — 확인 카드 전송
+                    # 확인 필요 — plain text 한 건으로 확인 요청
                     explanation = parsed.get("explanation", "")
-                    if explanation:
-                        self._add_history("assistant", explanation)
-
                     confirmation_text = _format_confirmation_plain(parsed)
-                    self._emit_confirmation(parsed, confirmation_text)
+                    parts = []
+                    if explanation:
+                        parts.append(explanation)
+                    parts.append(confirmation_text)
+                    parts.append("\"확인\" 또는 \"취소\"로 답해주세요.")
+                    prompt_text = "\n\n".join(parts)
+                    self._add_history("assistant", prompt_text)
+                    self._emit_message("assistant", prompt_text)
 
                     with self._lock:
                         self._state = "awaiting_confirmation"

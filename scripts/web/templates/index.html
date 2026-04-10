@@ -60,13 +60,25 @@
 
         <!-- Chat 탭 -->
         <section id="tab-chat" class="tab-content">
+            <!-- 세션 사이드바 (오버레이) -->
+            <div id="chat-sidebar">
+                <div class="chat-sidebar-header">
+                    <span>Chat History</span>
+                    <button id="btn-new-chat-session" class="btn btn-primary btn-sm">+ New</button>
+                </div>
+                <div id="chat-session-list"></div>
+            </div>
+            <div id="chat-sidebar-overlay"></div>
+
+            <!-- 채팅 영역 -->
             <div id="chat-area">
                 <div id="chat-header">
-                    <button id="btn-new-chat-session" class="btn btn-secondary">New Session</button>
+                    <button id="btn-chat-sidebar" class="btn-icon" title="Chat History">&#9776;</button>
+                    <span id="chat-session-title">New Chat</span>
                 </div>
                 <div id="chat-messages"></div>
                 <div id="chat-input-area">
-                    <input type="text" id="chat-input" placeholder="메시지 입력..." />
+                    <textarea id="chat-input" placeholder="메시지 입력..." rows="1"></textarea>
                     <button id="btn-chat-send" class="btn btn-primary">Send</button>
                 </div>
             </div>
