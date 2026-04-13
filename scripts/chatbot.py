@@ -324,6 +324,20 @@ submit action에서 config_override를 사용할 때, 반드시 아래 구조를
 - "PR 올리고 바로 다음 작업" / "머지 기다리지 마" → config_override: {{"git": {{"merge_strategy": "pr_and_continue"}}}}
 - "PR 자동 머지해" → config_override: {{"git": {{"merge_strategy": "auto_merge"}}}}
 
+## submit의 priority 파라미터 (선택)
+
+submit params에 "priority"를 지정하여 우선순위 큐에 넣을 수 있습니다.
+허용 값: "critical", "urgent", "default" (기본: "default").
+실행 순서는 critical > urgent > default (같은 priority 내 id순).
+
+| 사용자 표현 | priority |
+|-------------|----------|
+| "긴급", "제일 먼저", "critical" | "critical" |
+| "급함", "빨리", "urgent", "앞에 끼워넣어" | "urgent" |
+| (별도 언급 없음) | 생략 또는 "default" |
+
+예: "긴급으로 로그인 버그 고쳐줘" → params: {{"title": "로그인 버그", "priority": "critical"}}
+
 ## action 선택 가이드 (혼동하기 쉬운 상황)
 
 | 사용자 표현 | 올바른 action | 잘못된 선택 |
@@ -344,6 +358,18 @@ submit action에서 config_override를 사용할 때, 반드시 아래 구조를
 - 사용자가 모호하게 말해도 최선의 action을 추론할 것
 - 설명(explanation)에는 사용자의 원래 의도를 반영하여 정확하게 작성
 - 이전 대화에서 task 상태를 확인한 경우, 그 상태를 바탕으로 적절한 action을 선택할 것
+
+## explanation 작성 규칙 (매우 중요)
+- explanation은 **1~2문장의 한국어 서술**만 담을 것. 무엇을 왜 실행하는지만 자연어로.
+- explanation에 실행 파라미터(title/description/priority/config_override 등)를
+  **절대** 나열/반복/재포맷하지 말 것. 시스템이 별도의 확인 카드로 모든 파라미터를
+  (기본값 포함) 트리 형태로 렌더링합니다.
+- 마크다운 불릿(- 항목), 볼드(**실행할 작업:**), 코드 블록, 표 등의 구조화된
+  포맷을 explanation에 쓰지 말 것. 카드가 중복·충돌됩니다.
+- "확인 또는 취소로 답해주세요" 같은 프롬프트 문구도 절대 explanation에 넣지 말 것.
+  시스템이 자동으로 붙입니다.
+- 예 (GOOD): "test-project에 critical 우선순위로 제출하고 자동 머지합니다."
+- 예 (BAD): "**실행할 작업:** submit\n**title:** ...\n**config_override**\n  - ..."
 """
 
 
@@ -510,12 +536,25 @@ def needs_confirmation(action: str, confirmation_mode: str) -> bool:
     return action in HIGH_RISK_ACTIONS
 
 
-def format_confirmation_prompt(parsed: dict) -> str:
-    """실행 전 확인 메시지를 생성한다."""
+def format_confirmation_prompt(parsed: dict, agent_hub_root: Optional[str] = None) -> str:
+    """
+    실행 전 확인 메시지를 생성한다.
+
+    submit action의 경우 agent_hub_root가 주어지면 task.config_override 대신
+    4계층 merge된 effective config 전체 트리를 (수정됨)/(기본값) 태그와 함께 표시한다.
+    """
     action = parsed.get("action", "?")
     project = parsed.get("project")
     params = parsed.get("params", {})
     explanation = parsed.get("explanation", "")
+
+    # submit + agent_hub_root가 있으면 config 트리를 미리 준비
+    config_tree_text = None
+    if action == "submit" and agent_hub_root and project:
+        from hub_api.config_preview import format_config_override_for_confirmation
+        config_tree_text = format_config_override_for_confirmation(
+            agent_hub_root, project, params.get("config_override", {})
+        )
 
     lines = []
     lines.append(f"\n{DIM}{'─' * 50}{NC}")
@@ -523,17 +562,27 @@ def format_confirmation_prompt(parsed: dict) -> str:
     if project:
         lines.append(f"  {BOLD}프로젝트:{NC}    {project}")
     for k, v in params.items():
+        # submit의 config_override는 트리로 대체 표시
+        if config_tree_text is not None and k == "config_override":
+            indented = config_tree_text.replace("\n", "\n  ")
+            lines.append(f"  {indented}")
+            continue
         if isinstance(v, (dict, list)):
-            # dict/list는 pretty print JSON으로 출력 (들여쓰기 정렬)
             import json as _json
             pretty = _json.dumps(v, indent=2, ensure_ascii=False)
-            indented = pretty.replace("\n", "\n    ")  # 4칸 들여쓰기
+            indented = pretty.replace("\n", "\n    ")
             lines.append(f"  {BOLD}{k}:{NC}\n    {indented}")
         else:
             display_v = str(v)
             if len(display_v) > 80:
                 display_v = display_v[:77] + "..."
             lines.append(f"  {BOLD}{k}:{NC} {display_v}")
+
+    # submit인데 사용자가 config_override를 안 넣은 경우에도 전체 트리 표시
+    if config_tree_text is not None and "config_override" not in params:
+        indented = config_tree_text.replace("\n", "\n  ")
+        lines.append(f"  {indented}")
+
     if explanation:
         lines.append(f"\n  {explanation}")
     lines.append(f"{DIM}{'─' * 50}{NC}")
@@ -654,6 +703,10 @@ def format_response_for_display(response: Response, action: str) -> str:
     elif action == "submit" and hasattr(data, "task_id"):
         lines.append(f"  task_id: {BOLD}{data.task_id}{NC}")
         lines.append(f"  project: {data.project}")
+        # priority는 params로 전달됨 — task JSON에 기록되어 있으므로 표시 가능
+        priority = getattr(data, "priority", None)
+        if priority and priority != "default":
+            lines.append(f"  priority: {BOLD}{priority}{NC}")
 
     elif action == "get_plan" and isinstance(data, dict):
         # plan 전체 정보 표시
@@ -806,7 +859,7 @@ class ChatBot:
 
         # 확인 필요 여부 판단
         if needs_confirmation(action, self.confirmation_mode):
-            prompt_text = format_confirmation_prompt(parsed)
+            prompt_text = format_confirmation_prompt(parsed, self.hub_api.root)
             print(prompt_text)
 
             if not ask_user_confirmation():

@@ -221,13 +221,13 @@ async function toggleTaskDetail(project, taskId, rowEl) {
                 <button class="btn btn-secondary" onclick="handleCompletePrReview('${project}', '${taskId}', 'merged')">Mark as Merged</button>
                 <button class="btn btn-secondary" onclick="handleCompletePrReview('${project}', '${taskId}', 'rejected')">Mark as Rejected</button>
             ` : ''}
-            ${['submitted', 'queued', 'planned', 'in_progress', 'waiting_for_human_plan_confirm'].includes(t.status) ? `
+            ${['submitted', 'queued', 'planned', 'in_progress', 'running', 'waiting_for_human_plan_confirm'].includes(t.status) ? `
                 <button class="btn btn-warning" onclick="handleCancel('${project}', '${taskId}')">Cancel</button>
             ` : ''}
             ${['cancelled', 'failed'].includes(t.status) ? `
                 <button class="btn btn-primary" onclick="handleResubmit('${project}', '${taskId}')">Resubmit</button>
             ` : ''}
-            ${['in_progress'].includes(t.status) ? `
+            ${['in_progress', 'running'].includes(t.status) ? `
                 <button class="btn btn-secondary" onclick="handleFeedback('${project}', '${taskId}')">Feedback</button>
             ` : ''}
             <button class="btn btn-secondary" onclick="viewPlan('${project}', '${taskId}')">View Plan</button>
@@ -489,6 +489,12 @@ document.getElementById('btn-new-task').addEventListener('click', () => {
         <input id="new-task-title" type="text" />
         <label>Description:</label>
         <textarea id="new-task-desc"></textarea>
+        <label>Priority:</label>
+        <select id="new-task-priority">
+            <option value="default" selected>default (보통)</option>
+            <option value="urgent">urgent (급함)</option>
+            <option value="critical">critical (긴급)</option>
+        </select>
     `, [
         { label: 'Cancel', cls: 'btn-secondary', onclick: 'closeModal()' },
         { label: 'Submit', cls: 'btn-primary', onclick: 'doSubmitTask()' },
@@ -499,8 +505,9 @@ async function doSubmitTask() {
     const project = document.getElementById('new-task-project').value;
     const title = document.getElementById('new-task-title').value;
     const description = document.getElementById('new-task-desc').value;
+    const priority = document.getElementById('new-task-priority').value;
     if (!project || !title.trim()) { alert('프로젝트와 제목을 입력해주세요.'); return; }
-    await dispatch('submit', project, { title, description });
+    await dispatch('submit', project, { title, description, priority });
     closeModal();
     loadTasks();
 }
@@ -737,6 +744,7 @@ function _formatNotificationForChat(data) {
         'task_completed': '✅ Task 완료',
         'task_failed': '❌ Task 실패',
         'pr_created': '🔗 PR 생성됨',
+        'pr_merged': '🟢 PR 머지 완료',
         'plan_review_requested': '📋 Plan 승인 요청',
         'replan_review_requested': '📋 Re-plan 승인 요청',
         'escalation': '🚨 에스컬레이션',
@@ -762,8 +770,8 @@ function appendChatMsg(role, text) {
 
     const el = document.createElement('div');
     el.className = `chat-msg ${role}`;
-    // 줄바꿈 보존
-    el.innerHTML = escapeHtml(text).replace(/\n/g, '<br>');
+    // 공백/줄바꿈 보존은 CSS white-space: pre-wrap에 위임. textContent로 XSS 방지.
+    el.textContent = text;
 
     if (typingEl) {
         messagesEl.insertBefore(el, typingEl);

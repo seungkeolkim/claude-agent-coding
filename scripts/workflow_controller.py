@@ -1818,6 +1818,13 @@ def finalize_task(agent_hub_root, project_name, task_id, task_file,
                 log_step("Git: PR 자동 머지")
                 git_merge_pr(codebase_path, pr_url)
                 update_task_field(task_file, "status", "completed")
+                emit_notification(
+                    project_dir=finalize_project_dir,
+                    event_type="pr_merged",
+                    task_id=task_id,
+                    message=f"PR 자동 머지 완료: {pr_title}",
+                    details={"pr_url": pr_url},
+                )
             elif merge_strategy == "pr_and_continue":
                 log_info(f"[git] merge_strategy=pr_and_continue — PR 생성 완료, task 즉시 완료: {pr_url}")
                 update_task_field(task_file, "status", "completed")

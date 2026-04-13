@@ -16,6 +16,7 @@ class SubmitResult:
     project: str
     file_path: str
     status: str = "submitted"
+    priority: str = "default"
 
 
 @dataclass

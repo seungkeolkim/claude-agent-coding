@@ -2,7 +2,7 @@
 """
 Task Manager (TM) — Agent Hub 시스템의 상주 프로세스.
 
-projects/ 디렉토리를 폴링하여 .ready sentinel이 있는 task를 감지하고,
+projects/ 디렉토리를 폴링하여 priority queue(task_queue_*.json)에 등록된 task를 감지하고,
 프로젝트별로 순차적으로 Workflow Controller(WFC)를 spawn하여 파이프라인을 실행한다.
 
 사용법 (run_system.sh에서 호출):
@@ -37,6 +37,7 @@ from notification import (
     format_notification_plain,
 )
 from usage_checker import wait_until_below_threshold
+from hub_api import queue_helpers
 
 # ─── 색상 출력 (터미널용) ───
 GREEN = "\033[0;32m"
@@ -124,7 +125,7 @@ class TaskManager:
     """
     Task Manager 상주 프로세스.
 
-    projects/ 디렉토리를 폴링하여 .ready sentinel이 있는 task를 찾고,
+    projects/ 디렉토리를 폴링하여 priority queue에 등록된 task를 찾고,
     프로젝트별로 순차적으로 WFC를 spawn하여 파이프라인을 실행한다.
     """
 
@@ -191,31 +192,79 @@ class TaskManager:
     # task 큐 관리
     # ═══════════════════════════════════════════════════════════
 
-    def find_ready_tasks(self, project_name):
+    def find_next_task(self, project_name):
         """
-        projects/{name}/tasks/*.ready 파일을 찾아 task ID 목록을 반환한다.
-        정렬하여 가장 낮은 번호부터 처리한다.
-        """
-        tasks_dir = os.path.join(self._projects_dir, project_name, "tasks")
-        if not os.path.isdir(tasks_dir):
-            return []
+        priority queue 파일에서 실행할 다음 task를 찾아 반환한다.
 
-        ready_files = sorted(Path(tasks_dir).glob("*.ready"))
-        task_ids = []
-        for ready_file in ready_files:
-            # 00003.ready → 00003
-            task_id = ready_file.stem
-            # task JSON 파일이 존재하는지 확인
+        critical → urgent → default 순으로 peek한다. 각 queue 내부는 append 순서.
+        queue에는 있지만 task.json 상태가 실행 불가(cancelled/failed/completed 등)
+        인 id는 자동으로 queue에서 제거하고 다음 id를 탐색한다.
+
+        Returns:
+            (priority, task_id) 튜플. 실행 가능한 task가 없으면 None.
+        """
+        project_dir = os.path.join(self._projects_dir, project_name)
+        if not os.path.isdir(project_dir):
+            return None
+
+        tasks_dir = os.path.join(project_dir, "tasks")
+        queue_helpers.ensure_queue_files(project_dir)
+
+        # 실행 가능한 상태: submitted/queued/waiting_for_human_plan_confirm 재개 등.
+        # cancelled/failed/completed 등 종료 상태 id는 skip + cleanup.
+        runnable_statuses = {
+            "submitted", "queued",
+        }
+
+        # 루프: 가장 앞 id가 runnable이면 반환, 아니면 제거 후 다음 탐색
+        max_iterations = 1000
+        for _ in range(max_iterations):
+            peek = queue_helpers.peek_next_task(project_dir)
+            if peek is None:
+                return None
+            priority, task_id = peek
+
+            # task JSON 존재 여부 확인
             task_json_exists = (
                 list(Path(tasks_dir).glob(f"{task_id}-*.json"))
                 or (Path(tasks_dir) / f"{task_id}.json").exists()
             )
-            if task_json_exists:
-                task_ids.append(task_id)
-            else:
-                log_warn(f"[{project_name}] .ready 파일은 있으나 task JSON 없음: {task_id}")
+            if not task_json_exists:
+                log_warn(
+                    f"[{project_name}] queue에 있으나 task JSON 없음, 정리: {task_id}"
+                )
+                queue_helpers.pop_task(project_dir, priority, task_id)
+                continue
 
-        return task_ids
+            # 상태 확인
+            task_data = self._load_task_json(tasks_dir, task_id)
+            status = task_data.get("status", "") if task_data else ""
+            if status in runnable_statuses:
+                return priority, task_id
+
+            # 실행 불가 상태: queue에서 정리하고 다음 id
+            log_info(
+                f"[{project_name}] queue에 있으나 status={status!r}, skip + 정리: {task_id}"
+            )
+            queue_helpers.pop_task(project_dir, priority, task_id)
+
+        log_warn(f"[{project_name}] find_next_task: {max_iterations}회 반복 초과")
+        return None
+
+    def _load_task_json(self, tasks_dir, task_id):
+        """task JSON 파일을 로드한다. 여러 이름 패턴 지원."""
+        # 00042-slug.json 먼저 시도
+        candidates = list(Path(tasks_dir).glob(f"{task_id}-*.json"))
+        if not candidates:
+            plain = Path(tasks_dir) / f"{task_id}.json"
+            if plain.exists():
+                candidates = [plain]
+        for path in candidates:
+            try:
+                return load_json(str(path))
+            except (json.JSONDecodeError, OSError):
+                continue
+        return None
 
     def has_incomplete_tasks(self, project_name):
         """
@@ -290,19 +339,33 @@ class TaskManager:
         has_incomplete, incomplete_ids = self.has_incomplete_tasks(project_name)
         return has_incomplete, incomplete_ids
 
-    def consume_ready_sentinel(self, project_name, task_id):
+    def consume_queue_entry(self, project_name, priority, task_id):
         """
-        .ready 파일을 삭제하여 중복 처리를 방지한다.
+        priority queue에서 task_id를 제거하여 중복 spawn을 방지한다.
         """
-        ready_path = os.path.join(
-            self._projects_dir, project_name, "tasks", f"{task_id}.ready"
-        )
-        try:
-            os.remove(ready_path)
-            log_info(f"[{project_name}] sentinel 소비: {task_id}.ready")
-        except FileNotFoundError:
-            # 이미 삭제됨 (race condition 방어)
-            pass
+        project_dir = os.path.join(self._projects_dir, project_name)
+        removed = queue_helpers.pop_task(project_dir, priority, task_id)
+        if removed:
+            log_info(f"[{project_name}] queue 소비: {priority}/{task_id}")
+
+    def migrate_legacy_ready_sentinels(self, project_names):
+        """
+        기존 .ready sentinel 파일을 priority queue(default)로 이주시킨다.
+
+        Priority Queue 도입 이전에 submit되어 .ready만 남은 task가 있다면
+        TM 기동 시 default queue로 옮기고 .ready 파일을 삭제한다.
+        queue 파일이 없는 프로젝트는 자동 생성된다.
+        """
+        for project_name in project_names:
+            project_dir = os.path.join(self._projects_dir, project_name)
+            if not os.path.isdir(project_dir):
+                continue
+            migrated = queue_helpers.migrate_ready_sentinels(project_dir)
+            if migrated:
+                log_info(
+                    f"[{project_name}] 레거시 .ready 이주: "
+                    f"{len(migrated)}개 → default queue ({migrated})"
+                )
 
     # ═══════════════════════════════════════════════════════════
     # WFC 프로세스 관리
@@ -963,7 +1026,7 @@ class TaskManager:
         1. 프로젝트 목록 스캔 (새 프로젝트 자동 감지)
         2. 각 프로젝트에 대해:
            a. WFC 실행 중이면 → poll()로 완료 여부 확인
-           b. WFC 없으면 → .ready task 탐색 → spawn
+           b. WFC 없으면 → priority queue 탐색 → spawn
         3. shutdown 플래그 확인
         """
         # 시그널 핸들러 등록
@@ -986,6 +1049,9 @@ class TaskManager:
             log_info(f"등록된 프로젝트: {', '.join(projects)}")
         else:
             log_warn("등록된 프로젝트 없음. 새 프로젝트가 추가되면 자동 감지합니다.")
+
+        # 레거시 .ready sentinel을 priority queue로 이주 (기존 프로젝트 backward compat)
+        self.migrate_legacy_ready_sentinels(projects)
 
         # 대기 중 task resume (이전 세션에서 SIGTERM으로 중단된 WFC 재시작)
         self.resume_waiting_tasks()
@@ -1035,9 +1101,11 @@ class TaskManager:
                             log_info(f"[{project_name}] 큐 블로킹 해제")
                             setattr(self, blocked_key, False)
 
-                    # WFC가 없으면 .ready task 탐색
-                    ready_tasks = self.find_ready_tasks(project_name)
-                    if ready_tasks:
+                    # WFC가 없으면 priority queue에서 다음 task 탐색
+                    next_task = self.find_next_task(project_name)
+                    if next_task:
+                        priority, task_id = next_task
+
                         # usage check: 새 task spawn 전
                         if not self._dummy:
                             thresholds = self._config.get("claude", {}).get(
@@ -1054,9 +1122,8 @@ class TaskManager:
                                 log_fn=log_info,
                             )
 
-                        # 가장 앞의 task를 처리
-                        task_id = ready_tasks[0]
-                        self.consume_ready_sentinel(project_name, task_id)
+                        # queue에서 id 제거 후 WFC spawn
+                        self.consume_queue_entry(project_name, priority, task_id)
                         self.spawn_workflow_controller(project_name, task_id)
 
                 # 폴링 대기 (짧은 간격으로 나눠서 시그널 반응성 확보)

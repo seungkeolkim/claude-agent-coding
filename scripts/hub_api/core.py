@@ -278,6 +278,10 @@ class HubAPI:
         # 8. project_state.json 초기화
         state_path = init_project.initialize_project_state(project_root, name)
 
+        # 9. priority queue 파일 3개 초기화 (빈 배열)
+        from hub_api import queue_helpers
+        queue_helpers.ensure_queue_files(project_root)
+
         return CreateProjectResult(
             project_name=name,
             project_directory=str(project_directory),
@@ -292,15 +296,25 @@ class HubAPI:
     def submit(self, project: str, title: str, description: str,
                attachments: Optional[list] = None,
                config_override: Optional[dict] = None,
-               source: str = "cli") -> SubmitResult:
+               source: str = "cli",
+               priority: str = "default") -> SubmitResult:
         """
-        새 task를 생성하고 .ready sentinel을 만든다.
+        새 task를 생성하고 priority queue에 등록한다.
 
         1. 다음 task_id 결정 (기존 최대 + 1)
         2. task JSON 생성 (atomic write)
         3. 첨부파일 복사 (있으면)
-        4. .ready sentinel 생성 → TM이 감지하여 WFC spawn
+        4. task_queue_{priority}.json에 id append → TM이 peek/pop하여 WFC spawn
+
+        Args:
+            priority: "critical" | "urgent" | "default" (기본: default).
+                실행 순서: critical > urgent > default (같은 priority 내 id순).
         """
+        from hub_api import queue_helpers
+        if priority not in queue_helpers.PRIORITIES:
+            raise ValueError(
+                f"잘못된 priority: {priority!r}. 허용: {queue_helpers.PRIORITIES}"
+            )
         self._require_active_project(project)
 
         tasks_dir = self._tasks_dir(project)
@@ -364,17 +378,20 @@ class HubAPI:
             "pr_url": None,
         }
 
+        # priority 필드를 task JSON에 기록하여 조회/디버그에 활용
+        task_data["priority"] = priority
+
         self._save_json_atomic(task_path, task_data)
 
-        # .ready sentinel 생성 → TM이 감지
-        ready_path = os.path.join(tasks_dir, f"{task_id}.ready")
-        with open(ready_path, "w") as f:
-            f.write(now)
+        # priority queue 파일에 id append → TM이 감지
+        project_dir = self._project_dir(project)
+        queue_helpers.append_to_queue(project_dir, priority, task_id)
 
         return SubmitResult(
             task_id=task_id,
             project=project,
             file_path=task_path,
+            priority=priority,
         )
 
     def get_task(self, project: str, task_id: str) -> dict:
@@ -402,11 +419,28 @@ class HubAPI:
         projects = [project] if project else self._list_projects(include_closed=include_closed)
         results = []
 
+        # task status가 아직 "submitted"/"planned"여도 project_state가 해당 task를
+        # 현재 실행 중인 것으로 지목하면 표시 상태를 "running"으로 치환한다.
+        # (Planner 진행 중에는 task.status가 아직 submitted로 남아있어 사용자가
+        # 큐 대기 중인 것과 구분이 안 되는 문제를 해결)
+        PRE_RUNNING_STATUSES = {"submitted", "planned"}
+
         for proj in projects:
             try:
                 tasks_dir = self._tasks_dir(proj)
             except FileNotFoundError:
                 continue
+
+            # 프로젝트당 한 번만 project_state를 읽어 현재 실행 중인 task id를 확인
+            active_task_id = None
+            try:
+                state_path = os.path.join(self._project_dir(proj), "project_state.json")
+                if os.path.isfile(state_path):
+                    state = self._load_json(state_path)
+                    if state.get("status") == "running":
+                        active_task_id = state.get("current_task_id")
+            except (json.JSONDecodeError, OSError, FileNotFoundError):
+                active_task_id = None
 
             for task_file in sorted(glob.glob(os.path.join(tasks_dir, "*.json"))):
                 try:
@@ -415,14 +449,23 @@ class HubAPI:
                     continue
 
                 task_status = task.get("status", "")
-                if status and task_status != status:
+
+                # 표시용 상태 치환 (파일 내용은 건드리지 않음)
+                task_id = task.get("task_id", "")
+                display_status = task_status
+                if (active_task_id and task_id == active_task_id
+                        and task_status in PRE_RUNNING_STATUSES):
+                    display_status = "running"
+
+                # status 필터는 치환된 display_status 기준으로 적용
+                if status and display_status != status:
                     continue
 
                 results.append(TaskSummary(
-                    task_id=task.get("task_id", ""),
+                    task_id=task_id,
                     project=proj,
                     title=task.get("title", ""),
-                    status=task_status,
+                    status=display_status,
                     submitted_at=task.get("submitted_at"),
                     current_subtask=task.get("current_subtask"),
                     pr_url=task.get("pr_url"),
@@ -452,10 +495,10 @@ class HubAPI:
         if current_status in ("submitted", "queued", "waiting_for_human_plan_confirm"):
             task["status"] = "cancelled"
             self._save_json_atomic(task_file, task)
-            # .ready 파일이 남아있으면 삭제
-            ready_path = os.path.join(tasks_dir, f"{task_id}.ready")
-            if os.path.exists(ready_path):
-                os.unlink(ready_path)
+            # priority queue에 등록되어 있으면 제거 (flock)
+            from hub_api import queue_helpers
+            project_dir = self._project_dir(project)
+            queue_helpers.remove_task_from_all_queues(project_dir, task_id)
             # project_state.json을 idle로 갱신
             project_dir = self._project_dir(project)
             state_path = os.path.join(project_dir, "project_state.json")
@@ -793,6 +836,22 @@ class HubAPI:
             task["pr_review_message"] = message
 
         self._save_json_atomic(task_file, task)
+
+        # PR 머지 완료 알림 (auto_merge 경로와 동일한 이벤트 타입으로 통일)
+        try:
+            noti = self._get_notification_module()
+            project_dir = self._project_dir(project)
+            title = task.get("title", "")
+            noti.emit_notification(
+                project_dir=project_dir,
+                event_type="pr_merged",
+                task_id=task_id,
+                message=f"PR 머지 완료: {title}" if title else "PR 머지 완료",
+                details={"pr_url": pr_url},
+            )
+        except Exception:
+            pass
+
         return True
 
     def close_pr(self, project: str, task_id: str,

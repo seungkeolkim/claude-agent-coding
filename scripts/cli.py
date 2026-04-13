@@ -116,10 +116,12 @@ def cmd_submit(args):
             description=args.description or "",
             attachments=attachments,
             config_override=config_override,
+            priority=args.priority,
         )
         print(f"{GREEN}[OK]{NC} task 제출 완료")
         print(f"  task_id:  {BOLD}{result.task_id}{NC}")
         print(f"  project:  {result.project}")
+        print(f"  priority: {args.priority}")
         print(f"  file:     {os.path.basename(result.file_path)}")
     except FileNotFoundError as e:
         print(f"{RED}[ERROR]{NC} {e}", file=sys.stderr)
@@ -406,6 +408,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--description", default="", help="task 상세 설명")
     sp.add_argument("--attach", action="append", help="첨부파일 경로 (여러 개 가능)")
     sp.add_argument("--test", choices=["none"], help="테스트 설정 (none: 전부 비활성화)")
+    sp.add_argument(
+        "--priority",
+        choices=["critical", "urgent", "default"],
+        default="default",
+        help="task 우선순위 (기본: default). critical > urgent > default 순서로 실행",
+    )
     sp.set_defaults(func=cmd_submit)
 
     # ─── list ───

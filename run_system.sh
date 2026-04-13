@@ -383,12 +383,41 @@ cmd_status() {
 
         if [[ -f "$state_file" ]]; then
             python3 -c "
-import json, sys, os
+import json, sys, os, glob
 CYAN = '\033[0;36m'
 BLUE = '\033[1;34m'
 RED = '\033[0;31m'
 GREEN = '\033[0;32m'
 NC = '\033[0m'
+PURPLE = '\033[1;35m'
+YELLOW = '\033[1;33m'
+DIM = '\033[2m'
+
+def load_task_stage(project_dir, task_id):
+    '''현재 실행 중인 task JSON에서 pipeline_stage 정보를 읽어 사람이 읽기 좋은
+    단계 문자열을 반환. 실패 시 None.'''
+    if not task_id:
+        return None
+    matches = glob.glob(os.path.join(project_dir, 'tasks', f'{task_id}-*.json'))
+    if not matches:
+        return None
+    try:
+        with open(matches[0]) as f:
+            t = json.load(f)
+    except Exception:
+        return None
+    stage = t.get('pipeline_stage')
+    detail = t.get('pipeline_stage_detail')
+    current_subtask = t.get('current_subtask')
+    if not stage:
+        return None
+    parts = [stage]
+    if detail:
+        parts.append(detail)
+    elif current_subtask:
+        parts.append(f'subtask {current_subtask}')
+    return ' / '.join(parts)
+
 try:
     with open('${state_file}') as f:
         s = json.load(f)
@@ -398,11 +427,10 @@ try:
     last_error = s.get('last_error_task_id', '')
     error_str = f' ({RED}마지막 오류: task {last_error}{NC})' if last_error else ''
     # running 상태는 보라색 bold로 강조 (task 정보 포함)
-    PURPLE = '\033[1;35m'
-    YELLOW = '\033[1;33m'
-    DIM = '\033[2m'
     if status == 'running':
-        print(f'  {PURPLE}{status}{task_str}{NC}{error_str}')
+        stage_info = load_task_stage('${project_dir%/}', task)
+        stage_str = f' [{stage_info}]' if stage_info else ''
+        print(f'  {PURPLE}{status}{task_str}{stage_str}{NC}{error_str}')
     elif status == 'waiting_for_human_plan_confirm':
         print(f'  {YELLOW}{status}{task_str}{NC}{error_str}')
     else:

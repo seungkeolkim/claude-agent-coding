@@ -60,18 +60,34 @@ def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub('', text)
 
 
-def _format_confirmation_plain(parsed: dict) -> str:
-    """확인 메시지를 ANSI 없이 plain text로 생성한다."""
+def _format_confirmation_plain(parsed: dict, agent_hub_root: Optional[str] = None) -> str:
+    """
+    확인 메시지를 ANSI 없이 plain text로 생성한다.
+
+    submit action이고 agent_hub_root가 주어지면, task.config_override 대신
+    4계층 merge된 effective config 전체 트리를 (수정됨)/(기본값) 태그와 함께 표시한다.
+    """
     action = parsed.get("action", "?")
     project = parsed.get("project")
     params = parsed.get("params", {})
     explanation = parsed.get("explanation", "")
+
+    # submit + agent_hub_root가 있으면 config 트리 사전 렌더
+    config_tree_text = None
+    if action == "submit" and agent_hub_root and project:
+        from hub_api.config_preview import format_config_override_for_confirmation
+        config_tree_text = format_config_override_for_confirmation(
+            agent_hub_root, project, params.get("config_override", {})
+        )
 
     lines = []
     lines.append(f"실행할 작업: {action}")
     if project:
         lines.append(f"프로젝트: {project}")
     for k, v in params.items():
+        if config_tree_text is not None and k == "config_override":
+            lines.append(config_tree_text)
+            continue
         if isinstance(v, (dict, list)):
             pretty = json.dumps(v, indent=2, ensure_ascii=False)
             indented = pretty.replace("\n", "\n    ")
@@ -81,6 +97,11 @@ def _format_confirmation_plain(parsed: dict) -> str:
             if len(display_v) > 80:
                 display_v = display_v[:77] + "..."
             lines.append(f"{k}: {display_v}")
+
+    # submit인데 config_override가 params에 없던 경우에도 전체 트리 표시
+    if config_tree_text is not None and "config_override" not in params:
+        lines.append(config_tree_text)
+
     if explanation:
         lines.append(f"\n{explanation}")
 
@@ -173,6 +194,7 @@ def _format_system_event(event: dict) -> str:
         "task_completed": "✅ Task 완료",
         "task_failed": "❌ Task 실패",
         "pr_created": "🔗 PR 생성됨",
+        "pr_merged": "🟢 PR 머지 완료",
         "plan_review_requested": "📋 Plan 승인 요청",
         "replan_review_requested": "📋 Re-plan 승인 요청",
         "escalation": "🚨 에스컬레이션",
@@ -377,7 +399,7 @@ class ChatProcessor:
                 if needs_confirmation(action, self._confirmation_mode):
                     # 확인 필요 — plain text 한 건으로 확인 요청
                     explanation = parsed.get("explanation", "")
-                    confirmation_text = _format_confirmation_plain(parsed)
+                    confirmation_text = _format_confirmation_plain(parsed, self._root)
                     parts = []
                     if explanation:
                         parts.append(explanation)

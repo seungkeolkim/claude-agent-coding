@@ -8,6 +8,7 @@ TM이 폴링하여 터미널에 출력한다.
     task_completed          — task 완료 (PR URL 포함)
     task_failed             — task 실패 (에러 요약)
     pr_created              — PR 생성됨
+    pr_merged               — PR 머지 완료
     plan_review_requested   — plan 승인 대기
     replan_review_requested — replan 승인 대기
     escalation              — 에스컬레이션 발생
@@ -35,6 +36,7 @@ EVENT_STYLES = {
     "task_completed": {"color": GREEN, "label": "완료"},
     "task_failed": {"color": RED, "label": "실패"},
     "pr_created": {"color": CYAN, "label": "PR 생성"},
+    "pr_merged": {"color": GREEN, "label": "PR 머지"},
     "plan_review_requested": {"color": YELLOW, "label": "승인 요청"},
     "replan_review_requested": {"color": YELLOW, "label": "재계획 승인 요청"},
     "escalation": {"color": RED, "label": "에스컬레이션"},

@@ -38,8 +38,9 @@ def _test_project_name(label: str) -> str:
 class TestSubmit:
     """task 제출."""
 
-    def test_submit_creates_task_and_ready(self, test_project, agent_hub_root):
-        """submit이 task JSON + .ready 파일을 생성한다."""
+    def test_submit_creates_task_and_queues(self, test_project, agent_hub_root):
+        """submit이 task JSON + default priority queue 등록을 수행한다."""
+        from hub_api import queue_helpers
         api = HubAPI(agent_hub_root)
         result = api.submit(
             test_project["name"],
@@ -51,9 +52,10 @@ class TestSubmit:
         assert result.project == test_project["name"]
         assert os.path.exists(result.file_path)
 
-        # .ready sentinel 존재 확인
-        ready_path = os.path.join(test_project["tasks_dir"], "00001.ready")
-        assert os.path.exists(ready_path)
+        # 기본 priority는 default queue에 들어간다
+        assert queue_helpers.read_queue(test_project["dir"], "default") == ["00001"]
+        assert queue_helpers.read_queue(test_project["dir"], "urgent") == []
+        assert queue_helpers.read_queue(test_project["dir"], "critical") == []
 
         # task JSON 내용 확인
         with open(result.file_path) as f:
@@ -235,9 +237,9 @@ class TestCancel:
             task = json.load(f)
         assert task["status"] == "cancelled"
 
-        # .ready sentinel도 삭제됨
-        ready_path = os.path.join(test_project["tasks_dir"], "00001.ready")
-        assert not os.path.exists(ready_path)
+        # priority queue에서 제거됨
+        from hub_api import queue_helpers
+        assert queue_helpers.read_queue(test_project["dir"], "default") == []
 
     def test_cancel_completed_task(self, test_project, agent_hub_root):
         """이미 완료된 task는 취소 불가."""

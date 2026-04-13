@@ -195,6 +195,7 @@ def _handle_submit(api, request: Request) -> Response:
         attachments=attachments,
         config_override=request.params.get("config_override"),
         source=request.source,
+        priority=request.params.get("priority", "default"),
     )
     return _ok(result, f"task {result.task_id} 제출 완료")
 
@@ -471,7 +472,7 @@ ACTION_REGISTRY = {
         "handler": _handle_submit,
         "description": "새 task를 제출한다.",
         "required_params": ["title"],
-        "optional_params": ["description", "config_override"],
+        "optional_params": ["description", "config_override", "priority"],
         "requires_project": True,
     },
     "get_task": {
