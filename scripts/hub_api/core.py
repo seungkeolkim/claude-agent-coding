@@ -419,11 +419,28 @@ class HubAPI:
         projects = [project] if project else self._list_projects(include_closed=include_closed)
         results = []
 
+        # task status가 아직 "submitted"/"planned"여도 project_state가 해당 task를
+        # 현재 실행 중인 것으로 지목하면 표시 상태를 "running"으로 치환한다.
+        # (Planner 진행 중에는 task.status가 아직 submitted로 남아있어 사용자가
+        # 큐 대기 중인 것과 구분이 안 되는 문제를 해결)
+        PRE_RUNNING_STATUSES = {"submitted", "planned"}
+
         for proj in projects:
             try:
                 tasks_dir = self._tasks_dir(proj)
             except FileNotFoundError:
                 continue
+
+            # 프로젝트당 한 번만 project_state를 읽어 현재 실행 중인 task id를 확인
+            active_task_id = None
+            try:
+                state_path = os.path.join(self._project_dir(proj), "project_state.json")
+                if os.path.isfile(state_path):
+                    state = self._load_json(state_path)
+                    if state.get("status") == "running":
+                        active_task_id = state.get("current_task_id")
+            except (json.JSONDecodeError, OSError, FileNotFoundError):
+                active_task_id = None
 
             for task_file in sorted(glob.glob(os.path.join(tasks_dir, "*.json"))):
                 try:
@@ -432,14 +449,23 @@ class HubAPI:
                     continue
 
                 task_status = task.get("status", "")
-                if status and task_status != status:
+
+                # 표시용 상태 치환 (파일 내용은 건드리지 않음)
+                task_id = task.get("task_id", "")
+                display_status = task_status
+                if (active_task_id and task_id == active_task_id
+                        and task_status in PRE_RUNNING_STATUSES):
+                    display_status = "running"
+
+                # status 필터는 치환된 display_status 기준으로 적용
+                if status and display_status != status:
                     continue
 
                 results.append(TaskSummary(
-                    task_id=task.get("task_id", ""),
+                    task_id=task_id,
                     project=proj,
                     title=task.get("title", ""),
-                    status=task_status,
+                    status=display_status,
                     submitted_at=task.get("submitted_at"),
                     current_subtask=task.get("current_subtask"),
                     pr_url=task.get("pr_url"),
