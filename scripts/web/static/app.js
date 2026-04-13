@@ -221,13 +221,13 @@ async function toggleTaskDetail(project, taskId, rowEl) {
                 <button class="btn btn-secondary" onclick="handleCompletePrReview('${project}', '${taskId}', 'merged')">Mark as Merged</button>
                 <button class="btn btn-secondary" onclick="handleCompletePrReview('${project}', '${taskId}', 'rejected')">Mark as Rejected</button>
             ` : ''}
-            ${['submitted', 'queued', 'planned', 'in_progress', 'waiting_for_human_plan_confirm'].includes(t.status) ? `
+            ${['submitted', 'queued', 'planned', 'in_progress', 'running', 'waiting_for_human_plan_confirm'].includes(t.status) ? `
                 <button class="btn btn-warning" onclick="handleCancel('${project}', '${taskId}')">Cancel</button>
             ` : ''}
             ${['cancelled', 'failed'].includes(t.status) ? `
                 <button class="btn btn-primary" onclick="handleResubmit('${project}', '${taskId}')">Resubmit</button>
             ` : ''}
-            ${['in_progress'].includes(t.status) ? `
+            ${['in_progress', 'running'].includes(t.status) ? `
                 <button class="btn btn-secondary" onclick="handleFeedback('${project}', '${taskId}')">Feedback</button>
             ` : ''}
             <button class="btn btn-secondary" onclick="viewPlan('${project}', '${taskId}')">View Plan</button>

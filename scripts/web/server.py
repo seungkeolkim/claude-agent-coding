@@ -267,10 +267,57 @@ async def api_project_detail(name: str):
     return {"success": True, "data": project}
 
 
+_PRE_RUNNING_STATUSES = {"submitted", "planned"}
+
+
+def _active_task_ids(project_names):
+    """
+    각 프로젝트의 project_state.json을 읽어 현재 실행 중인 task_id를 맵으로 반환.
+    status=='running'이 아닌 프로젝트는 포함되지 않는다.
+    """
+    active = {}
+    for name in project_names:
+        if not name:
+            continue
+        state_path = os.path.join(agent_hub_root, "projects", name, "project_state.json")
+        if not os.path.isfile(state_path):
+            continue
+        try:
+            with open(state_path) as f:
+                s = json.load(f)
+        except Exception:
+            continue
+        if s.get("status") == "running" and s.get("current_task_id"):
+            active[name] = s["current_task_id"]
+    return active
+
+
+def _apply_running_override(tasks, project_filter=None):
+    """
+    DB의 raw status를 표시용으로 보정: project_state가 해당 task를 실행 중으로
+    지목하고 task.status가 submitted/planned라면 'running'으로 치환한다.
+    Planner 진행 중 task가 큐 대기와 구분되지 않는 문제를 해결.
+    """
+    if project_filter:
+        project_names = {project_filter}
+    else:
+        project_names = {t.get("project") for t in tasks}
+    active = _active_task_ids(project_names)
+    if not active:
+        return tasks
+    for t in tasks:
+        proj = t.get("project")
+        if (proj in active and t.get("task_id") == active[proj]
+                and t.get("status") in _PRE_RUNNING_STATUSES):
+            t["status"] = "running"
+    return tasks
+
+
 @app.get("/api/tasks")
 async def api_tasks(project: Optional[str] = None, status: Optional[str] = None):
     """task 목록 조회 (DB)."""
     tasks = db.get_tasks(project=project, status=status)
+    tasks = _apply_running_override(tasks, project_filter=project)
     return {"success": True, "data": tasks}
 
 
@@ -283,6 +330,7 @@ async def api_task_detail(project: str, task_id: str):
             status_code=404,
             content={"success": False, "error": {"code": "TASK_NOT_FOUND", "message": f"task '{task_id}'를 찾을 수 없습니다."}},
         )
+    _apply_running_override([task], project_filter=project)
     return {"success": True, "data": task}
 
 

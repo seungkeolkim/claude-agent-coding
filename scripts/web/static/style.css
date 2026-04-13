@@ -169,7 +169,7 @@ h2:first-child {
 /* ─── Status badges ─── */
 
 .status-idle { background: var(--text-dim); color: white; }
-.status-running { background: var(--success); color: white; }
+.status-running { background: var(--warning); color: black; }
 .status-submitted { background: #2196F3; color: white; }
 .status-queued { background: #9C27B0; color: white; }
 .status-in_progress { background: var(--warning); color: black; }
