@@ -383,6 +383,8 @@ def wait_for_human_response(task_file, project_dir, task_id, timeout_hours,
                 }
                 task["human_interaction"] = hi
                 task["status"] = "planned"
+                # 대기 시간 누적
+                _accumulate_human_wait_seconds(task, hi)
                 save_json(task_file, task)
             return "timeout"
 
@@ -407,6 +409,10 @@ def wait_for_human_response(task_file, project_dir, task_id, timeout_hours,
         if response:
             action = response.get("action", "approve")
             log_info(f"사용자 응답 수신: action={action}")
+
+            # 대기 시간을 counters에 누적 (safety limiter의 duration 계산에서 차감)
+            _accumulate_human_wait_seconds(task, hi)
+            save_json(task_file, task)
 
             if action == "approve":
                 # hub_api가 이미 status를 "planned"로 변경했음
@@ -1243,6 +1249,37 @@ def _load_subtasks_from_disk(project_dir, task_id):
         subtasks = plan_data.get("subtasks", [])
 
     return plan_data, subtasks
+
+
+def _accumulate_human_wait_seconds(task, human_interaction):
+    """
+    human_interaction의 requested_at ~ responded_at 차이를
+    counters.human_wait_seconds에 누적한다.
+
+    safety limiter가 task duration 계산 시 이 값을 차감하여
+    사람의 응답 대기 시간을 제외한다.
+    """
+    requested_at = human_interaction.get("requested_at", "")
+    response = human_interaction.get("response", {})
+    responded_at = response.get("responded_at", "") if response else ""
+
+    if not requested_at or not responded_at:
+        return
+
+    try:
+        req_time = datetime.fromisoformat(requested_at)
+        resp_time = datetime.fromisoformat(responded_at)
+        if req_time.tzinfo is None:
+            req_time = req_time.replace(tzinfo=timezone.utc)
+        if resp_time.tzinfo is None:
+            resp_time = resp_time.replace(tzinfo=timezone.utc)
+        wait_seconds = max(0, (resp_time - req_time).total_seconds())
+
+        counters = task.setdefault("counters", {})
+        counters["human_wait_seconds"] = counters.get("human_wait_seconds", 0) + wait_seconds
+        log_info(f"대기 시간 누적: +{wait_seconds:.0f}초 (총 {counters['human_wait_seconds']:.0f}초)")
+    except (ValueError, TypeError):
+        pass
 
 
 def _calculate_remaining_timeout(human_interaction, default_timeout_hours):

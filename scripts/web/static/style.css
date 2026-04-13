@@ -362,6 +362,144 @@ h2:first-child {
 
 /* ─── Chat ─── */
 
+#tab-chat {
+    position: relative;
+    overflow: hidden;
+}
+
+/* 사이드바 */
+#chat-sidebar {
+    position: absolute;
+    top: 0;
+    left: -280px;
+    width: 280px;
+    height: 100%;
+    background: var(--bg-card);
+    border-right: 1px solid var(--border);
+    z-index: 50;
+    transition: left 0.25s ease;
+    display: flex;
+    flex-direction: column;
+}
+
+#chat-sidebar.open {
+    left: 0;
+}
+
+#chat-sidebar-overlay {
+    display: none;
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.3);
+    z-index: 49;
+}
+
+#chat-sidebar-overlay.open {
+    display: block;
+}
+
+.chat-sidebar-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: var(--accent);
+}
+
+.btn-sm {
+    padding: 4px 10px;
+    font-size: 0.78rem;
+}
+
+#chat-session-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 0;
+}
+
+.chat-session-item {
+    display: flex;
+    align-items: center;
+    padding: 10px 16px;
+    cursor: pointer;
+    transition: background 0.15s;
+    gap: 8px;
+}
+
+.chat-session-item:hover {
+    background: var(--bg-input);
+}
+
+.chat-session-item.active {
+    background: var(--bg-input);
+    border-left: 3px solid var(--accent);
+}
+
+.chat-session-item .session-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.chat-session-item .session-title {
+    font-size: 0.88rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.chat-session-item .session-meta {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    margin-top: 2px;
+}
+
+.chat-session-item .session-actions {
+    display: none;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+.chat-session-item:hover .session-actions {
+    display: flex;
+}
+
+.session-action-btn {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    padding: 2px 4px;
+    font-size: 0.75rem;
+    border-radius: 3px;
+}
+
+.session-action-btn:hover {
+    color: var(--text);
+    background: var(--border);
+}
+
+.session-action-btn.delete:hover {
+    color: var(--danger);
+}
+
+.session-rename-input {
+    background: var(--bg-input);
+    color: var(--text);
+    border: 1px solid var(--accent);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 0.88rem;
+    width: 100%;
+    outline: none;
+}
+
+/* 채팅 영역 */
 #chat-area {
     display: flex;
     flex-direction: column;
@@ -406,6 +544,11 @@ h2:first-child {
     padding: 10px 14px;
     border-radius: var(--radius);
     font-size: 0.9rem;
+    font-family: inherit;
+    resize: none;
+    min-height: 38px;
+    max-height: 150px;
+    overflow-y: auto;
 }
 
 #chat-input:focus {
@@ -416,8 +559,34 @@ h2:first-child {
 /* Chat 헤더 */
 #chat-header {
     display: flex;
-    justify-content: flex-end;
+    align-items: center;
+    gap: 10px;
     padding-bottom: 8px;
+}
+
+.btn-icon {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    padding: 4px 6px;
+    border-radius: 4px;
+    font-size: 1.1rem;
+    line-height: 1;
+}
+
+.btn-icon:hover {
+    color: var(--text);
+    background: var(--border);
+}
+
+#chat-session-title {
+    font-size: 0.9rem;
+    color: var(--text-dim);
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 /* 시스템 메시지 */

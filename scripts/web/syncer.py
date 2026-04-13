@@ -221,6 +221,7 @@ class FileSyncer:
                     "project": name,
                     "event_type": noti.get("event_type"),
                     "task_id": noti.get("task_id"),
+                    "message": noti.get("message", ""),
                 })
 
         self._mtime_cache[noti_path] = mtime

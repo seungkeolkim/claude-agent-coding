@@ -22,6 +22,7 @@ from chatbot import (
     HIGH_RISK_ACTIONS,
     LOW_RISK_ACTIONS,
     READ_ONLY_ACTIONS,
+    delete_session,
     format_confirmation_prompt,
     format_response_for_display,
     generate_session_id,
@@ -30,6 +31,7 @@ from chatbot import (
     load_session,
     needs_confirmation,
     parse_claude_response,
+    rename_session,
     save_session,
 )
 from hub_api.core import HubAPI
@@ -593,6 +595,7 @@ class TestSessionManagement:
 
         assert data["session_id"] == sid
         assert data["frontend"] == "chatbot"
+        assert data.get("title") == ""
         assert "created_at" in data
         assert "updated_at" in data
         assert data["turn_count"] == 1
@@ -609,3 +612,66 @@ class TestSessionManagement:
 
         loaded = load_session(root, sid, frontend="slack")
         assert loaded[0]["content"] == "슬랙"
+
+    def test_rename_session(self, tmp_path):
+        """세션 제목을 변경할 수 있다."""
+        root = str(tmp_path)
+        sid = "20260403_143052_a3f1"
+        save_session(root, sid, [{"role": "user", "content": "hello"}])
+
+        assert rename_session(root, sid, "새 제목")
+
+        session_path = os.path.join(root, "session_history", "chatbot", f"{sid}.json")
+        with open(session_path) as f:
+            data = json.load(f)
+        assert data["title"] == "새 제목"
+
+    def test_rename_nonexistent_session(self, tmp_path):
+        """존재하지 않는 세션 rename은 False를 반환한다."""
+        assert not rename_session(str(tmp_path), "nonexistent", "title")
+
+    def test_delete_session(self, tmp_path):
+        """세션 파일을 삭제할 수 있다."""
+        root = str(tmp_path)
+        sid = "20260403_143052_a3f1"
+        save_session(root, sid, [{"role": "user", "content": "hello"}])
+
+        session_path = os.path.join(root, "session_history", "chatbot", f"{sid}.json")
+        assert os.path.isfile(session_path)
+
+        assert delete_session(root, sid)
+        assert not os.path.isfile(session_path)
+
+    def test_delete_nonexistent_session(self, tmp_path):
+        """존재하지 않는 세션 delete는 False를 반환한다."""
+        assert not delete_session(str(tmp_path), "nonexistent")
+
+    def test_list_sessions_includes_title_and_first_message(self, tmp_path):
+        """세션 목록에 title과 first_message가 포함된다."""
+        root = str(tmp_path)
+        sid = "20260403_143052_a3f1"
+        save_session(root, sid, [{"role": "user", "content": "안녕하세요 테스트입니다"}])
+        rename_session(root, sid, "테스트 세션")
+
+        sessions = list_sessions(root)
+        assert len(sessions) == 1
+        assert sessions[0]["title"] == "테스트 세션"
+        assert sessions[0]["first_message"] == "안녕하세요 테스트입니다"
+
+    def test_save_preserves_title_on_update(self, tmp_path):
+        """save_session 재호출 시 기존 title이 보존된다."""
+        root = str(tmp_path)
+        sid = "20260403_143052_a3f1"
+        save_session(root, sid, [{"role": "user", "content": "1"}])
+        rename_session(root, sid, "내 제목")
+
+        # 대화 추가로 다시 save
+        save_session(root, sid, [
+            {"role": "user", "content": "1"},
+            {"role": "assistant", "content": "2"},
+        ])
+
+        session_path = os.path.join(root, "session_history", "chatbot", f"{sid}.json")
+        with open(session_path) as f:
+            data = json.load(f)
+        assert data["title"] == "내 제목"

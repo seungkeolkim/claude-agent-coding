@@ -106,16 +106,19 @@ def check_limits(limits, task, agent_type):
             f"subtask 개수 초과: {total_subtasks}/{max_subtasks}"
         )
 
-    # max_task_duration_hours 체크
+    # max_task_duration_hours 체크 (사람 대기 시간 제외)
     max_hours = limits.get("max_task_duration_hours", 4)
     submitted_at = task.get("submitted_at")
     if submitted_at:
         try:
             start_time = datetime.fromisoformat(submitted_at.replace("Z", "+00:00"))
-            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds() / 3600
-            if elapsed > max_hours:
+            total_elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+            human_wait = counters.get("human_wait_seconds", 0)
+            active_elapsed = (total_elapsed - human_wait) / 3600
+            if active_elapsed > max_hours:
                 errors.append(
-                    f"task 지속 시간 초과: {elapsed:.1f}h/{max_hours}h"
+                    f"task 지속 시간 초과: {active_elapsed:.1f}h/{max_hours}h "
+                    f"(총 {total_elapsed/3600:.1f}h - 대기 {human_wait/3600:.1f}h)"
                 )
         except (ValueError, TypeError):
             pass  # 파싱 실패 시 무시
