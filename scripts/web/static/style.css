@@ -517,6 +517,7 @@ h2:first-child {
     padding: 10px 14px;
     border-radius: var(--radius);
     max-width: 80%;
+    white-space: pre-wrap;
 }
 
 .chat-msg.user {

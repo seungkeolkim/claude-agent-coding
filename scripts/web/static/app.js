@@ -769,8 +769,8 @@ function appendChatMsg(role, text) {
 
     const el = document.createElement('div');
     el.className = `chat-msg ${role}`;
-    // 줄바꿈 보존
-    el.innerHTML = escapeHtml(text).replace(/\n/g, '<br>');
+    // 공백/줄바꿈 보존은 CSS white-space: pre-wrap에 위임. textContent로 XSS 방지.
+    el.textContent = text;
 
     if (typingEl) {
         messagesEl.insertBefore(el, typingEl);

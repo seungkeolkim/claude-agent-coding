@@ -524,12 +524,25 @@ def needs_confirmation(action: str, confirmation_mode: str) -> bool:
     return action in HIGH_RISK_ACTIONS
 
 
-def format_confirmation_prompt(parsed: dict) -> str:
-    """실행 전 확인 메시지를 생성한다."""
+def format_confirmation_prompt(parsed: dict, agent_hub_root: Optional[str] = None) -> str:
+    """
+    실행 전 확인 메시지를 생성한다.
+
+    submit action의 경우 agent_hub_root가 주어지면 task.config_override 대신
+    4계층 merge된 effective config 전체 트리를 (수정됨)/(기본값) 태그와 함께 표시한다.
+    """
     action = parsed.get("action", "?")
     project = parsed.get("project")
     params = parsed.get("params", {})
     explanation = parsed.get("explanation", "")
+
+    # submit + agent_hub_root가 있으면 config 트리를 미리 준비
+    config_tree_text = None
+    if action == "submit" and agent_hub_root and project:
+        from hub_api.config_preview import format_config_override_for_confirmation
+        config_tree_text = format_config_override_for_confirmation(
+            agent_hub_root, project, params.get("config_override", {})
+        )
 
     lines = []
     lines.append(f"\n{DIM}{'─' * 50}{NC}")
@@ -537,17 +550,27 @@ def format_confirmation_prompt(parsed: dict) -> str:
     if project:
         lines.append(f"  {BOLD}프로젝트:{NC}    {project}")
     for k, v in params.items():
+        # submit의 config_override는 트리로 대체 표시
+        if config_tree_text is not None and k == "config_override":
+            indented = config_tree_text.replace("\n", "\n  ")
+            lines.append(f"  {indented}")
+            continue
         if isinstance(v, (dict, list)):
-            # dict/list는 pretty print JSON으로 출력 (들여쓰기 정렬)
             import json as _json
             pretty = _json.dumps(v, indent=2, ensure_ascii=False)
-            indented = pretty.replace("\n", "\n    ")  # 4칸 들여쓰기
+            indented = pretty.replace("\n", "\n    ")
             lines.append(f"  {BOLD}{k}:{NC}\n    {indented}")
         else:
             display_v = str(v)
             if len(display_v) > 80:
                 display_v = display_v[:77] + "..."
             lines.append(f"  {BOLD}{k}:{NC} {display_v}")
+
+    # submit인데 사용자가 config_override를 안 넣은 경우에도 전체 트리 표시
+    if config_tree_text is not None and "config_override" not in params:
+        indented = config_tree_text.replace("\n", "\n  ")
+        lines.append(f"  {indented}")
+
     if explanation:
         lines.append(f"\n  {explanation}")
     lines.append(f"{DIM}{'─' * 50}{NC}")
@@ -824,7 +847,7 @@ class ChatBot:
 
         # 확인 필요 여부 판단
         if needs_confirmation(action, self.confirmation_mode):
-            prompt_text = format_confirmation_prompt(parsed)
+            prompt_text = format_confirmation_prompt(parsed, self.hub_api.root)
             print(prompt_text)
 
             if not ask_user_confirmation():
