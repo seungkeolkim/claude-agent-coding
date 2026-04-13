@@ -456,6 +456,16 @@ class HubAPI:
             ready_path = os.path.join(tasks_dir, f"{task_id}.ready")
             if os.path.exists(ready_path):
                 os.unlink(ready_path)
+            # project_state.json을 idle로 갱신
+            project_dir = self._project_dir(project)
+            state_path = os.path.join(project_dir, "project_state.json")
+            if os.path.exists(state_path):
+                state = self._load_json(state_path)
+                if state.get("current_task_id") == task_id:
+                    state["status"] = "idle"
+                    state["current_task_id"] = None
+                    state["last_updated"] = datetime.now(timezone.utc).isoformat()
+                    self._save_json_atomic(state_path, state)
             return True
 
         # 실행 중이면 .command 파일로 WFC에 전달
