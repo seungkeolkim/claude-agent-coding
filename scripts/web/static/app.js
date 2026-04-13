@@ -744,6 +744,7 @@ function _formatNotificationForChat(data) {
         'task_completed': '✅ Task 완료',
         'task_failed': '❌ Task 실패',
         'pr_created': '🔗 PR 생성됨',
+        'pr_merged': '🟢 PR 머지 완료',
         'plan_review_requested': '📋 Plan 승인 요청',
         'replan_review_requested': '📋 Re-plan 승인 요청',
         'escalation': '🚨 에스컬레이션',

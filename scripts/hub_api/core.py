@@ -836,6 +836,22 @@ class HubAPI:
             task["pr_review_message"] = message
 
         self._save_json_atomic(task_file, task)
+
+        # PR 머지 완료 알림 (auto_merge 경로와 동일한 이벤트 타입으로 통일)
+        try:
+            noti = self._get_notification_module()
+            project_dir = self._project_dir(project)
+            title = task.get("title", "")
+            noti.emit_notification(
+                project_dir=project_dir,
+                event_type="pr_merged",
+                task_id=task_id,
+                message=f"PR 머지 완료: {title}" if title else "PR 머지 완료",
+                details={"pr_url": pr_url},
+            )
+        except Exception:
+            pass
+
         return True
 
     def close_pr(self, project: str, task_id: str,
