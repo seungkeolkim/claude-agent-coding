@@ -97,14 +97,17 @@ claude-agent-coding/
 │   ├── test_e2e_agent_shell.py    # E2E: run_agent.sh subprocess
 │   └── test_e2e_tm_lifecycle.py   # E2E: TM full lifecycle
 │
-├── docs_for_claude/               # Claude 세션용 내부 문서
-│   ├── 004-agent-system-spec-v5.md    # 전체 아키텍처 명세 (현행)
-│   ├── 010-handoff-phase-2.0-web-console.md
-│   └── 005-design-history-archive.md
+├── docs/                          # 현행 설계/참고 문서
+│   ├── agent-system-spec-v07.md       # 전체 아키텍처 명세 (현행 기준 문서)
+│   ├── configuration-reference.md
+│   └── task-lifecycle-fsm.md
 │
-└── docs_history/                  # 이전 버전 아카이브
-    ├── 003-agent-system-spec-v2.md
-    └── 003-agent-system-spec-v3.md
+├── docs_for_claude/               # 활성 핸드오프 (미구현 작업)
+│   └── 014-handoff-priority-queue.md  # Priority Queue (Phase 2.2)
+│
+└── docs_history/                  # 이전 버전/완료 핸드오프 아카이브
+    ├── agent-system-spec-v02.md ~ v06.md
+    └── handoffs/                  # 완료 핸드오프 (008~013)
 ```
 
 ## 사전 요구사항

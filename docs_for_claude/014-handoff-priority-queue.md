@@ -1,9 +1,9 @@
 # Priority Queue 구현 핸드오프
 
-> 작성: 2026-04-13
+> 작성: 2026-04-13 (최신화: 2026-04-13, v07 조각모음 반영)
 > 기준 문서: `docs/agent-system-spec-v07.md`
 > 브랜치: `main` (최신) — 새 feature 브랜치 생성 필요
-> 이전 커밋: `40d4dac` (merge feature/web_chat_error_correction)
+> 이전 커밋: `36ce58a` (Priority queue 구현 핸드오프 문서 작성) — 이 문서가 추가된 커밋
 
 ---
 
@@ -162,13 +162,19 @@ def pop_task(project_dir, priority, task_id) -> bool
 
 ## 이전 작업 상태
 
-**최근 커밋 (main 기준, 40d4dac):**
-- `1c2d41b` Cancel 시 project_state.json idle로 갱신
-- `26baeb5` Safety limiter: task duration 계산에서 사람 대기 시간 제외
-- `c401083` Web Chat 사용성 개선: 사이드바, SSE 실시간 전달, 알림 표시
-- `ed19b73` WFC graceful shutdown + resume
+**최근 커밋 (main HEAD = 36ce58a 기준):**
+- `36ce58a` Priority queue 구현 핸드오프 문서 작성 (이 문서)
+- `40d4dac` Merge feature/web_chat_error_correction into main
+- `1c2d41b` Cancel 시 project_state.json idle로 갱신 → v07 반영됨
+- `26baeb5` Safety limiter: task duration 계산에서 사람 대기 시간 제외 → v07 반영됨
+- `c401083` Web Chat 사용성 개선: 사이드바, SSE 실시간 전달, 알림 표시 → v07 반영됨
+- `ed19b73` WFC graceful shutdown + resume (SIGTERM 기반 안전 종료 및 TM 자동 재시작) → v07 반영됨
 
-**테스트 현황**: 212개 전체 통과 (`./run_test.sh all`)
+**테스트 현황**: 266개 전체 통과 (`./run_test.sh all`, pytest --collect-only 기준)
+
+**Priority Queue 구현과의 관계**:
+- graceful shutdown/resume과 queue 전환은 독립적 작업. TM이 재기동되더라도 queue 파일 기반 pop 로직만 구현되면 resume_waiting_tasks()는 그대로 동작해야 함.
+- `resume_waiting_tasks()`는 task.json 상태 기반으로 재개 대상을 찾으므로 queue 파일과 무관하지만, queue에 남아 있는 cancelled/failed id를 TM이 skip하는 로직이 함께 동작해야 함 (본 문서 "6. TM pop 로직" 참고).
 
 ---
 
@@ -204,13 +210,14 @@ grep -rn "\.ready" scripts/ tests/ | grep -v e2e_watcher
 
 ## 참고: spec 문서에서 업데이트할 항목
 
-`docs/agent-system-spec-v07.md`:
-- line 31: "파일 기반 통신: JSON 파일 + `.ready` sentinel" → queue 파일 + sentinel 병용/전환 설명
-- line 111: `.ready` sentinel → queue 파일 peek/pop
-- line 146: TM 폴링 설명
-- line 178: WFC 입력 설명
-- line 264~265: task 생성 흐름
-- line 364: 파일 통신 섹션
-- line 372: 통신 테이블 (`tasks/{id}.ready` → `task_queue_*.json`)
-- line 665: 디렉토리 트리 (tasks/*.ready 주석 → queue 파일 추가)
-- line 979: Phase 2.2+ "task 순서 변경" → 완료로 이동
+`docs/agent-system-spec-v07.md` (section 기반, line은 편집에 따라 drift):
+
+- **§1 핵심 설계 원칙 #3**: "파일 기반 통신: JSON 파일 + `.ready` sentinel" → queue 파일(`task_queue_*.json`) 기반 우선순위 큐로 교체.
+- **§3.3 Task Manager의 역할**: `.ready` sentinel 감지 → queue 파일 peek/pop. PR Watcher/resume_waiting_tasks와 병행 기술.
+- **§3.5 TM ↔ WFC 통신**: `tasks/{id}.ready` sentinel 감지 → `task_queue_*.json` 최상위 id peek.
+- **§4.1 Task Manager 상세**: 폴링 대상 변경 (`.ready` → queue 파일 mtime/내용).
+- **§5.1 전체 사이클 1번**: `hub_api: task JSON 생성 + .ready sentinel` → `task JSON 생성 + queue 파일에 id append (priority별)`.
+- **§6.1~6.2 통신 구조 테이블**: `tasks/{id}.ready` 행 → `task_queue_*.json` 행으로 교체.
+- **§10.1 디렉토리 구조**: `projects/{name}/` 아래 `task_queue_{critical,urgent,default}.json` 3개 파일 추가.
+- **§15.3 TODO의 "Priority Queue" 행**: 구현 완료 후 §15.1로 이동.
+- **§15.4 Phase 로드맵의 "2.2 Priority Queue (다음)"**: 완료로 상태 변경.
