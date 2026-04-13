@@ -278,6 +278,10 @@ class HubAPI:
         # 8. project_state.json 초기화
         state_path = init_project.initialize_project_state(project_root, name)
 
+        # 9. priority queue 파일 3개 초기화 (빈 배열)
+        from hub_api import queue_helpers
+        queue_helpers.ensure_queue_files(project_root)
+
         return CreateProjectResult(
             project_name=name,
             project_directory=str(project_directory),
@@ -292,15 +296,25 @@ class HubAPI:
     def submit(self, project: str, title: str, description: str,
                attachments: Optional[list] = None,
                config_override: Optional[dict] = None,
-               source: str = "cli") -> SubmitResult:
+               source: str = "cli",
+               priority: str = "default") -> SubmitResult:
         """
-        새 task를 생성하고 .ready sentinel을 만든다.
+        새 task를 생성하고 priority queue에 등록한다.
 
         1. 다음 task_id 결정 (기존 최대 + 1)
         2. task JSON 생성 (atomic write)
         3. 첨부파일 복사 (있으면)
-        4. .ready sentinel 생성 → TM이 감지하여 WFC spawn
+        4. task_queue_{priority}.json에 id append → TM이 peek/pop하여 WFC spawn
+
+        Args:
+            priority: "critical" | "urgent" | "default" (기본: default).
+                실행 순서: critical > urgent > default (같은 priority 내 id순).
         """
+        from hub_api import queue_helpers
+        if priority not in queue_helpers.PRIORITIES:
+            raise ValueError(
+                f"잘못된 priority: {priority!r}. 허용: {queue_helpers.PRIORITIES}"
+            )
         self._require_active_project(project)
 
         tasks_dir = self._tasks_dir(project)
@@ -364,17 +378,20 @@ class HubAPI:
             "pr_url": None,
         }
 
+        # priority 필드를 task JSON에 기록하여 조회/디버그에 활용
+        task_data["priority"] = priority
+
         self._save_json_atomic(task_path, task_data)
 
-        # .ready sentinel 생성 → TM이 감지
-        ready_path = os.path.join(tasks_dir, f"{task_id}.ready")
-        with open(ready_path, "w") as f:
-            f.write(now)
+        # priority queue 파일에 id append → TM이 감지
+        project_dir = self._project_dir(project)
+        queue_helpers.append_to_queue(project_dir, priority, task_id)
 
         return SubmitResult(
             task_id=task_id,
             project=project,
             file_path=task_path,
+            priority=priority,
         )
 
     def get_task(self, project: str, task_id: str) -> dict:
@@ -452,10 +469,10 @@ class HubAPI:
         if current_status in ("submitted", "queued", "waiting_for_human_plan_confirm"):
             task["status"] = "cancelled"
             self._save_json_atomic(task_file, task)
-            # .ready 파일이 남아있으면 삭제
-            ready_path = os.path.join(tasks_dir, f"{task_id}.ready")
-            if os.path.exists(ready_path):
-                os.unlink(ready_path)
+            # priority queue에 등록되어 있으면 제거 (flock)
+            from hub_api import queue_helpers
+            project_dir = self._project_dir(project)
+            queue_helpers.remove_task_from_all_queues(project_dir, task_id)
             # project_state.json을 idle로 갱신
             project_dir = self._project_dir(project)
             state_path = os.path.join(project_dir, "project_state.json")

@@ -161,12 +161,19 @@ def _create_task_json(tasks_dir, task_id, title="테스트 task",
     return task_file
 
 
+def _enqueue_task(project_dir, task_id, priority="default"):
+    """task_id를 priority queue에 등록한다. (.ready sentinel 후속 방식)"""
+    # hub_api는 conftest 상단에서 sys.path 추가했으므로 import 가능
+    from hub_api import queue_helpers
+    queue_helpers.append_to_queue(project_dir, priority, task_id)
+
+
+# 레거시 호환 alias — 신규 테스트에서는 _enqueue_task 사용 권장.
 def _create_ready_sentinel(tasks_dir, task_id):
-    """task의 .ready sentinel 파일을 생성한다."""
-    ready_path = os.path.join(tasks_dir, f"{task_id}.ready")
-    with open(ready_path, "w") as f:
-        f.write(datetime.now(timezone.utc).isoformat())
-    return ready_path
+    """호환용: tasks_dir 상위 디렉토리를 project_dir로 간주하여 default queue에 등록."""
+    project_dir = os.path.dirname(tasks_dir.rstrip("/"))
+    _enqueue_task(project_dir, task_id, "default")
+    return None
 
 
 # ═══════════════════════════════════════════════════════════
@@ -265,12 +272,11 @@ def test_task(test_project):
         title="테스트-task-unit",
         project_name=test_project["name"],
     )
-    ready_path = _create_ready_sentinel(test_project["tasks_dir"], task_id)
+    _enqueue_task(test_project["dir"], task_id, "default")
 
     return {
         "task_id": task_id,
         "task_file": task_file,
-        "ready_path": ready_path,
     }
 
 

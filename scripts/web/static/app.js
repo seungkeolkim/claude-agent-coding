@@ -489,6 +489,12 @@ document.getElementById('btn-new-task').addEventListener('click', () => {
         <input id="new-task-title" type="text" />
         <label>Description:</label>
         <textarea id="new-task-desc"></textarea>
+        <label>Priority:</label>
+        <select id="new-task-priority">
+            <option value="default" selected>default (보통)</option>
+            <option value="urgent">urgent (급함)</option>
+            <option value="critical">critical (긴급)</option>
+        </select>
     `, [
         { label: 'Cancel', cls: 'btn-secondary', onclick: 'closeModal()' },
         { label: 'Submit', cls: 'btn-primary', onclick: 'doSubmitTask()' },
@@ -499,8 +505,9 @@ async function doSubmitTask() {
     const project = document.getElementById('new-task-project').value;
     const title = document.getElementById('new-task-title').value;
     const description = document.getElementById('new-task-desc').value;
+    const priority = document.getElementById('new-task-priority').value;
     if (!project || !title.trim()) { alert('프로젝트와 제목을 입력해주세요.'); return; }
-    await dispatch('submit', project, { title, description });
+    await dispatch('submit', project, { title, description, priority });
     closeModal();
     loadTasks();
 }

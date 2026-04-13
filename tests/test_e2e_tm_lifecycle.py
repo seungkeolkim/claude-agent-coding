@@ -1,7 +1,7 @@
 """
 E2E 테스트 — TM full lifecycle.
 
-TM 시작 → .ready 감지 → WFC spawn (dummy) → pipeline 완료 → task 상태 변경
+TM 시작 → priority queue 감지 → WFC spawn (dummy) → pipeline 완료 → task 상태 변경
 까지의 전체 수명주기를 검증한다.
 
 TM을 subprocess로 실행하고, HubAPI로 task를 submit한 뒤,
@@ -116,11 +116,12 @@ class TestTMLifecycle:
             )
             assert final_status in ("completed", "failed")
 
-            # .ready sentinel이 소비되었는지 확인
-            ready_path = os.path.join(
-                test_project["tasks_dir"], f"{result.task_id}.ready",
-            )
-            assert not os.path.exists(ready_path), ".ready sentinel이 아직 남아있음"
+            # priority queue에서 id가 소비되었는지 확인
+            from hub_api import queue_helpers
+            for priority in queue_helpers.PRIORITIES:
+                assert result.task_id not in queue_helpers.read_queue(
+                    test_project["dir"], priority
+                ), f"{priority} queue에 task_id가 남아있음"
 
         finally:
             _stop_tm(tm_proc)

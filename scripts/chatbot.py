@@ -324,6 +324,20 @@ submit action에서 config_override를 사용할 때, 반드시 아래 구조를
 - "PR 올리고 바로 다음 작업" / "머지 기다리지 마" → config_override: {{"git": {{"merge_strategy": "pr_and_continue"}}}}
 - "PR 자동 머지해" → config_override: {{"git": {{"merge_strategy": "auto_merge"}}}}
 
+## submit의 priority 파라미터 (선택)
+
+submit params에 "priority"를 지정하여 우선순위 큐에 넣을 수 있습니다.
+허용 값: "critical", "urgent", "default" (기본: "default").
+실행 순서는 critical > urgent > default (같은 priority 내 id순).
+
+| 사용자 표현 | priority |
+|-------------|----------|
+| "긴급", "제일 먼저", "critical" | "critical" |
+| "급함", "빨리", "urgent", "앞에 끼워넣어" | "urgent" |
+| (별도 언급 없음) | 생략 또는 "default" |
+
+예: "긴급으로 로그인 버그 고쳐줘" → params: {{"title": "로그인 버그", "priority": "critical"}}
+
 ## action 선택 가이드 (혼동하기 쉬운 상황)
 
 | 사용자 표현 | 올바른 action | 잘못된 선택 |
@@ -654,6 +668,10 @@ def format_response_for_display(response: Response, action: str) -> str:
     elif action == "submit" and hasattr(data, "task_id"):
         lines.append(f"  task_id: {BOLD}{data.task_id}{NC}")
         lines.append(f"  project: {data.project}")
+        # priority는 params로 전달됨 — task JSON에 기록되어 있으므로 표시 가능
+        priority = getattr(data, "priority", None)
+        if priority and priority != "default":
+            lines.append(f"  priority: {BOLD}{priority}{NC}")
 
     elif action == "get_plan" and isinstance(data, dict):
         # plan 전체 정보 표시
