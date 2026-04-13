@@ -111,15 +111,19 @@ def _format_value(value):
     return str(value)
 
 
+def _tag(path, override_paths):
+    """override된 경로에만 (수정됨) 표식, 기본값은 태그 없음."""
+    return " (수정됨)" if path in override_paths else ""
+
+
 def _render_subtree(value, override_paths, current_path, lines, indent):
     """
     dict를 재귀 순회하며 indented 트리를 lines에 누적한다.
-    leaf에는 (수정됨)/(기본값) 태그를 붙인다.
+    사용자가 명시한 leaf에만 (수정됨) 태그를 붙이고, 기본값은 태그 없이 값만 표시.
     """
     if not isinstance(value, dict) or not value:
-        tag = "(수정됨)" if current_path in override_paths else "(기본값)"
         lines.append(f"{' ' * indent}- {current_path.rsplit('.', 1)[-1]} : "
-                     f"{_format_value(value)} {tag}")
+                     f"{_format_value(value)}{_tag(current_path, override_paths)}")
         return
 
     for key, child in value.items():
@@ -130,8 +134,8 @@ def _render_subtree(value, override_paths, current_path, lines, indent):
             lines.append(f"{' ' * indent}- {key}")
             _render_subtree(child, override_paths, full_path, lines, indent + 2)
         else:
-            tag = "(수정됨)" if full_path in override_paths else "(기본값)"
-            lines.append(f"{' ' * indent}- {key} : {_format_value(child)} {tag}")
+            lines.append(f"{' ' * indent}- {key} : {_format_value(child)}"
+                         f"{_tag(full_path, override_paths)}")
 
 
 def render_config_tree(effective, override_paths):
@@ -150,8 +154,7 @@ def render_config_tree(effective, override_paths):
         if isinstance(value, dict):
             _render_subtree(value, override_paths, section, lines, 4)
         else:
-            tag = "(수정됨)" if section in override_paths else "(기본값)"
-            lines.append(f"    - {_format_value(value)} {tag}")
+            lines.append(f"    - {_format_value(value)}{_tag(section, override_paths)}")
     return "\n".join(lines)
 
 
