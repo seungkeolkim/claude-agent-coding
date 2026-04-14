@@ -21,6 +21,8 @@ import argparse
 import json
 import os
 import sys
+import uuid
+from datetime import datetime, timezone
 from glob import glob
 from typing import Optional
 
@@ -78,7 +80,56 @@ def _hub_chat_id(config: dict) -> int:
     return int((config.get("telegram") or {}).get("hub_chat_id") or 0)
 
 
+def _enqueue_command(agent_hub_root: str, action: str, project: str) -> str:
+    """data/telegram_commands/ 에 명령 파일을 atomic write 한다. 경로 반환."""
+    cmd_dir = os.path.join(agent_hub_root, "data", "telegram_commands")
+    os.makedirs(cmd_dir, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    cid = uuid.uuid4().hex[:8]
+    path = os.path.join(cmd_dir, f"{ts}_{cid}_{action}.json")
+    payload = {
+        "action": action,
+        "project": project,
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+    }
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+    return path
+
+
 # ─── subcommands ───
+
+def cmd_register(agent_hub_root: str, projects_dir: str, project: str, force: bool) -> int:
+    """기존 프로젝트를 telegram에 수동 등록한다.
+
+    project_state.json에 telegram binding이 이미 있으면 force 없으면 거부.
+    bridge가 큐를 폴링해 createForumTopic을 호출한다.
+    """
+    project_dir = os.path.join(projects_dir, project)
+    state_path = os.path.join(project_dir, "project_state.json")
+    if not os.path.isdir(project_dir):
+        print(f"[ERROR] 프로젝트 '{project}'를 찾을 수 없습니다: {project_dir}", file=sys.stderr)
+        return 2
+    if os.path.exists(state_path):
+        try:
+            with open(state_path) as f:
+                state = json.load(f)
+            binding = state.get("telegram") or {}
+            if binding.get("thread_id") and not force:
+                print(f"[SKIP] '{project}'에 이미 topic이 등록돼 있습니다 "
+                      f"(thread_id={binding['thread_id']}). --force로 재등록 가능.")
+                return 0
+        except (OSError, json.JSONDecodeError):
+            pass
+    path = _enqueue_command(agent_hub_root, "create_topic", project)
+    print(f"[OK] create_topic 명령 enqueue: {os.path.basename(path)}")
+    print("    bridge가 1~2초 내 처리합니다. 그룹의 새 topic + 환영 메시지를 확인하세요.")
+    print("    실패 시 logs/telegram_bridge.log 를 확인하세요.")
+    return 0
+
 
 def cmd_list_orphans(config: dict, projects_dir: str) -> int:
     rows = _scan_bindings(projects_dir)
@@ -152,6 +203,11 @@ def main(argv=None) -> int:
     parser.add_argument("--config", required=True, help="config.yaml 경로")
     sub = parser.add_subparsers(dest="sub", required=True)
 
+    p_reg = sub.add_parser("register", help="기존 프로젝트를 telegram topic으로 수동 등록")
+    p_reg.add_argument("project", help="프로젝트 이름")
+    p_reg.add_argument("-f", "--force", action="store_true",
+                       help="이미 binding이 있어도 재등록 (기존 thread_id를 덮어쓴다)")
+
     sub.add_parser("list-orphans", help="알려진 topic binding 목록 출력")
 
     p_del = sub.add_parser("delete-topic", help="thread_id 지정 topic 삭제")
@@ -169,6 +225,8 @@ def main(argv=None) -> int:
     agent_hub_root = os.environ.get("AGENT_HUB_ROOT") or os.path.dirname(os.path.abspath(args.config))
     projects_dir = _projects_dir(agent_hub_root, config)
 
+    if args.sub == "register":
+        return cmd_register(agent_hub_root, projects_dir, args.project, args.force)
     if args.sub == "list-orphans":
         return cmd_list_orphans(config, projects_dir)
     if args.sub == "delete-topic":

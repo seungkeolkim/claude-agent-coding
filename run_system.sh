@@ -102,7 +102,7 @@ show_help() {
     echo "  stop               Task Manager + Web Console 종료 (실행 중 WFC는 완료 대기)"
     echo "  stop --force       Task Manager + Web Console + 모든 WFC 즉시 강제종료"
     echo "  status             시스템 상태 출력"
-    echo "  telegram <sub>     Telegram bridge 보조 명령 (list-orphans / delete-topic / prune-orphans)"
+    echo "  telegram <sub>     Telegram bridge 보조 명령 (register / list-orphans / delete-topic / prune-orphans)"
     echo "  help               이 도움말 표시"
     echo ""
     echo "agent/pipeline 직접 실행은 ./run_agent.sh 를 사용하세요."

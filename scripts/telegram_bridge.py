@@ -282,19 +282,38 @@ class TelegramBridge:
             self._safe_send(d.chat_id, d.thread_id, "⚠️ bind_secret 불일치.")
             return
 
-        # config.yaml 업데이트 (주석 보존이 이상적이나, 현 Phase는 단순 재기록).
+        # config.yaml 업데이트 — 주석/포맷 보존을 위해 라인 단위 in-place 치환.
         self._persist_bind(d.chat_id)
         self._safe_send(d.chat_id, d.thread_id,
                         "✅ Agent Hub 연결됨. 프로젝트 생성 시 자동으로 topic이 추가됩니다.")
 
     def _persist_bind(self, chat_id: int) -> None:
+        """telegram.hub_chat_id / telegram.bind_secret 두 줄만 in-place 치환한다.
+
+        PyYAML의 dump는 주석을 모두 잃기 때문에 정규식 기반 라인 치환을 사용한다.
+        ruamel.yaml 의존성 추가를 피하려는 의도. telegram 섹션의 각 키는
+        단일 라인이라는 가정 — list/dict 값은 등장하지 않는 두 키만 다룬다.
+        """
+        import re
         with self._config_lock:
-            cfg = _load_yaml(self._config_path)
-            tg = cfg.setdefault("telegram", {})
-            tg["hub_chat_id"] = int(chat_id)
-            tg["bind_secret"] = ""  # 1회용
-            _save_yaml(self._config_path, cfg)
-            self._config = cfg
+            with open(self._config_path) as f:
+                text = f.read()
+            new_text = re.sub(
+                r"^(\s*hub_chat_id:\s*).*$",
+                lambda m: f"{m.group(1)}{int(chat_id)}",
+                text, count=1, flags=re.MULTILINE,
+            )
+            new_text = re.sub(
+                r"^(\s*bind_secret:\s*).*$",
+                lambda m: f'{m.group(1)}""',
+                new_text, count=1, flags=re.MULTILINE,
+            )
+            tmp = self._config_path + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(new_text)
+            os.replace(tmp, self._config_path)
+            # 메모리 캐시도 갱신
+            self._config = _load_yaml(self._config_path)
 
     def _handle_slash(self, d: RoutingDecision) -> None:
         """지원 슬래시 명령을 HubAPI dispatch로 매핑. 복잡한 파싱은 후속 세션에서 확장."""
