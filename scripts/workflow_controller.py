@@ -1816,7 +1816,27 @@ def finalize_task(agent_hub_root, project_name, task_id, task_file,
 
             if merge_strategy == "auto_merge":
                 log_step("Git: PR 자동 머지")
-                git_merge_pr(codebase_path, pr_url)
+                try:
+                    git_merge_pr(codebase_path, pr_url)
+                except RuntimeError as merge_err:
+                    # 머지 실패 (예: conflict) → task를 사용자 대기 상태로 유지하고 알림 발송.
+                    # 사용자는 Web UI의 PR 버튼(Merge PR Now / Mark as Merged 등)으로 처리할 수 있다.
+                    log_error(f"[git] auto_merge 실패 → 사용자 개입 대기로 전환: {merge_err}")
+                    update_task_field(task_file, "status", "waiting_for_human_pr_approve")
+                    update_task_field(task_file, "pr_merge_error", str(merge_err))
+                    update_task_field(task_file, "pr_merge_error_at", datetime.now(timezone.utc).isoformat())
+                    emit_notification(
+                        project_dir=finalize_project_dir,
+                        event_type="pr_merge_failed",
+                        task_id=task_id,
+                        message=f"PR 자동 머지 실패 (사용자 개입 필요): {merge_err}",
+                        details={"pr_url": pr_url, "error": str(merge_err)},
+                    )
+                    # project_state를 idle로 전환해 다른 task 진행 가능하도록 (require_human과 동일 취급)
+                    update_project_state(finalize_project_dir, status="idle")
+                    update_task_field(task_file, "current_subtask", None)
+                    update_pipeline_stage(task_file, "done")
+                    return
                 update_task_field(task_file, "status", "completed")
                 emit_notification(
                     project_dir=finalize_project_dir,

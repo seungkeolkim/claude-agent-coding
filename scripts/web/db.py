@@ -56,6 +56,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     pipeline_stage_detail TEXT,
     pipeline_stage_updated_at TEXT,
     failure_reason TEXT,
+    pr_merge_error TEXT,
+    pr_merge_error_at TEXT,
     file_path TEXT NOT NULL,
     file_mtime REAL NOT NULL,
     synced_at TEXT NOT NULL,
@@ -133,6 +135,8 @@ class Database:
             ("pipeline_stage_detail", "TEXT"),
             ("pipeline_stage_updated_at", "TEXT"),
             ("failure_reason", "TEXT"),
+            ("pr_merge_error", "TEXT"),
+            ("pr_merge_error_at", "TEXT"),
         ]
         for col_name, col_type in migrations:
             if col_name not in columns:
@@ -214,8 +218,9 @@ class Database:
                                    human_interaction, summary,
                                    pipeline_stage, pipeline_stage_detail,
                                    pipeline_stage_updated_at, failure_reason,
+                                   pr_merge_error, pr_merge_error_at,
                                    file_path, file_mtime, synced_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(project, task_id) DO UPDATE SET
                     title=excluded.title,
                     description=excluded.description,
@@ -233,6 +238,8 @@ class Database:
                     pipeline_stage_detail=excluded.pipeline_stage_detail,
                     pipeline_stage_updated_at=excluded.pipeline_stage_updated_at,
                     failure_reason=excluded.failure_reason,
+                    pr_merge_error=excluded.pr_merge_error,
+                    pr_merge_error_at=excluded.pr_merge_error_at,
                     file_path=excluded.file_path,
                     file_mtime=excluded.file_mtime,
                     synced_at=excluded.synced_at
@@ -255,6 +262,8 @@ class Database:
                 task_data.get("pipeline_stage_detail"),
                 task_data.get("pipeline_stage_updated_at"),
                 task_data.get("failure_reason"),
+                task_data.get("pr_merge_error"),
+                task_data.get("pr_merge_error_at"),
                 file_path,
                 file_mtime,
                 _now(),

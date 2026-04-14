@@ -70,6 +70,8 @@ notification:
     task_completed: true
     task_failed: true
     pr_created: true
+    pr_merged: true
+    pr_merge_failed: true
     plan_review_requested: true
     replan_review_requested: true
     escalation: true
