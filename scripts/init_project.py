@@ -234,6 +234,9 @@ def initialize_project_state(project_root: Path, project_name: str) -> Path:
         "last_activity_at": datetime.now(timezone.utc).isoformat(),
         "overrides": {},
         "update_history": [],
+        # Telegram 연동 (Phase 2.3). bridge가 topic 생성 후 {"chat_id": ..., "thread_id": ...}로 채움.
+        # telegram.enabled=false이거나 bridge 미기동 시 None 유지.
+        "telegram": None,
     }
 
     state_path = project_root / "project_state.json"

@@ -282,6 +282,10 @@ class HubAPI:
         from hub_api import queue_helpers
         queue_helpers.ensure_queue_files(project_root)
 
+        # 10. Telegram bridge에 topic 생성 요청 (활성화돼 있을 때만 실효. bridge 미기동이어도
+        #     명령 파일은 queue에 남아 bridge 기동 시 소비된다.)
+        _enqueue_telegram_command(self.root, "create_topic", name)
+
         return CreateProjectResult(
             project_name=name,
             project_directory=str(project_directory),
@@ -1034,6 +1038,7 @@ class HubAPI:
         state["current_task_id"] = None
         state["last_updated"] = datetime.now(timezone.utc).isoformat()
         self._save_json_atomic(state_path, state)
+        _enqueue_telegram_command(self.root, "close_topic", project)
         return True
 
     def reopen_project(self, project: str) -> bool:
@@ -1058,6 +1063,7 @@ class HubAPI:
         state["lifecycle"] = "active"
         state["last_updated"] = datetime.now(timezone.utc).isoformat()
         self._save_json_atomic(state_path, state)
+        _enqueue_telegram_command(self.root, "reopen_topic", project)
         return True
 
     # ═══════════════════════════════════════════════════════════
@@ -1305,3 +1311,38 @@ def _make_slug(title: str, max_len: int = 40) -> str:
     if len(slug) > max_len:
         slug = slug[:max_len].rstrip('-')
     return slug
+
+
+# ═══════════════════════════════════════════════════════════
+# Telegram bridge hook (Phase 2.3)
+# ═══════════════════════════════════════════════════════════
+
+def _enqueue_telegram_command(agent_hub_root: str, action: str, project: str) -> None:
+    """Telegram bridge에 처리 요청 파일을 기록한다.
+
+    bridge가 기동 중이 아니더라도 조용히 queue에 쌓아두며, bridge가 다음 기동 시
+    소비한다. telegram 기능 미사용자에게는 data/telegram_commands/ 디렉토리에 작은
+    JSON 파일이 남는 것 외엔 영향이 없다.
+
+    실패해도 HubAPI 주 경로를 막지 않는다 (fire-and-forget).
+    """
+    try:
+        import uuid as _uuid
+        cmd_dir = os.path.join(agent_hub_root, "data", "telegram_commands")
+        os.makedirs(cmd_dir, exist_ok=True)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        cid = _uuid.uuid4().hex[:8]
+        path = os.path.join(cmd_dir, f"{ts}_{cid}_{action}.json")
+        payload = {
+            "action": action,
+            "project": project,
+            "requested_at": datetime.now(timezone.utc).isoformat(),
+        }
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        os.replace(tmp, path)
+    except Exception:
+        # 로그도 선택적. HubAPI 주 경로를 절대 막지 않는다.
+        pass

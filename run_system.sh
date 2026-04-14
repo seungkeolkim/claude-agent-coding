@@ -31,6 +31,48 @@ PID_DIR="${SCRIPT_DIR}/.pids"
 LOG_DIR="${SCRIPT_DIR}/logs"
 TM_LOG="${LOG_DIR}/task_manager.log"
 WEB_LOG="${LOG_DIR}/web_console_chat.log"
+BRIDGE_LOG="${LOG_DIR}/telegram_bridge.log"
+
+is_telegram_enabled() {
+    # config.yaml의 telegram.enabled가 true이면 0(true) 반환.
+    python3 -c "
+import yaml, sys
+try:
+    with open('${CONFIG_FILE}') as f:
+        c = yaml.safe_load(f) or {}
+    sys.exit(0 if (c.get('telegram') or {}).get('enabled') else 1)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null
+}
+
+find_bridge_pid_file() {
+    local found
+    found=$(ls "${PID_DIR}"/telegram_bridge.*.pid 2>/dev/null | head -1)
+    echo "${found:-}"
+}
+
+read_bridge_pid() {
+    local pid_file
+    pid_file=$(find_bridge_pid_file)
+    if [[ -n "$pid_file" ]]; then
+        local pid
+        pid=$(basename "$pid_file" | sed 's/^telegram_bridge\.\(.*\)\.pid$/\1/')
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            echo "$pid"
+            return
+        fi
+    fi
+    local pgrep_pid
+    pgrep_pid=$(pgrep -f "scripts/telegram_bridge.py" 2>/dev/null | head -1)
+    echo "${pgrep_pid:-}"
+}
+
+is_bridge_running() {
+    local pid
+    pid=$(read_bridge_pid)
+    [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
+}
 
 read_web_port() {
     # config.yaml에서 web.port를 읽는다. 없으면 기본값 9880.
@@ -60,6 +102,7 @@ show_help() {
     echo "  stop               Task Manager + Web Console 종료 (실행 중 WFC는 완료 대기)"
     echo "  stop --force       Task Manager + Web Console + 모든 WFC 즉시 강제종료"
     echo "  status             시스템 상태 출력"
+    echo "  telegram <sub>     Telegram bridge 보조 명령 (list-orphans / delete-topic / prune-orphans)"
     echo "  help               이 도움말 표시"
     echo ""
     echo "agent/pipeline 직접 실행은 ./run_agent.sh 를 사용하세요."
@@ -181,6 +224,7 @@ cmd_start() {
     # stale PID 파일 정리
     rm -f "${PID_DIR}"/task_manager.*.pid 2>/dev/null
     rm -f "${PID_DIR}"/web_console_chat.*.pid 2>/dev/null
+    rm -f "${PID_DIR}"/telegram_bridge.*.pid 2>/dev/null
 
     # config.yaml 존재 확인
     if [[ ! -f "$CONFIG_FILE" ]]; then
@@ -230,10 +274,28 @@ cmd_start() {
         log_warn "Web Console Chat 시작 실패. 로그를 확인하세요: ${WEB_LOG}"
     fi
 
+    # ─── Telegram Bridge 시작 (config.yaml의 telegram.enabled=true일 때만) ───
+    if is_telegram_enabled; then
+        AGENT_HUB_ROOT="${SCRIPT_DIR}" PYTHONPATH="${SCRIPT_DIR}:${SCRIPT_DIR}/scripts" \
+            nohup python3 "${SCRIPT_DIR}/scripts/telegram_bridge.py" --config "${CONFIG_FILE}" \
+            >> "${BRIDGE_LOG}" 2>&1 &
+        local bridge_pid=$!
+        sleep 1
+        if kill -0 "$bridge_pid" 2>/dev/null; then
+            touch "${PID_DIR}/telegram_bridge.${bridge_pid}.pid"
+            log_info "Telegram Bridge 시작됨 (PID: ${bridge_pid})"
+        else
+            log_warn "Telegram Bridge 시작 실패. 로그를 확인하세요: ${BRIDGE_LOG}"
+        fi
+    else
+        log_info "Telegram 비활성 — Bridge는 시작하지 않습니다 (config.yaml: telegram.enabled=false)"
+    fi
+
     echo ""
     log_info "Task Manager 시작됨 (PID: ${tm_pid})"
-    log_info "  TM 로그:   tail -f ${TM_LOG}"
-    log_info "  Chat 로그: tail -f ${WEB_LOG}"
+    log_info "  TM 로그:     tail -f ${TM_LOG}"
+    log_info "  Chat 로그:   tail -f ${WEB_LOG}"
+    log_info "  Bridge 로그: tail -f ${BRIDGE_LOG}"
     log_info "  상태 확인: ./run_system.sh status"
     log_info "  종료 방법: ./run_system.sh stop"
     echo ""
@@ -265,14 +327,35 @@ stop_web_console() {
     rm -f "${PID_DIR}"/web_console_chat.*.pid 2>/dev/null
 }
 
+stop_telegram_bridge() {
+    local bridge_pid
+    bridge_pid=$(read_bridge_pid)
+    if [[ -n "$bridge_pid" ]] && kill -0 "$bridge_pid" 2>/dev/null; then
+        kill "$bridge_pid" 2>/dev/null || true
+        local waited=0
+        while kill -0 "$bridge_pid" 2>/dev/null && [[ $waited -lt 5 ]]; do
+            sleep 1
+            waited=$((waited + 1))
+        done
+        if kill -0 "$bridge_pid" 2>/dev/null; then
+            log_warn "Telegram Bridge 5초 타임아웃 — SIGKILL 전송 (PID: ${bridge_pid})"
+            kill -9 "$bridge_pid" 2>/dev/null || true
+        else
+            log_info "Telegram Bridge 종료됨 (PID: ${bridge_pid})"
+        fi
+    fi
+    rm -f "${PID_DIR}"/telegram_bridge.*.pid 2>/dev/null
+}
+
 cmd_stop() {
     local force=false
     if [[ "${1:-}" == "--force" ]]; then
         force=true
     fi
 
-    # Web Console 먼저 종료
+    # Web → Bridge → TM 순으로 종료
     stop_web_console
+    stop_telegram_bridge
 
     if ! is_tm_running; then
         log_warn "Task Manager가 실행 중이 아닙니다."
@@ -365,6 +448,19 @@ cmd_status() {
         log_warn "Web Console Chat: 종료됨 (stale PID 파일)"
     else
         log_warn "Web Console Chat: 미실행"
+    fi
+
+    # Telegram Bridge 상태
+    if is_bridge_running; then
+        local bridge_pid
+        bridge_pid=$(read_bridge_pid)
+        log_info "Telegram Bridge: ${GREEN}실행 중${NC} (PID ${bridge_pid})"
+    elif [[ -n "$(find_bridge_pid_file)" ]]; then
+        log_warn "Telegram Bridge: 종료됨 (stale PID 파일)"
+    elif is_telegram_enabled; then
+        log_warn "Telegram Bridge: 미실행 (config.yaml: telegram.enabled=true)"
+    else
+        log_warn "Telegram Bridge: 비활성 (config.yaml: telegram.enabled=false)"
     fi
 
     # 프로젝트별 상태
@@ -481,6 +577,15 @@ case "$COMMAND" in
     status)
         shift
         cmd_status "$@"
+        ;;
+    telegram)
+        shift
+        # venv 활성화 (urllib stdlib만 쓰지만 PyYAML 필요)
+        if [[ -f "${SCRIPT_DIR}/activate_venv.sh" ]]; then
+            source "${SCRIPT_DIR}/activate_venv.sh"
+        fi
+        AGENT_HUB_ROOT="${SCRIPT_DIR}" PYTHONPATH="${SCRIPT_DIR}:${SCRIPT_DIR}/scripts" \
+            python3 -m scripts.telegram.cli --config "${CONFIG_FILE}" "$@"
         ;;
     help|--help|-h)
         show_help

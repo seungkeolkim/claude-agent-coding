@@ -91,3 +91,17 @@ chatbot:
 web:
   port: 9880                      # 웹 콘솔 포트
   db_path: "data/ai_agent_coding.db"  # SQLite DB 경로 (상대경로는 agent_hub_root 기준)
+
+# ─── Telegram 연동 (Phase 2.3) ───
+# 슈퍼그룹 + Forum Topics 기반. 프로젝트당 1개 topic이 자동 생성되고,
+# 해당 topic에서 자연어/슬래시 명령으로 task 제출·승인·조회를 수행한다.
+# Bootstrap 순서는 docs_for_claude/017-handoff-telegram-integration.md §6 참고.
+telegram:
+  enabled: false                  # true일 때만 run_system.sh start 시 bridge가 기동
+  bot_token: ""                   # BotFather에서 발급 (빈 값이면 자동 disabled). 로그 출력 금지
+  hub_chat_id: 0                  # /bind_hub 명령으로 자동 기록됨 (수동 편집 권장 안 함)
+  allowed_user_ids: []            # 이 목록 외 user의 메시지는 무시 (빈 배열이면 전체 거부)
+  bind_secret: ""                 # /bind_hub <secret> 검증용. bind 성공 시 소비(빈 문자열로 rewrite)
+  long_polling_timeout_seconds: 30   # getUpdates long polling timeout
+  reconciliation_interval_hours: 24  # orphan topic 탐지 주기 (bridge 기동 시 1회 + 이 주기마다)
+  send_interval_seconds: 0.05     # outbound rate limit (Bot API 30msg/sec/그룹 대응 token bucket)

@@ -361,3 +361,84 @@ git push origin main
 - user_preferences slot (Phase 2.2+) — 별개
 - 동적 whitelist / 권한 레벨 — 후속 Phase
 - Slack 연동 — Phase 2.3 이후 별도
+
+---
+
+## 부록 A. 세션 시작 시점 설계 변경 (append-only, 2026-04-14)
+
+> 본 핸드오프(§1~§14)는 최초 설계안이다. 세션 시작 직전 사용자와 합의한 변경 사항을 아래에 append한다. §1~§14의 원문은 히스토리 보존을 위해 수정하지 않는다. **충돌 시 본 부록이 우선한다.**
+
+### A.1 Notification fan-out 구조 (§3, §4, §12.7 변경)
+
+**원 설계 (§3 "fan-out: cli / web / telegram", §12.7 "notification.py fan-out")**
+- `notification.py`를 수정하여 channel fan-out (cli / web / telegram)을 담당하게 함.
+
+**변경 사유**
+- 기존 Web Chat은 `notification.py`를 수정하지 않는 구조다. 즉:
+  - `emit_notification()`은 `notifications.json` 파일에 **append만** 한다.
+  - `FileSyncer`가 2초 폴링으로 파일 mtime 변경을 감지 → DB insert + `on_change` 콜백.
+  - `server.py`의 `_on_change`가 SSE event queue에 push → 브라우저가 수신.
+- 즉 현재 아키텍처는 **"producer는 파일에만 기록, 각 consumer가 독립적으로 파일을 구독"** 패턴이다. Web Chat이 이미 이 패턴을 쓴다.
+- Telegram도 같은 대칭 구조로 가면 `notification.py` 수정이 필요 없고, producer(WFC/TM)는 consumer가 몇 개든 신경 쓸 필요가 없어진다.
+- CLI chat은 테스트 용도였고 실사용 계획 없음 → fan-out 대상에서 제외.
+
+**변경 내용**
+- `notification.py` **수정하지 않는다.** (핸드오프 §4 표의 해당 행, §12.7 전체 무효)
+- 대신 `telegram_bridge.py` 내부에 **notification poller** 서브모듈을 둔다:
+  - `projects/*/notifications.json`을 주기 폴링 (2초, Web의 FileSyncer와 동일).
+  - "이미 송신한 최대 created_at"을 `data/telegram_last_notification.json`에 영속 저장 (FileSyncer의 `max_created_at` 패턴 모방).
+  - 새 항목 발견 시 프로젝트 topic으로 `sendMessage` (+ inline keyboard 필요 시).
+  - 실패 시 로그만 남기고 넘어간다. 재시도는 다음 폴링 사이클에 자연스럽게 이뤄진다 (마지막 송신 timestamp가 갱신되지 않으므로).
+
+### A.2 파일 변경 리스트 축소 (§4 변경)
+
+- 수정 파일 7 → **6개**로 축소 (`scripts/notification.py` 제거).
+- 신규 파일 8개는 동일.
+- 최종: 신규 8 + 수정 6 + 문서 1 = 15개.
+
+### A.3 구현 순서 축소 (§12 변경)
+
+- §12의 **1~9단계를 이번 세션의 목표**로 설정. 10~13은 다음 세션.
+  - 10 reconciler 실구현 + 수동 삭제 CLI — bridge 안정화 후
+  - 11 Web DB 컬럼/UI — 선택 작업, 본 기능과 독립
+  - 12 spec §16 작성 — 전체 동작 확정 후
+  - 13 수동 검증 체크리스트 — 실 봇 필요 (사용자 환경)
+- §12.7 ("notification.py fan-out")은 **A.1에 따라 `telegram_bridge.py` 내부에 notification poller 구현**으로 치환. notification.py 자체는 건드리지 않는다.
+
+### A.4 ChatProcessor 비용 (§8 보강)
+
+- 기억 메모리에 "claude -p 매번 생성/종료 비용" 이슈가 남아 있었으나, 대부분 idle 상태라 CPU/RAM 영향 작다고 판단. **현 세션에서는 별도 처리하지 않는다.** topic당 ChatProcessor 유지, idle timeout/LRU 정책은 후속 과제로 미룬다.
+
+### A.5 bot_token 로깅 방지 (§9 보강)
+
+- `scripts/telegram/client.py`에 **token을 로그에 절대 출력하지 않는 헬퍼**를 두고, URL 구성 시 token 부분을 `***`로 마스킹하는 repr을 사용한다.
+
+### A.6 Rate limit (§14.2 보강)
+
+- Telegram Bot API 초당 30msg/그룹 제한 대응: **`client.py`에 단순 sleep 기반 token bucket을 내장**한다 (최소 구현). 운영 중 불편하면 이후 조정.
+
+### A.7 첨부파일 처리 (§14.6 보강)
+
+- 유저가 photo/document 전송 시: "아직 이미지/문서는 지원하지 않습니다" 정도의 짧은 안내 후 **drop**. 에러 응답까진 하지 않는다.
+
+### A.8 /bind_hub 구현 세부 (§6 보강)
+
+- bot이 아직 `hub_chat_id`가 비어 있는 상태에서 `/bind_hub <secret>`를 수신할 때는 **`user_id` whitelist 검증만** 수행 (chat_id whitelist는 이 시점에 비어 있으므로 skip). bind 성공 시 `config.yaml`의 `telegram.hub_chat_id`를 기록하고 `bind_secret`을 빈 문자열로 rewrite. YAML 주석 보존은 가능하면 `ruamel.yaml` 사용, 의존성 추가가 부담되면 라인 단위 문자열 치환으로 대체.
+
+### A.9 커밋 단위 (§12 보강)
+
+- 커밋은 "단계별"이 아니라 **"사용자 테스트가 가능한 시점"** 기준으로 묶는다. 그 시점에 "여기까지 했고 이렇게 테스트해보세요"를 보고하고, 사용자 테스트 후 지시를 받아 커밋한다.
+
+---
+
+## 부록 B. 참조용 주요 코드 위치 (세션 시작 시점 스냅샷)
+
+- `scripts/hub_api/core.py:192` — `create_project()` hook 지점
+- `scripts/hub_api/core.py:992` — `close_project()` hook 지점
+- `scripts/hub_api/core.py:1039` — `reopen_project()` hook 지점
+- `scripts/web/syncer.py:63` — 폴더 소실 감지 블록 (close 자동화 hook 지점)
+- `scripts/web/web_chatbot.py:221` — `ChatProcessor` 클래스 (재사용 대상)
+- `scripts/web/web_chatbot.py:630` — `get_or_create_session()` (session 레지스트리)
+- `scripts/web/web_chatbot.py:669` — `broadcast_system_event()` (system 메시지 주입)
+- `scripts/web/server.py:68` — `_on_change` 콜백 패턴 (Telegram bridge가 모방할 참조 구조)
+
