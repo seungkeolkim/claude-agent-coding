@@ -624,7 +624,7 @@ class HubAPI:
 
                 # waiting_for_human_pr_approve: PR 생성 완료, 수동 머지/리뷰 대기
                 if status == "waiting_for_human_pr_approve":
-                    results.append(HumanInteractionInfo(
+                    info = HumanInteractionInfo(
                         task_id=task.get("task_id", ""),
                         project=proj,
                         interaction_type="waiting_for_human_pr_approve",
@@ -632,7 +632,12 @@ class HubAPI:
                         options=["approve", "reject"],
                         requested_at=task.get("pipeline_stage_updated_at"),
                         payload_path=None,
-                    ))
+                    )
+                    # pr_merge_error가 있으면 별도 필드로 전달 (프론트가 빨간 에러 박스로 렌더)
+                    pr_err = task.get("pr_merge_error")
+                    if pr_err:
+                        info.pr_merge_error = pr_err
+                    results.append(info)
                     continue
 
                 # waiting_for_human_plan_confirm: 명시적 human interaction 요청
@@ -826,7 +831,30 @@ class HubAPI:
             capture_output=True, text=True, timeout=60,
         )
         if result.returncode != 0:
-            raise RuntimeError(f"gh pr merge 실패: {result.stderr.strip()}")
+            error_msg = result.stderr.strip()
+            # 실패 내용을 task JSON에 기록 (Web UI가 재렌더링해도 에러가 유지되도록)
+            task["pr_merge_error"] = error_msg
+            task["pr_merge_error_at"] = datetime.now(timezone.utc).isoformat()
+            try:
+                self._save_json_atomic(task_file, task)
+            except Exception:
+                pass
+            # 머지 실패 알림 발송 (task 상태는 waiting_for_human_pr_approve 그대로 유지 → 사용자 재시도 가능)
+            try:
+                noti = self._get_notification_module()
+                project_dir = self._project_dir(project)
+                title = task.get("title", "")
+                title_part = f": {title}" if title else ""
+                noti.emit_notification(
+                    project_dir=project_dir,
+                    event_type="pr_merge_failed",
+                    task_id=task_id,
+                    message=f"PR 머지 실패{title_part} — {error_msg}",
+                    details={"pr_url": pr_url, "error": error_msg},
+                )
+            except Exception:
+                pass
+            raise RuntimeError(f"gh pr merge 실패: {error_msg}")
 
         # 상태 전이
         task["status"] = "completed"
@@ -834,6 +862,9 @@ class HubAPI:
         task["pr_reviewed_at"] = datetime.now(timezone.utc).isoformat()
         if message:
             task["pr_review_message"] = message
+        # 재시도 성공 시 이전 에러 기록 제거 (UI에 stale 에러 노출 방지)
+        task.pop("pr_merge_error", None)
+        task.pop("pr_merge_error_at", None)
 
         self._save_json_atomic(task_file, task)
 

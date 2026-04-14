@@ -41,6 +41,7 @@ class HumanInteractionInfo:
     options: list = field(default_factory=list)
     requested_at: Optional[str] = None
     payload_path: Optional[str] = None
+    pr_merge_error: Optional[str] = None  # waiting_for_human_pr_approve 상태에서 최근 머지 실패 에러 메시지
 
 
 @dataclass

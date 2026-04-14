@@ -112,6 +112,7 @@ async function loadDashboard() {
                         <button class="btn btn-danger" onclick="handleClosePr('${item.project}', '${item.task_id}')">Close PR Now</button>
                         <button class="btn btn-outline-success" onclick="handleCompletePrReview('${item.project}', '${item.task_id}', 'merged')">Mark as Merged</button>
                         <button class="btn btn-outline-danger" onclick="handleCompletePrReview('${item.project}', '${item.task_id}', 'rejected')">Mark as Rejected</button>
+                        ${item.pr_merge_error ? `<div class="pr-error">⚠️ PR 머지 실패: ${item.pr_merge_error}</div>` : ''}
                     ` : `
                         <button class="btn btn-success" onclick="handleApprove('${item.project}', '${item.task_id}')">Approve</button>
                         <button class="btn btn-danger" onclick="handleReject('${item.project}', '${item.task_id}')">Reject</button>
@@ -159,6 +160,7 @@ async function loadTasks() {
                 ${statusBadge(t.status)}
                 ${t.pipeline_stage && t.status === 'in_progress' ? `<span class="pipeline-stage">${t.pipeline_stage}${t.pipeline_stage_detail ? ' (' + t.pipeline_stage_detail + ')' : ''}</span>` : ''}
                 ${t.failure_reason ? `<span class="failure-reason" title="${t.failure_reason}">!</span>` : ''}
+                ${t.pr_merge_error ? `<span class="failure-reason" title="PR merge 실패: ${t.pr_merge_error}">⚠</span>` : ''}
                 <span class="task-time">${formatTime(t.submitted_at)}</span>
             </div>
         `).join('');
@@ -220,6 +222,7 @@ async function toggleTaskDetail(project, taskId, rowEl) {
                 <button class="btn btn-danger" onclick="handleClosePr('${project}', '${taskId}')">Close PR Now</button>
                 <button class="btn btn-secondary" onclick="handleCompletePrReview('${project}', '${taskId}', 'merged')">Mark as Merged</button>
                 <button class="btn btn-secondary" onclick="handleCompletePrReview('${project}', '${taskId}', 'rejected')">Mark as Rejected</button>
+                ${t.pr_merge_error ? `<div class="pr-error">⚠️ PR 머지 실패: ${t.pr_merge_error}</div>` : ''}
             ` : ''}
             ${['submitted', 'queued', 'planned', 'in_progress', 'running', 'waiting_for_human_plan_confirm'].includes(t.status) ? `
                 <button class="btn btn-warning" onclick="handleCancel('${project}', '${taskId}')">Cancel</button>
@@ -745,6 +748,7 @@ function _formatNotificationForChat(data) {
         'task_failed': '❌ Task 실패',
         'pr_created': '🔗 PR 생성됨',
         'pr_merged': '🟢 PR 머지 완료',
+        'pr_merge_failed': '⚠️ PR 머지 실패 (사용자 개입 필요)',
         'plan_review_requested': '📋 Plan 승인 요청',
         'replan_review_requested': '📋 Re-plan 승인 요청',
         'escalation': '🚨 에스컬레이션',
