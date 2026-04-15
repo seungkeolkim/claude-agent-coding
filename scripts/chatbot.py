@@ -417,6 +417,32 @@ def build_system_prompt(hub_api: HubAPI) -> str:
     except Exception:
         system_status = "(상태 조회 실패)"
 
+    # 사용자 응답 대기 중인 항목 (PR 머지 대기 / plan 승인 대기)
+    # chatbot은 single-shot이라 tool loop가 없어, 이 정보를 프롬프트에 직접 주입해야
+    # "pr 진행해줘" 같은 요청에서 LLM이 대상 task_id를 추론할 수 있다.
+    try:
+        pending_items = hub_api.pending()
+        if pending_items:
+            pending_lines = []
+            for item in pending_items:
+                # interaction_type: waiting_for_human_pr_approve / waiting_for_human_plan_confirm 등
+                tag = {
+                    "waiting_for_human_pr_approve": "[PR 머지 대기]",
+                    "waiting_for_human_plan_confirm": "[plan 승인 대기]",
+                }.get(item.interaction_type, f"[{item.interaction_type}]")
+                msg = (item.message or "").strip()
+                if len(msg) > 80:
+                    msg = msg[:77] + "..."
+                pending_lines.append(
+                    f"  - {tag} {item.project}/{item.task_id}" + (f" — {msg}" if msg else "")
+                )
+            pending_status = "사용자 응답 대기 중:\n" + "\n".join(pending_lines)
+        else:
+            pending_status = "사용자 응답 대기 중: 없음"
+        system_status += "\n" + pending_status
+    except Exception:
+        pass
+
     return SYSTEM_PROMPT_TEMPLATE.format(
         action_descriptions=action_desc,
         project_list=project_list,
