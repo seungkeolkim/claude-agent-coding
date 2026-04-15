@@ -34,6 +34,13 @@ git:
                                     # auto_merge: PR 생성 후 gh pr merge로 자동 머지
   auth_token: ""                  # provider 인증 토큰 (GitHub PAT 등)
 
+# ─── Telegram 연동 ───
+# enabled=true면 프로젝트 생성 시 bridge가 forum topic을 자동 생성하고
+# close/reopen 시 topic도 함께 close/reopen 된다.
+# 테스트용/임시 프로젝트는 false로 두면 telegram bridge에 명령이 전달되지 않는다.
+telegram:
+  enabled: true
+
 # ─── 테스트 ───
 # 각 항목의 enabled 값은 project_state.json에서 동적으로 변경 가능
 testing:

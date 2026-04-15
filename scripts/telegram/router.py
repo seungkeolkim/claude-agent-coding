@@ -44,6 +44,7 @@ class RoutingDecision:
     chat_id: Optional[int] = None
     thread_id: Optional[int] = None
     user_id: Optional[int] = None
+    user_display: Optional[str] = None
     message_id: Optional[int] = None
 
     # slash_command 전용
@@ -76,7 +77,9 @@ def route(update: dict, config: dict) -> RoutingDecision:
     # ─── callback_query ───
     if "callback_query" in update:
         cbq = update["callback_query"]
-        user_id = (cbq.get("from") or {}).get("id")
+        from_user = cbq.get("from") or {}
+        user_id = from_user.get("id")
+        user_display = _display_name(from_user)
         msg = cbq.get("message") or {}
         chat_id = (msg.get("chat") or {}).get("id")
         thread_id = msg.get("message_thread_id")
@@ -98,14 +101,17 @@ def route(update: dict, config: dict) -> RoutingDecision:
             )
         return RoutingDecision(
             kind="callback_query", chat_id=chat_id, thread_id=thread_id,
-            user_id=user_id, callback_query_id=cbq.get("id"),
+            user_id=user_id, user_display=user_display,
+            callback_query_id=cbq.get("id"),
             callback_action=action, callback_project=project, callback_task_id=task_id,
         )
 
     # ─── message ───
     if "message" in update:
         msg = update["message"]
-        user_id = (msg.get("from") or {}).get("id")
+        from_user = msg.get("from") or {}
+        user_id = from_user.get("id")
+        user_display = _display_name(from_user)
         chat = msg.get("chat") or {}
         chat_id = chat.get("id")
         thread_id = msg.get("message_thread_id")
@@ -127,7 +133,8 @@ def route(update: dict, config: dict) -> RoutingDecision:
             secret = parts[1] if len(parts) > 1 else ""
             return RoutingDecision(
                 kind="bind_hub", chat_id=chat_id, thread_id=thread_id,
-                user_id=user_id, message_id=message_id, bind_secret=secret,
+                user_id=user_id, user_display=user_display,
+                message_id=message_id, bind_secret=secret,
             )
 
         # 이후 모든 경로는 chat_id whitelist 필요.
@@ -156,13 +163,15 @@ def route(update: dict, config: dict) -> RoutingDecision:
                 )
             return RoutingDecision(
                 kind="slash_command", chat_id=chat_id, thread_id=thread_id,
-                user_id=user_id, message_id=message_id, command=cmd, args=args,
+                user_id=user_id, user_display=user_display,
+                message_id=message_id, command=cmd, args=args,
             )
 
         # 자연어 → ChatProcessor
         return RoutingDecision(
             kind="natural_message", chat_id=chat_id, thread_id=thread_id,
-            user_id=user_id, message_id=message_id, text=text,
+            user_id=user_id, user_display=user_display,
+            message_id=message_id, text=text,
         )
 
     # 기타 update 타입 (edited_message, channel_post 등)은 모두 drop.
@@ -170,6 +179,25 @@ def route(update: dict, config: dict) -> RoutingDecision:
 
 
 # ─── 내부 헬퍼 ───
+
+def _display_name(from_user: dict) -> Optional[str]:
+    """Telegram from 필드에서 식별자 문자열을 뽑는다.
+
+    우선순위: username → first_name → id. 태그(`tg:...`)의 suffix로 쓰인다.
+    """
+    if not from_user:
+        return None
+    username = from_user.get("username")
+    if username:
+        return str(username)
+    first_name = from_user.get("first_name")
+    if first_name:
+        return str(first_name)
+    user_id = from_user.get("id")
+    if user_id is not None:
+        return str(user_id)
+    return None
+
 
 def _parse_slash(text: str) -> tuple[str, list[str]]:
     """'/cmd arg1 arg2' → (cmd, [arg1, arg2]). '@botname' suffix 제거."""

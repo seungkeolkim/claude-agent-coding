@@ -57,6 +57,7 @@ class Request:
     params: dict = field(default_factory=dict)   # action별 파라미터
     attachments: list = field(default_factory=list)  # [{filename, data_base64, type, description}]
     source: str = "unknown"                     # cli | chatbot | slack | telegram
+    requested_by: Optional[str] = None           # 사용자 식별자 (예: "seungkeol_kim", "tg:hong")
 
     @classmethod
     def from_dict(cls, d: dict) -> "Request":
@@ -67,6 +68,7 @@ class Request:
             params=d.get("params", {}),
             attachments=d.get("attachments", []),
             source=d.get("source", "unknown"),
+            requested_by=d.get("requested_by"),
         )
 
 
@@ -196,6 +198,7 @@ def _handle_submit(api, request: Request) -> Response:
         config_override=request.params.get("config_override"),
         source=request.source,
         priority=request.params.get("priority", "default"),
+        requested_by=request.requested_by,
     )
     return _ok(result, f"task {result.task_id} 제출 완료")
 
@@ -458,6 +461,7 @@ def _handle_create_project(api, request: Request) -> Response:
         description=request.params["description"],
         codebase_path=request.params["codebase_path"],
         git_settings=request.params.get("git_settings"),
+        telegram_enabled=bool(request.params.get("telegram_enabled", True)),
     )
     return _ok(result, f"프로젝트 '{request.params['name']}' 생성 완료")
 

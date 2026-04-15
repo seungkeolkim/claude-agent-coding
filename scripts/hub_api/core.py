@@ -195,6 +195,7 @@ class HubAPI:
         description: str,
         codebase_path: str,
         git_settings: Optional[dict] = None,
+        telegram_enabled: bool = True,
     ) -> CreateProjectResult:
         """
         새 프로젝트를 생성한다.
@@ -273,6 +274,7 @@ class HubAPI:
         yaml_path = init_project.generate_project_yaml(
             project_root, name, description,
             expanded_codebase_path, effective_git_settings,
+            telegram_enabled=telegram_enabled,
         )
 
         # 8. project_state.json 초기화
@@ -282,8 +284,8 @@ class HubAPI:
         from hub_api import queue_helpers
         queue_helpers.ensure_queue_files(project_root)
 
-        # 10. Telegram bridge에 topic 생성 요청 (활성화돼 있을 때만 실효. bridge 미기동이어도
-        #     명령 파일은 queue에 남아 bridge 기동 시 소비된다.)
+        # 10. Telegram bridge에 topic 생성 요청 (project.yaml의 telegram.enabled=true일 때만).
+        #     bridge 미기동이어도 명령 파일은 queue에 남아 bridge 기동 시 소비된다.
         _enqueue_telegram_command(self.root, "create_topic", name)
 
         return CreateProjectResult(
@@ -301,7 +303,8 @@ class HubAPI:
                attachments: Optional[list] = None,
                config_override: Optional[dict] = None,
                source: str = "cli",
-               priority: str = "default") -> SubmitResult:
+               priority: str = "default",
+               requested_by: Optional[str] = None) -> SubmitResult:
         """
         새 task를 생성하고 priority queue에 등록한다.
 
@@ -362,6 +365,7 @@ class HubAPI:
             "title": title,
             "description": description,
             "submitted_via": source,
+            "requested_by": requested_by,
             "submitted_at": now,
             "status": "submitted",
             "branch": None,
@@ -597,6 +601,7 @@ class HubAPI:
             attachments=original_task.get("attachments"),
             config_override=config_override or original_task.get("config_override", {}),
             source=original_task.get("submitted_via", "cli"),
+            requested_by=original_task.get("requested_by"),
         )
 
     # ═══════════════════════════════════════════════════════════
@@ -1320,12 +1325,14 @@ def _make_slug(title: str, max_len: int = 40) -> str:
 def _enqueue_telegram_command(agent_hub_root: str, action: str, project: str) -> None:
     """Telegram bridge에 처리 요청 파일을 기록한다.
 
-    bridge가 기동 중이 아니더라도 조용히 queue에 쌓아두며, bridge가 다음 기동 시
-    소비한다. telegram 기능 미사용자에게는 data/telegram_commands/ 디렉토리에 작은
-    JSON 파일이 남는 것 외엔 영향이 없다.
+    프로젝트 단위 opt-out: project.yaml의 telegram.enabled=false면 enqueue 자체를
+    스킵한다 (테스트용/임시 프로젝트 보호). 키가 없으면 backward-compat으로 활성 처리.
 
-    실패해도 HubAPI 주 경로를 막지 않는다 (fire-and-forget).
+    bridge가 기동 중이 아니더라도 조용히 queue에 쌓아두며, bridge가 다음 기동 시
+    소비한다. 실패해도 HubAPI 주 경로를 막지 않는다 (fire-and-forget).
     """
+    if not _project_telegram_enabled(agent_hub_root, project):
+        return
     try:
         import uuid as _uuid
         cmd_dir = os.path.join(agent_hub_root, "data", "telegram_commands")
@@ -1346,3 +1353,20 @@ def _enqueue_telegram_command(agent_hub_root: str, action: str, project: str) ->
     except Exception:
         # 로그도 선택적. HubAPI 주 경로를 절대 막지 않는다.
         pass
+
+
+def _project_telegram_enabled(agent_hub_root: str, project: str) -> bool:
+    """project.yaml의 telegram.enabled을 읽는다. 파일/키 없으면 True (호환)."""
+    try:
+        import yaml as _yaml
+        path = os.path.join(agent_hub_root, "projects", project, "project.yaml")
+        if not os.path.isfile(path):
+            return True
+        with open(path) as f:
+            data = _yaml.safe_load(f) or {}
+        section = data.get("telegram")
+        if section is None:
+            return True
+        return bool(section.get("enabled", True))
+    except Exception:
+        return True

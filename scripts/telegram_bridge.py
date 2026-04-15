@@ -392,7 +392,9 @@ class TelegramBridge:
             self._safe_send(chat_id_fixed, thread_id_fixed, prefix + content,
                             parse_mode=None)
 
-        session = get_session(self._root, d.chat_id, d.thread_id, _on_message)
+        requested_by = _requested_by_for(d)
+        session = get_session(self._root, d.chat_id, d.thread_id, _on_message,
+                              requested_by=requested_by)
         session.submit_message(d.text)
 
     def _handle_callback_query(self, d: RoutingDecision) -> None:
@@ -433,7 +435,8 @@ class TelegramBridge:
         """hub_api.dispatch 호출 후 응답을 짧게 요약해 topic으로 회신."""
         try:
             req = Request(action=action, project=project,
-                          params=params or {}, source="telegram")
+                          params=params or {}, source="telegram",
+                          requested_by=_requested_by_for(d))
             resp = dispatch(self._hub_api, req)
             if resp.success:
                 summary = self._summarize_response(action, resp.data, resp.message)
@@ -683,6 +686,14 @@ _HELP_TEXT = (
     "/help — 이 도움말\n"
     "또는 자연어로 요청하세요 (예: \"로그인 기능 구현해줘\")."
 )
+
+
+def _requested_by_for(d: RoutingDecision) -> Optional[str]:
+    """RoutingDecision → 'tg:<display>' 태그. user_display가 없으면 user_id fallback."""
+    tag = d.user_display or (str(d.user_id) if d.user_id is not None else None)
+    if not tag:
+        return None
+    return f"tg:{tag}"
 
 
 def _list_projects(projects_dir: str) -> list[str]:

@@ -117,6 +117,7 @@ def cmd_submit(args):
             attachments=attachments,
             config_override=config_override,
             priority=args.priority,
+            requested_by=os.environ.get("USER") or "cli",
         )
         print(f"{GREEN}[OK]{NC} task 제출 완료")
         print(f"  task_id:  {BOLD}{result.task_id}{NC}")
