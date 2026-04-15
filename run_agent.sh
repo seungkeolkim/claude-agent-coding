@@ -22,7 +22,7 @@ log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
 
 # ─── 유효한 agent 목록 ───
-VALID_AGENTS="planner coder reviewer setup unit_tester e2e_tester reporter summarizer"
+VALID_AGENTS="planner coder reviewer setup unit_tester e2e_tester reporter memory_updater summarizer"
 
 # ─── 시스템 설정 파일 ───
 CONFIG_FILE="${SCRIPT_DIR}/config.yaml"
@@ -66,7 +66,7 @@ show_help() {
     echo "  web                  웹 모니터링 콘솔 시작 (기본 포트: 9880)"
     echo ""
     echo "agent_type:"
-    echo "  planner, coder, reviewer, setup, unit_tester, e2e_tester, reporter"
+    echo "  planner, coder, reviewer, setup, unit_tester, e2e_tester, reporter, memory_updater, summarizer"
     echo ""
     echo "예시:"
     echo "  ./run_agent.sh submit --project my-app --title \"로그인 기능 구현\""

@@ -280,6 +280,13 @@ class HubAPI:
         # 8. project_state.json 초기화
         state_path = init_project.initialize_project_state(project_root, name)
 
+        # 8-1. codebase 루트에 장기 메모리 문서(PROJECT_NOTES.md)와
+        #      Claude Code 포인터(CLAUDE.md) 템플릿을 생성한다.
+        #      이미 해당 파일들이 있으면 건드리지 않는다 (사용자 기존 문서 보호).
+        init_project.generate_codebase_memory_files(
+            expanded_codebase_path, name, description,
+        )
+
         # 9. priority queue 파일 3개 초기화 (빈 배열)
         from hub_api import queue_helpers
         queue_helpers.ensure_queue_files(project_root)

@@ -127,7 +127,8 @@ STEP_NUMBER = {
     "unit_tester": "05",
     "e2e_tester": "06",
     "reporter": "07",
-    "summarizer": "08",
+    "memory_updater": "08",
+    "summarizer": "09",
 }
 
 STEP_NAME = {
@@ -138,6 +139,7 @@ STEP_NAME = {
     "unit_tester": "unit-tester",
     "e2e_tester": "e2e-tester",
     "reporter": "reporter",
+    "memory_updater": "memory-updater",
     "summarizer": "summarizer",
 }
 
@@ -1990,14 +1992,51 @@ def finalize_task(agent_hub_root, project_name, task_id, task_file,
                   codebase_path, task_branch, default_branch, dummy,
                   requested_by=None):
     """
-    Subtask loop 완료 후 Summarizer 실행 + PR 생성/머지 + task 상태 업데이트.
+    Subtask loop 완료 후 MemoryUpdater → Summarizer 실행 + PR 생성/머지 + task 상태 업데이트.
     run_pipeline()과 run_pipeline_from_subtasks() 양쪽에서 호출된다.
     """
-    # ─── Summarizer 실행 ───
+    # ─── Memory Updater + Summarizer 공통 전처리 ───
     # 모든 subtask가 끝난 시점이므로 current_subtask를 먼저 비운다.
     # 남겨두면 safety_limits가 completed + current를 이중 집계해
     # max_subtask_count를 초과한 것으로 오판할 수 있다.
     update_task_field(task_file, "current_subtask", None)
+
+    # ─── Memory Updater 실행 (Summarizer 직전) ───
+    # 역할: codebase 루트의 PROJECT_NOTES.md(장기 메모리)를 이번 task 변경에 맞춰 증분 갱신.
+    # 정책:
+    #   - agent가 직접 PROJECT_NOTES.md만 수정한다 (다른 파일 수정 금지).
+    #   - 변경이 생기면 WFC가 "[{task_id}] memory: PROJECT_NOTES.md 갱신" 커밋으로 묶어 PR에 포함.
+    #   - 실패해도 PR 생성은 차단하지 않는다 (경고만). Summarizer 이후 push는 계속 진행.
+    log_step("Memory Updater 실행")
+    update_pipeline_stage(task_file, "memory_updater")
+    memory_success, memory_data = run_agent(
+        agent_hub_root, "memory_updater", project_name, task_id,
+        dummy=dummy,
+    )
+    if not memory_success:
+        log_warn("Memory Updater 실패 — PROJECT_NOTES.md 갱신 없이 계속 진행합니다.")
+    elif memory_data and memory_data.get("updated"):
+        log_info(
+            "[memory] PROJECT_NOTES.md 갱신됨: "
+            f"sections={memory_data.get('sections_changed') or []}"
+        )
+        # agent가 만든 PROJECT_NOTES.md 변경을 커밋 (push는 PR 생성 시 1회).
+        # 변경이 실제로 있을 때만 커밋되고, 없으면 조용히 스킵된다.
+        if git_enabled and codebase_path:
+            memory_author_name = git_config.get("author_name", "agent-bot")
+            memory_author_email = git_config.get("author_email", "agent@example.com")
+            try:
+                git_commit_worktree_no_push(
+                    codebase_path,
+                    f"[{task_id}] memory: PROJECT_NOTES.md 갱신",
+                    memory_author_name, memory_author_email,
+                )
+            except RuntimeError as memory_commit_err:
+                log_warn(f"[memory] 커밋 실패 — 변경은 worktree에 남습니다: {memory_commit_err}")
+    else:
+        log_info("[memory] 이번 task에서는 장기 메모리에 반영할 변경 없음")
+
+    # ─── Summarizer 실행 ───
     log_step("Summarizer 실행")
     update_pipeline_stage(task_file, "summarizer")
     success, summary_data = run_agent(

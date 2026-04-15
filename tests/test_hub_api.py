@@ -524,6 +524,64 @@ class TestCreateProject:
         finally:
             shutil.rmtree(result.project_directory, ignore_errors=True)
 
+    def test_create_project_generates_memory_files(self, agent_hub_root, tmp_path):
+        """create_project는 codebase 루트에 PROJECT_NOTES.md + CLAUDE.md 포인터를 생성한다."""
+        api = HubAPI(agent_hub_root)
+        project_name = _test_project_name("memfiles")
+        codebase = str(tmp_path / "codebase-memfiles")
+
+        result = api.create_project(
+            name=project_name,
+            description="메모리 파일 생성 테스트",
+            codebase_path=codebase,
+        )
+        try:
+            project_notes_path = os.path.join(codebase, "PROJECT_NOTES.md")
+            claude_path = os.path.join(codebase, "CLAUDE.md")
+
+            assert os.path.isfile(project_notes_path), "PROJECT_NOTES.md가 생성되지 않았습니다"
+            assert os.path.isfile(claude_path), "CLAUDE.md 포인터가 생성되지 않았습니다"
+
+            # PROJECT_NOTES.md: 프로젝트명/설명 + 주요 섹션 헤더가 들어간다
+            notes_content = open(project_notes_path, encoding="utf-8").read()
+            assert project_name in notes_content
+            assert "메모리 파일 생성 테스트" in notes_content
+            assert "## 아키텍처" in notes_content
+            assert "## 컨벤션" in notes_content
+            assert "## 주요 결정" in notes_content
+            assert "## 최근 변경 이력" in notes_content
+
+            # CLAUDE.md: PROJECT_NOTES.md 포인터 한 줄짜리
+            claude_content = open(claude_path, encoding="utf-8").read()
+            assert "PROJECT_NOTES.md" in claude_content
+        finally:
+            shutil.rmtree(result.project_directory, ignore_errors=True)
+
+    def test_create_project_preserves_existing_memory_files(self, agent_hub_root, tmp_path):
+        """codebase에 PROJECT_NOTES.md/CLAUDE.md가 이미 있으면 덮어쓰지 않는다."""
+        api = HubAPI(agent_hub_root)
+        project_name = _test_project_name("preserve-mem")
+        codebase = str(tmp_path / "codebase-preserve")
+        os.makedirs(codebase)
+
+        # 사용자가 미리 작성해 둔 문서
+        existing_notes = "# 사용자 기존 메모\n\n손대지 말 것.\n"
+        existing_claude = "# 사용자 기존 CLAUDE.md\n"
+        open(os.path.join(codebase, "PROJECT_NOTES.md"), "w", encoding="utf-8").write(existing_notes)
+        open(os.path.join(codebase, "CLAUDE.md"), "w", encoding="utf-8").write(existing_claude)
+
+        result = api.create_project(
+            name=project_name,
+            description="기존 파일 보호 테스트",
+            codebase_path=codebase,
+        )
+        try:
+            # 기존 파일 내용이 그대로 보존되어야 한다
+            assert open(os.path.join(codebase, "PROJECT_NOTES.md"), encoding="utf-8").read() == existing_notes
+            assert open(os.path.join(codebase, "CLAUDE.md"), encoding="utf-8").read() == existing_claude
+        finally:
+            shutil.rmtree(result.project_directory, ignore_errors=True)
+
     def test_create_project_existing_codebase(self, agent_hub_root, tmp_path):
         """이미 존재하는 codebase 디렉토리도 정상 처리한다."""
         api = HubAPI(agent_hub_root)

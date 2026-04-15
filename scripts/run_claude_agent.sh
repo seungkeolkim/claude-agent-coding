@@ -17,7 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AGENT_HUB_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # ─── 유효한 agent 목록 ───
-VALID_AGENTS="planner coder reviewer setup unit_tester e2e_tester reporter summarizer"
+VALID_AGENTS="planner coder reviewer setup unit_tester e2e_tester reporter memory_updater summarizer"
 
 # ─── 인자 파싱 ───
 AGENT_TYPE="${1:?agent_type을 지정하세요 (planner|coder|reviewer|setup|unit_tester|e2e_tester|reporter)}"
@@ -178,30 +178,32 @@ mkdir -p "$LOG_DIR"
 # 테스트가 비활성화되어 실행되지 않아도 번호는 고정이다.
 get_step_number() {
     case "$1" in
-        planner)      echo "01" ;;
-        coder)        echo "02" ;;
-        reviewer)     echo "03" ;;
-        setup)        echo "04" ;;
-        unit_tester)  echo "05" ;;
-        e2e_tester)   echo "06" ;;
-        reporter)     echo "07" ;;
-        summarizer)   echo "08" ;;
-        *)            echo "99" ;;
+        planner)        echo "01" ;;
+        coder)          echo "02" ;;
+        reviewer)       echo "03" ;;
+        setup)          echo "04" ;;
+        unit_tester)    echo "05" ;;
+        e2e_tester)     echo "06" ;;
+        reporter)       echo "07" ;;
+        memory_updater) echo "08" ;;
+        summarizer)     echo "09" ;;
+        *)              echo "99" ;;
     esac
 }
 
 # agent 이름을 로그용 표기로 변환 (snake_case → kebab-case)
 get_step_name() {
     case "$1" in
-        planner)      echo "planner" ;;
-        coder)        echo "coder" ;;
-        reviewer)     echo "reviewer" ;;
-        setup)        echo "setup" ;;
-        unit_tester)  echo "unit-tester" ;;
-        e2e_tester)   echo "e2e-tester" ;;
-        reporter)     echo "reporter" ;;
-        summarizer)   echo "summarizer" ;;
-        *)            echo "$1" ;;
+        planner)        echo "planner" ;;
+        coder)          echo "coder" ;;
+        reviewer)       echo "reviewer" ;;
+        setup)          echo "setup" ;;
+        unit_tester)    echo "unit-tester" ;;
+        e2e_tester)     echo "e2e-tester" ;;
+        reporter)       echo "reporter" ;;
+        memory_updater) echo "memory-updater" ;;
+        summarizer)     echo "summarizer" ;;
+        *)              echo "$1" ;;
     esac
 }
 
@@ -610,6 +612,17 @@ EOJSON
   "verdict": "pass",
   "needs_replan": false,
   "summary": "[dummy] 모든 단계 정상 완료. 커밋 가능."
+}
+EOJSON
+)
+            ;;
+        memory_updater)
+            DUMMY_RESULT=$(cat <<EOJSON
+{
+  "action": "memory_update_complete",
+  "updated": false,
+  "sections_changed": [],
+  "rationale": "[dummy] 더미 모드에서는 장기 메모리를 수정하지 않습니다."
 }
 EOJSON
 )
