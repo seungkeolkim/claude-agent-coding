@@ -18,7 +18,7 @@ Claude Code 기반 자동 개발 시스템.
 - `docs/` — 사용자용 문서 (설정 레퍼런스 등)
 - `docs/agent-system-spec-v07.md` — 전체 아키텍처 명세
 - `docs/images/task-lifecycle-fsm.md` — Task 상태 FSM 다이어그램
-- `tests/` — Unit/Integration/E2E 테스트 스위트 (212개)
+- `tests/` — Unit/Integration/E2E 테스트 스위트 (260개)
 
 ## 코딩 컨벤션
 - 변수/함수/파일명: 축약 금지, 이름만 보고 알 수 있게
@@ -76,7 +76,7 @@ Claude Code 기반 자동 개발 시스템.
 
 ## 테스트
 ```bash
-./run_test.sh all          # 전체 (212개)
+./run_test.sh all          # 전체 (260개)
 ./run_test.sh unit         # Unit 테스트만
 ./run_test.sh integration  # Integration 테스트만
 ./run_test.sh e2e          # E2E 테스트만
