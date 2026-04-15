@@ -46,6 +46,7 @@ EVENT_STYLES = {
     "plan_review_responded": {"color": GREEN, "label": "Plan 응답"},
     "pr_review_responded": {"color": GREEN, "label": "PR 응답"},
     "escalation": {"color": RED, "label": "에스컬레이션"},
+    "replan_started": {"color": YELLOW, "label": "재계획 시작"},
 }
 
 
