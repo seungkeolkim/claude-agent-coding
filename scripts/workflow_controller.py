@@ -519,6 +519,81 @@ def git_has_changes(codebase_path):
     return bool(result.stdout.strip())
 
 
+def git_head_sha(codebase_path):
+    """현재 HEAD의 commit SHA를 반환한다."""
+    return git_run(codebase_path, "rev-parse", "HEAD")
+
+
+def git_reset_hard_to(codebase_path, sha):
+    """
+    worktree를 특정 SHA로 강제 리셋하고 untracked 파일/디렉토리를 제거한다.
+    subtask 재시도 시 retry_mode="reset"에서 사용.
+    """
+    log_info(f"[git] subtask worktree 리셋: {sha[:8]}")
+    git_run(codebase_path, "reset", "--hard", sha)
+    git_run(codebase_path, "clean", "-fd")
+
+
+def git_soft_reset_if_moved(codebase_path, expected_sha):
+    """
+    HEAD가 expected_sha에서 이동했으면 soft reset으로 되돌린다.
+    Coder가 프롬프트 규칙을 어기고 git commit을 실행한 경우 방어.
+    commit이 만든 스냅샷은 풀어서 staged 상태로 복원 → 이후 WFC가 정상적으로 처리.
+    """
+    current = git_head_sha(codebase_path)
+    if current == expected_sha:
+        return False
+    log_warn(f"[git] HEAD 이동 감지 ({expected_sha[:8]} → {current[:8]}): Coder가 commit을 만든 것으로 보임. soft reset으로 되돌림.")
+    git_run(codebase_path, "reset", "--soft", expected_sha)
+    return True
+
+
+def git_commit_worktree_no_push(codebase_path, message, author_name, author_email):
+    """
+    worktree의 모든 변경을 stage하고 커밋한다. push는 하지 않는다.
+    변경이 없으면 False 반환.
+    Reviewer가 approved를 낸 직후 WFC가 호출.
+    """
+    if not git_has_changes(codebase_path):
+        log_info("[git] 변경사항 없음 — 커밋 스킵")
+        return False
+    git_run(codebase_path, "add", "-A")
+    git_run(
+        codebase_path, "commit",
+        "-m", message,
+        "--author", f"{author_name} <{author_email}>",
+    )
+    log_info(f"[git] 커밋 완료 (push 보류): {message}")
+    return True
+
+
+def validate_reviewer_output(result):
+    """
+    Reviewer output 스키마 검증.
+    필수 필드가 없거나 형식이 틀리면 (False, 오류 메시지) 반환.
+    """
+    if not isinstance(result, dict):
+        return False, "reviewer 출력이 dict가 아님"
+    action = result.get("action")
+    if action not in ("approved", "rejected"):
+        return False, f"action은 'approved' 또는 'rejected'여야 함 (실제: {action!r})"
+    if action == "approved":
+        if not result.get("current_state_summary"):
+            return False, "approved 시 current_state_summary 필요"
+        return True, ""
+    # rejected
+    required = ["retry_mode", "current_state_summary", "what_is_wrong",
+                "what_should_be", "actionable_instructions"]
+    missing = [k for k in required if not result.get(k)]
+    if missing:
+        return False, f"rejected 필수 필드 누락: {missing}"
+    if result["retry_mode"] not in ("reset", "continue"):
+        return False, f"retry_mode는 'reset' 또는 'continue' (실제: {result['retry_mode']!r})"
+    if not isinstance(result["actionable_instructions"], list):
+        return False, "actionable_instructions는 list여야 함"
+    return True, ""
+
+
 def git_reset_to_base_branch(codebase_path, base_branch, remote="origin", token=None):
     """
     Planner 실행 직전에 codebase를 base_branch의 최신 상태로 강제 리셋한다.
@@ -570,6 +645,24 @@ def git_reset_to_base_branch(codebase_path, base_branch, remote="origin", token=
     # 5. remote에 fast-forward (이전 task의 머지 반영)
     git_run(codebase_path, "reset", "--hard", f"{remote}/{base_branch}")
     log_info(f"[git] base_branch 동기화 완료: {remote}/{base_branch}")
+
+
+def git_wipe_and_recreate_task_branch(codebase_path, branch_name, base_branch):
+    """
+    replan 시 task 브랜치를 폐기하고 base_branch에서 다시 생성한다.
+    이전 subtask의 commit들은 전부 사라진다.
+    remote는 건드리지 않는다 (중간 push가 없으므로 리모트에 해당 브랜치가 없다는 전제).
+    """
+    log_info(f"[git] replan: task 브랜치 폐기 후 재생성 (base={base_branch})")
+    git_run(codebase_path, "checkout", base_branch)
+    existing = subprocess.run(
+        ["git", "branch", "--list", branch_name],
+        cwd=codebase_path, capture_output=True, text=True,
+    )
+    if existing.stdout.strip():
+        git_run(codebase_path, "branch", "-D", branch_name)
+    git_run(codebase_path, "checkout", "-b", branch_name, base_branch)
+    return branch_name
 
 
 def git_create_task_branch(codebase_path, branch_name, default_branch):
@@ -1224,12 +1317,14 @@ def run_pipeline(args):
         update_task_field(task_file, "current_subtask", subtask_id)
         update_task_counter(task_file, "current_subtask_retry", value=0)
 
-        # subtask pipeline 실행
+        # subtask pipeline 실행 (Coder/Reviewer 승인 시 WFC가 내부에서 commit까지 수행, push는 안 함)
         subtask_success = run_subtask_pipeline(
             agent_hub_root, args.project, task_id, subtask_id,
             task_file, pipeline, args.dummy,
             usage_thresholds=usage_thresholds,
             usage_check_interval=usage_check_interval,
+            codebase_path=codebase_path, git_enabled=git_enabled,
+            git_config=git_config, requested_by=requested_by,
         )
 
         if not subtask_success:
@@ -1291,15 +1386,34 @@ def run_pipeline(args):
                                          current_task_id=task_id)
                     update_task_field(task_file, "status", "in_progress")
 
-                # 새 plan의 subtask로 루프 재시작 (재귀 대신 함수 재호출)
-                log_info(f"새 plan으로 subtask {len(new_subtasks)}개 재구성")
-                subtasks_remaining = new_subtasks
-                # 이미 완료된 subtask는 건너뜀
+                # ─── replan: task 브랜치 폐기 + base_branch에서 재생성 ───
+                # 이전 subtask 성공분까지 모두 폐기 (사용자 정책). 사용자 알림은 emit.
+                prior_subtask_count = len(completed_subtasks)
+                if git_enabled and task_branch and not args.dummy:
+                    try:
+                        git_wipe_and_recreate_task_branch(codebase_path, task_branch, base_branch)
+                    except RuntimeError as e:
+                        log_error(f"[git] replan 시 브랜치 재생성 실패: {e}")
+                        record_failure_reason(task_file, f"replan branch 재생성 실패: {e}")
+                        update_task_field(task_file, "status", "failed")
+                        update_project_state(project_dir, status="idle", last_error=task_id)
+                        sys.exit(1)
+
+                # replan으로 이전 subtask 성공분을 폐기 — completed 초기화.
+                completed_subtasks = []
                 update_task_field(task_file, "completed_subtasks", completed_subtasks)
 
-                # 간단히 재귀 호출 대신 루프를 계속하기 위해 subtask 리스트 교체
-                # 현재 구조에서는 re-plan 후 전체 함수를 다시 돌리는 것이 깔끔
-                # 단, 무한 replan은 safety limits가 막아줌
+                emit_notification(
+                    project_dir=project_dir, event_type="replan_started", task_id=task_id,
+                    message=f"replan 시작: 새 plan의 subtask {len(new_subtasks)}개 (이전 subtask {prior_subtask_count}개 폐기)",
+                    details={"prior_completed_count": prior_subtask_count,
+                             "new_subtask_count": len(new_subtasks)},
+                )
+
+                # 새 plan의 subtask로 루프 재시작
+                log_info(f"새 plan으로 subtask {len(new_subtasks)}개 재구성 "
+                         f"(이전 subtask {prior_subtask_count}개 폐기)")
+                subtasks_remaining = new_subtasks
                 log_warn("re-plan 후 파이프라인을 처음부터 재시작합니다")
                 run_pipeline_from_subtasks(
                     agent_hub_root, args.project, task_id, task_file,
@@ -1322,29 +1436,8 @@ def run_pipeline(args):
                 )
                 sys.exit(1)
 
-        # ─── Git: subtask 커밋 + push ───
-        if git_enabled:
-            update_pipeline_stage(task_file, "git_push", f"subtask {subtask_id}")
-            git_remote = git_config.get("remote", "origin")
-            subtask_title = subtask.get("title", subtask_id)
-            try:
-                git_commit_subtask(
-                    codebase_path, task_id, subtask_id, subtask_title,
-                    git_config.get("author_name", "Agent Hub"),
-                    git_config.get("author_email", "agent@hub"),
-                    remote=git_remote, branch=task_branch,
-                    token=auth_token, requested_by=requested_by,
-                )
-            except RuntimeError as e:
-                log_error(f"[git] subtask {subtask_id} 커밋/push 실패: {e}")
-                record_failure_reason(task_file, f"git push 실패: {e}")
-                update_task_field(task_file, "status", "failed")
-                update_project_state(project_dir, status="idle", last_error=task_id)
-                emit_notification(
-                    project_dir=project_dir, event_type="task_failed", task_id=task_id,
-                    message=f"git push 실패 (subtask {subtask_id}): {e}",
-                )
-                sys.exit(1)
+        # Note: subtask commit은 run_subtask_pipeline 내부에서 Reviewer approved 시 이미 수행됨 (push 보류).
+        # push는 finalize_task의 PR 생성 단계에서 1회 실행된다.
 
         completed_subtasks.append(subtask_id)
         update_task_field(task_file, "completed_subtasks", completed_subtasks)
@@ -1643,6 +1736,8 @@ def _continue_after_plan_review(result, args, ctx, plan_data, subtasks,
             task_file, pipeline, args.dummy,
             usage_thresholds=usage_thresholds,
             usage_check_interval=usage_check_interval,
+            codebase_path=codebase_path, git_enabled=git_enabled,
+            git_config=git_config, requested_by=requested_by,
         )
 
         if not subtask_success:
@@ -1701,8 +1796,28 @@ def _continue_after_plan_review(result, args, ctx, plan_data, subtasks,
                                          current_task_id=task_id)
                     update_task_field(task_file, "status", "in_progress")
 
-                log_info(f"새 plan으로 subtask {len(new_subtasks)}개 재구성")
+                # replan: task 브랜치 폐기 후 base_branch에서 재생성 (이전 subtask 성공분 포함 폐기)
+                prior_subtask_count = len(completed_subtasks)
+                if git_enabled and task_branch and not args.dummy:
+                    try:
+                        git_wipe_and_recreate_task_branch(codebase_path, task_branch, base_branch)
+                    except RuntimeError as e:
+                        log_error(f"[git] replan 시 브랜치 재생성 실패: {e}")
+                        update_task_field(task_file, "status", "failed")
+                        update_project_state(project_dir, status="idle", last_error=task_id)
+                        sys.exit(1)
+
+                completed_subtasks = []
                 update_task_field(task_file, "completed_subtasks", completed_subtasks)
+                emit_notification(
+                    project_dir=project_dir, event_type="replan_started", task_id=task_id,
+                    message=f"replan 시작: 새 plan의 subtask {len(new_subtasks)}개 (이전 subtask {prior_subtask_count}개 폐기)",
+                    details={"prior_completed_count": prior_subtask_count,
+                             "new_subtask_count": len(new_subtasks)},
+                )
+
+                log_info(f"새 plan으로 subtask {len(new_subtasks)}개 재구성 "
+                         f"(이전 subtask {prior_subtask_count}개 폐기)")
 
                 run_pipeline_from_subtasks(
                     agent_hub_root, args.project, task_id, task_file,
@@ -1726,25 +1841,7 @@ def _continue_after_plan_review(result, args, ctx, plan_data, subtasks,
                 )
                 sys.exit(1)
 
-        # Git: subtask 커밋
-        if git_enabled:
-            update_pipeline_stage(task_file, "git_push", f"subtask {subtask_id}")
-            git_remote = git_config.get("remote", "origin")
-            subtask_title = subtask.get("title", subtask_id)
-            try:
-                git_commit_subtask(
-                    codebase_path, task_id, subtask_id, subtask_title,
-                    git_config.get("author_name", "Agent Hub"),
-                    git_config.get("author_email", "agent@hub"),
-                    remote=git_remote, branch=task_branch,
-                    token=auth_token, requested_by=requested_by,
-                )
-            except RuntimeError as e:
-                log_error(f"[git] subtask {subtask_id} 커밋/push 실패: {e}")
-                record_failure_reason(task_file, f"git push 실패: {e}")
-                update_task_field(task_file, "status", "failed")
-                update_project_state(project_dir, status="idle", last_error=task_id)
-                sys.exit(1)
+        # Note: subtask commit은 run_subtask_pipeline 내부에서 Reviewer approved 시 수행됨 (push 보류).
 
         completed_subtasks.append(subtask_id)
         update_task_field(task_file, "completed_subtasks", completed_subtasks)
@@ -1861,6 +1958,8 @@ def run_pipeline_from_subtasks(agent_hub_root, project_name, task_id, task_file,
             task_file, pipeline, dummy,
             usage_thresholds=usage_thresholds,
             usage_check_interval=usage_check_interval,
+            codebase_path=codebase_path, git_enabled=git_enabled,
+            git_config=git_config, requested_by=requested_by,
         )
 
         if not subtask_success:
@@ -1872,26 +1971,7 @@ def run_pipeline_from_subtasks(agent_hub_root, project_name, task_id, task_file,
             update_project_state(project_dir, status="idle", last_error=task_id)
             sys.exit(1)
 
-        # ─── Git: subtask 커밋 + push ───
-        if git_enabled:
-            update_pipeline_stage(task_file, "git_push", f"subtask {subtask_id}")
-            git_remote = git_config.get("remote", "origin")
-            subtask_title = subtask.get("title", subtask_id)
-            try:
-                git_commit_subtask(
-                    codebase_path, task_id, subtask_id, subtask_title,
-                    git_config.get("author_name", "Agent Hub"),
-                    git_config.get("author_email", "agent@hub"),
-                    remote=git_remote, branch=task_branch,
-                    token=auth_token, requested_by=requested_by,
-                )
-            except RuntimeError as e:
-                log_error(f"[git] subtask {subtask_id} 커밋/push 실패: {e}")
-                record_failure_reason(task_file, f"git push 실패: {e}")
-                update_task_field(task_file, "status", "failed")
-                project_dir = os.path.join(agent_hub_root, "projects", project_name)
-                update_project_state(project_dir, status="idle", last_error=task_id)
-                sys.exit(1)
+        # Note: subtask commit은 run_subtask_pipeline 내부에서 Reviewer approved 시 수행됨.
 
         completed_subtasks.append(subtask_id)
         update_task_field(task_file, "completed_subtasks", completed_subtasks)
@@ -1914,6 +1994,10 @@ def finalize_task(agent_hub_root, project_name, task_id, task_file,
     run_pipeline()과 run_pipeline_from_subtasks() 양쪽에서 호출된다.
     """
     # ─── Summarizer 실행 ───
+    # 모든 subtask가 끝난 시점이므로 current_subtask를 먼저 비운다.
+    # 남겨두면 safety_limits가 completed + current를 이중 집계해
+    # max_subtask_count를 초과한 것으로 오판할 수 있다.
+    update_task_field(task_file, "current_subtask", None)
     log_step("Summarizer 실행")
     update_pipeline_stage(task_file, "summarizer")
     success, summary_data = run_agent(
@@ -1958,6 +2042,25 @@ def finalize_task(agent_hub_root, project_name, task_id, task_file,
             finalize_auth_token = config.get("machines", {}).get("executor", {}).get("github_token", "")
         if git_provider == "github":
             ensure_gh_auth(finalize_auth_token, codebase_path=codebase_path)
+
+        # task 커밋들은 로컬에만 쌓여 있음 — PR 생성 전에 한 번만 push.
+        # branch를 명시적으로 지정해서 다른 로컬 브랜치가 딸려가지 않도록 한다.
+        log_step("Git: task 브랜치 push (PR 생성 전 1회)")
+        update_pipeline_stage(task_file, "git_push")
+        git_remote = git_config.get("remote", "origin")
+        try:
+            git_push(codebase_path, git_remote, task_branch, token=finalize_auth_token)
+        except RuntimeError as push_err:
+            log_error(f"[git] PR 생성 전 push 실패: {push_err}")
+            record_failure_reason(task_file, f"PR 생성 전 push 실패: {push_err}")
+            update_task_field(task_file, "status", "failed")
+            finalize_project_dir = os.path.join(agent_hub_root, "projects", project_name)
+            update_project_state(finalize_project_dir, status="idle", last_error=task_id)
+            emit_notification(
+                project_dir=finalize_project_dir, event_type="task_failed", task_id=task_id,
+                message=f"task 브랜치 push 실패: {push_err}",
+            )
+            sys.exit(1)
 
         log_step("Git: PR 생성")
         update_pipeline_stage(task_file, "pr_create")
@@ -2054,15 +2157,218 @@ def finalize_task(agent_hub_root, project_name, task_id, task_file,
     log_info(f"task {task_id} 완료. subtask {len(completed_subtasks)}개 처리됨.")
 
 
+def _subtask_file_path(project_name, task_id, subtask_id, agent_hub_root):
+    """tasks/{task_id}/subtask-{seq}.json 경로를 반환한다."""
+    seq = subtask_id.split("-")[-1].zfill(2)
+    return os.path.join(
+        agent_hub_root, "projects", project_name,
+        "tasks", task_id, f"subtask-{seq}.json",
+    )
+
+
+def _inject_subtask_runtime_fields(subtask_file, **fields):
+    """
+    subtask JSON에 runtime 필드를 병합 저장한다.
+    Coder/Reviewer 실행 직전에 retry_mode, attempt_history, subtask_start_sha,
+    latest_instructions 등을 주입하는 용도.
+    subtask 파일이 없으면 (dummy 테스트 등) 조용히 건너뛴다.
+    """
+    if not os.path.exists(subtask_file):
+        return
+    data = load_json(subtask_file)
+    for key, value in fields.items():
+        data[key] = value
+    save_json(subtask_file, data)
+
+
 def run_subtask_pipeline(agent_hub_root, project_name, task_id, subtask_id,
                           task_file, pipeline, dummy,
-                          usage_thresholds=None, usage_check_interval=60):
+                          usage_thresholds=None, usage_check_interval=60,
+                          codebase_path=None, git_enabled=False, git_config=None,
+                          requested_by=None):
     """
-    단일 subtask에 대해 pipeline을 실행한다.
-    성공 시 True, 실패 시 False 반환.
+    단일 subtask에 대해 pipeline을 실행한다. 성공 시 True, 실패 시 False.
+
+    flow (Coder/Reviewer 쌍 기준):
+      1. subtask 시작 시점의 HEAD SHA를 캡처 (in-memory)
+      2. loop (attempt):
+         a. Coder 실행 전 subtask JSON에 retry_mode/attempt_history/latest_instructions 주입
+         b. Coder 실행
+         c. Coder가 몰래 commit을 만들었으면 soft reset으로 되돌림
+         d. Reviewer 실행 전 subtask JSON에 start_sha/attempt_history 주입
+         e. Reviewer 실행 + output schema 검증 (실패 시 1회 재호출)
+         f. approved: WFC가 즉시 commit (push 안 함) → subtask 성공 종료
+         g. rejected: retry_mode에 따라 worktree 정리 (reset이면 hard reset, continue면 유지)
+            → attempt_history에 원문 append 후 다시 loop
+      3. Reporter/setup/tester 등 나머지 pipeline 단계는 이후 순차 실행
     """
-    for agent_type in pipeline:
-        # usage check: 다음 agent stage 호출 전
+    git_config = git_config or {}
+    project_dir = os.path.join(agent_hub_root, "projects", project_name)
+
+    # ─── subtask 시작 SHA 캡처 (git enabled일 때만 의미 있음) ───
+    subtask_start_sha = None
+    if git_enabled and codebase_path and not dummy:
+        try:
+            subtask_start_sha = git_head_sha(codebase_path)
+            log_info(f"[{subtask_id}] subtask_start_sha={subtask_start_sha[:8]}")
+        except RuntimeError as e:
+            log_warn(f"[{subtask_id}] start_sha 캡처 실패 (리셋 모드 비활성): {e}")
+
+    subtask_file = _subtask_file_path(project_name, task_id, subtask_id, agent_hub_root)
+
+    # pipeline을 Coder/Reviewer 쌍 구간과 그 이후 구간으로 분리
+    #   - Coder/Reviewer 쌍: retry loop 안에서 실행
+    #   - 나머지 (setup/tester/reporter 등): retry loop 성공 후 순차 실행
+    reviewer_idx = pipeline.index("reviewer") if "reviewer" in pipeline else -1
+    coder_reviewer_phase = pipeline[: reviewer_idx + 1] if reviewer_idx >= 0 else pipeline
+    post_review_phase = pipeline[reviewer_idx + 1:] if reviewer_idx >= 0 else []
+
+    attempt_history = []
+    latest_instructions = ""
+    retry_mode = None  # 첫 attempt는 None → Coder는 일반 진행
+
+    # ─── Coder ↔ Reviewer retry 루프 ───
+    if "coder" in coder_reviewer_phase:
+        while True:
+            task_data = load_json(task_file)
+            retry_count = task_data.get("counters", {}).get("current_subtask_retry", 0)
+            attempt_num = retry_count + 1
+
+            for agent_type in coder_reviewer_phase:
+                # usage check
+                if not dummy and usage_thresholds:
+                    agent_stage_threshold = usage_thresholds.get("new_agent_stage", 0.90)
+                    wait_until_below_threshold(
+                        agent_stage_threshold,
+                        check_interval_seconds=usage_check_interval,
+                        level_name=f"new_agent_stage/{agent_type}",
+                        log_fn=log_info,
+                    )
+
+                # ─── Coder 실행 ───
+                if agent_type == "coder":
+                    _inject_subtask_runtime_fields(
+                        subtask_file,
+                        attempt=attempt_num,
+                        retry_mode=retry_mode,
+                        latest_instructions=latest_instructions,
+                        attempt_history=attempt_history,
+                        subtask_start_sha=subtask_start_sha or "",
+                    )
+                    before_sha = git_head_sha(codebase_path) if (git_enabled and codebase_path and not dummy) else None
+                    log_info(f"[{subtask_id}] coder 실행 (attempt {attempt_num}, mode={retry_mode})")
+                    update_pipeline_stage(task_file, "coder", f"subtask {subtask_id}")
+                    success, result = run_agent(
+                        agent_hub_root, "coder", project_name, task_id,
+                        subtask_id=subtask_id, dummy=dummy,
+                    )
+                    if not success:
+                        log_error(f"[{subtask_id}] coder 실행 실패")
+                        record_failure_reason(task_file, f"coder 실행 실패 (subtask {subtask_id})")
+                        return False
+                    # 몰래 commit 방어
+                    if before_sha:
+                        git_soft_reset_if_moved(codebase_path, before_sha)
+                    coder_intent_report = result.get("intent_report") or {}
+                    continue
+
+                # ─── Reviewer 실행 (스키마 검증 + 1회 재호출) ───
+                if agent_type == "reviewer":
+                    _inject_subtask_runtime_fields(
+                        subtask_file,
+                        attempt=attempt_num,
+                        attempt_history=attempt_history,
+                        subtask_start_sha=subtask_start_sha or "",
+                    )
+                    log_info(f"[{subtask_id}] reviewer 실행 (attempt {attempt_num})")
+                    update_pipeline_stage(task_file, "reviewer", f"subtask {subtask_id}")
+                    success, result = run_agent(
+                        agent_hub_root, "reviewer", project_name, task_id,
+                        subtask_id=subtask_id, dummy=dummy,
+                    )
+                    if not success:
+                        log_error(f"[{subtask_id}] reviewer 실행 실패")
+                        record_failure_reason(task_file, f"reviewer 실행 실패 (subtask {subtask_id})")
+                        return False
+
+                    valid, reason = validate_reviewer_output(result)
+                    if not valid and not dummy:
+                        log_warn(f"[{subtask_id}] reviewer 출력 스키마 실패: {reason}. 1회 재호출.")
+                        success, result = run_agent(
+                            agent_hub_root, "reviewer", project_name, task_id,
+                            subtask_id=subtask_id, dummy=dummy,
+                        )
+                        if success:
+                            valid, reason = validate_reviewer_output(result)
+                        if not valid:
+                            log_error(f"[{subtask_id}] reviewer 재호출 후에도 스키마 실패: {reason}")
+                            record_failure_reason(task_file, f"reviewer 스키마 실패: {reason}")
+                            return False
+
+                    action = result.get("action", "")
+
+                    # ─── Approved: WFC가 즉시 commit (no push) ───
+                    if action == "approved":
+                        if git_enabled and codebase_path and not dummy:
+                            subtask_title = load_json(subtask_file).get("title", subtask_id)
+                            tag = _format_task_tag(task_id, requested_by)
+                            commit_msg = f"{tag} {subtask_id}: {subtask_title}"
+                            try:
+                                git_commit_worktree_no_push(
+                                    codebase_path, commit_msg,
+                                    git_config.get("author_name", "Agent Hub"),
+                                    git_config.get("author_email", "agent@hub"),
+                                )
+                            except RuntimeError as e:
+                                log_error(f"[git] 커밋 실패: {e}")
+                                record_failure_reason(task_file, f"commit 실패: {e}")
+                                return False
+                        log_info(f"[{subtask_id}] reviewer 승인 (attempt {attempt_num})")
+                        break  # coder_reviewer_phase loop 탈출
+
+                    # ─── Rejected: history 누적 후 worktree 처리 ───
+                    log_warn(f"[{subtask_id}] reviewer 거절 (mode={result.get('retry_mode')})")
+                    attempt_history.append({
+                        "attempt": attempt_num,
+                        "coder_intent_report": coder_intent_report,
+                        "reviewer_feedback": {
+                            "retry_mode": result.get("retry_mode"),
+                            "current_state_summary": result.get("current_state_summary", ""),
+                            "what_is_wrong": result.get("what_is_wrong", ""),
+                            "what_should_be": result.get("what_should_be", ""),
+                            "actionable_instructions": result.get("actionable_instructions", []),
+                            "feedback": result.get("feedback", ""),
+                        },
+                    })
+                    retry_mode = result.get("retry_mode")
+                    latest_instructions = "\n".join(
+                        f"- {x}" for x in result.get("actionable_instructions", [])
+                    )
+
+                    # reset 모드면 worktree를 시작 지점으로 되돌림
+                    if retry_mode == "reset" and subtask_start_sha and not dummy:
+                        try:
+                            git_reset_hard_to(codebase_path, subtask_start_sha)
+                        except RuntimeError as e:
+                            log_error(f"[git] reset 실패: {e}")
+                            record_failure_reason(task_file, f"reset 실패: {e}")
+                            return False
+
+                    # retry 카운터 증가 후 while 재진입
+                    update_task_counter(task_file, "current_subtask_retry", increment=True)
+                    break  # for agent_type 루프 탈출 → 다시 while
+
+            else:
+                # for가 break 없이 정상 종료 = approved로 break 되지 않은 경우
+                # (coder만 있고 reviewer가 없는 구성인데, 위에서 이미 걸러짐)
+                break
+            # for 루프가 break로 종료된 경우 action 확인
+            if action == "approved":
+                break
+            # rejected: while 재진입하여 다시 coder
+
+    # ─── 나머지 pipeline 단계 (setup/tester/reporter 등) ───
+    for agent_type in post_review_phase:
         if not dummy and usage_thresholds:
             agent_stage_threshold = usage_thresholds.get("new_agent_stage", 0.90)
             wait_until_below_threshold(
@@ -2074,59 +2380,32 @@ def run_subtask_pipeline(agent_hub_root, project_name, task_id, subtask_id,
 
         log_info(f"[{subtask_id}] {agent_type} 실행")
         update_pipeline_stage(task_file, agent_type, f"subtask {subtask_id}")
-
         success, result = run_agent(
             agent_hub_root, agent_type, project_name, task_id,
-            subtask_id=subtask_id,
-            dummy=dummy,
+            subtask_id=subtask_id, dummy=dummy,
         )
-
         if not success:
             log_error(f"[{subtask_id}] {agent_type} 실행 실패")
             record_failure_reason(task_file, f"{agent_type} 실행 실패 (subtask {subtask_id})")
             return False
 
-        # 결과에 따른 분기
-        action = result.get("action", "")
-
-        # ─── Reviewer 거절 → Coder 루프백 ───
-        if agent_type == "reviewer" and action == "rejected":
-            log_warn(f"[{subtask_id}] reviewer 거절 — Coder 루프백")
-
-            # retry 카운터 증가
-            task = update_task_counter(task_file, "current_subtask_retry", increment=True)
-            retry_count = task["counters"]["current_subtask_retry"]
-
-            # safety limits는 run_claude_agent.sh에서 체크하므로 여기서는 로그만
-            log_info(f"[{subtask_id}] retry {retry_count}회")
-
-            # Coder부터 재실행 (재귀)
-            return run_subtask_pipeline(
-                agent_hub_root, project_name, task_id, subtask_id,
-                task_file, pipeline, dummy,
-                usage_thresholds=usage_thresholds,
-                usage_check_interval=usage_check_interval,
-            )
-
-        # ─── Reporter: needs_replan ───
+        # Reporter: replan 요청
         if agent_type == "reporter" and result.get("needs_replan", False):
             log_warn(f"[{subtask_id}] reporter가 re-plan 요청")
             update_task_field(task_file, "_needs_replan", True)
             return False
 
-        # ─── Reporter: 실패 (retry 가능) ───
+        # Reporter: 실패 판정 → 전체 subtask 재시도
         if agent_type == "reporter" and result.get("verdict") == "fail":
-            log_warn(f"[{subtask_id}] reporter 실패 판정 — Coder 루프백")
-
-            task = update_task_counter(task_file, "current_subtask_retry", increment=True)
-            retry_count = task["counters"]["current_subtask_retry"]
-            log_info(f"[{subtask_id}] retry {retry_count}회")
-
+            log_warn(f"[{subtask_id}] reporter 실패 판정 — subtask 재시도")
+            update_task_counter(task_file, "current_subtask_retry", increment=True)
             return run_subtask_pipeline(
                 agent_hub_root, project_name, task_id, subtask_id,
                 task_file, pipeline, dummy,
                 usage_thresholds=usage_thresholds,
                 usage_check_interval=usage_check_interval,
+                codebase_path=codebase_path, git_enabled=git_enabled,
+                git_config=git_config, requested_by=requested_by,
             )
 
     log_info(f"[{subtask_id}] pipeline 완료")

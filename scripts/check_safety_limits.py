@@ -97,9 +97,13 @@ def check_limits(limits, task, agent_type):
         )
 
     # max_subtask_count 체크
+    # current_subtask가 이미 completed_subtasks에 포함된 경우(마지막 subtask가
+    # 방금 완료되고 아직 current가 비워지기 전 등)에는 이중 집계하지 않는다.
     max_subtasks = limits.get("max_subtask_count", 5)
-    completed = len(task.get("completed_subtasks", []))
-    current = 1 if task.get("current_subtask") else 0
+    completed_list = task.get("completed_subtasks", []) or []
+    completed = len(completed_list)
+    current_id = task.get("current_subtask")
+    current = 1 if current_id and current_id not in completed_list else 0
     total_subtasks = completed + current
     if total_subtasks > max_subtasks:
         errors.append(

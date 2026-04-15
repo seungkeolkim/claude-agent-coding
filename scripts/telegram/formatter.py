@@ -32,6 +32,7 @@ _EVENT_STYLES = {
     "plan_review_responded":   {"icon": "📬", "label": "Plan 응답"},
     "pr_review_responded":     {"icon": "📬", "label": "PR 응답"},
     "escalation":              {"icon": "🚨", "label": "에스컬레이션"},
+    "replan_started":          {"icon": "🔄", "label": "재계획 시작"},
 }
 
 

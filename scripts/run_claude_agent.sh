@@ -406,6 +406,7 @@ EOJSON
   "task_id": "${TASK_ID}",
   "subtask_id": "${SUBTASK_ID:-none}",
   "forced": true,
+  "current_state_summary": "[forced] 강제 승인 — 상태 확인 생략",
   "summary": "[forced] 강제 승인"
 }
 EOJSON
@@ -418,8 +419,12 @@ EOJSON
   "task_id": "${TASK_ID}",
   "subtask_id": "${SUBTASK_ID:-none}",
   "forced": true,
-  "feedback": "[forced] 강제 거절 — 루프백 테스트",
-  "issues": ["강제 거절 트리거"]
+  "retry_mode": "continue",
+  "current_state_summary": "[forced] 강제 거절 시나리오 — 실제 상태 확인 생략",
+  "what_is_wrong": "[forced] 강제 거절 트리거",
+  "what_should_be": "[forced] 후속 attempt에서 수정",
+  "actionable_instructions": ["[forced] 강제 거절로 인한 재시도 — 실제 지시 없음"],
+  "feedback": "[forced] 강제 거절 — 루프백 테스트"
 }
 EOJSON
 )
