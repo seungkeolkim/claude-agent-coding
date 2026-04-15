@@ -119,7 +119,7 @@ class TestMemoryRefreshTaskType:
 
         api = HubAPI(agent_hub_root)
         codebase = str(tmp_path / "codebase-mr")
-        project_name = f"test_mr_{os.getpid()}"
+        project_name = f"test-mr-{os.getpid()}"
 
         api.create_project(
             name=project_name,
@@ -148,7 +148,7 @@ class TestMemoryRefreshTaskType:
 
         api = HubAPI(agent_hub_root)
         codebase = str(tmp_path / "codebase-default")
-        project_name = f"test_default_{os.getpid()}"
+        project_name = f"test-default-{os.getpid()}"
 
         api.create_project(
             name=project_name, description="기본 테스트", codebase_path=codebase,
@@ -172,7 +172,7 @@ class TestMemoryRefreshTaskType:
 
         api = HubAPI(agent_hub_root)
         codebase = str(tmp_path / "codebase-bad")
-        project_name = f"test_bad_{os.getpid()}"
+        project_name = f"test-bad-{os.getpid()}"
 
         api.create_project(
             name=project_name, description="", codebase_path=codebase,
