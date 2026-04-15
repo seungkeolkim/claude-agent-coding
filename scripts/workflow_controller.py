@@ -127,7 +127,8 @@ STEP_NUMBER = {
     "unit_tester": "05",
     "e2e_tester": "06",
     "reporter": "07",
-    "summarizer": "08",
+    "memory_updater": "08",
+    "summarizer": "09",
 }
 
 STEP_NAME = {
@@ -138,6 +139,7 @@ STEP_NAME = {
     "unit_tester": "unit-tester",
     "e2e_tester": "e2e-tester",
     "reporter": "reporter",
+    "memory_updater": "memory-updater",
     "summarizer": "summarizer",
 }
 
@@ -1204,7 +1206,13 @@ def run_pipeline(args):
     save_plan_file(project_dir, task_id, plan_data)
     subtasks = create_subtask_files(project_dir, task_id, plan_data)
 
-    if not subtasks:
+    # task_type이 "memory_refresh"이면 subtask=[]가 정상 동작이다.
+    # Planner는 codebase 탐색 후 "변경 없음"으로 계획을 종료하고,
+    # 실제 작업은 finalize_task의 MemoryUpdater가 full-scan 모드로 담당한다.
+    task_data = load_json(task_file)
+    task_type = task_data.get("task_type", "feature")
+
+    if not subtasks and task_type != "memory_refresh":
         log_error("Planner가 subtask를 생성하지 않았습니다.")
         record_failure_reason(task_file, "Planner가 subtask를 생성하지 않음")
         update_task_field(task_file, "status", "failed")
@@ -1215,7 +1223,10 @@ def run_pipeline(args):
         )
         sys.exit(1)
 
-    log_info(f"subtask {len(subtasks)}개 생성됨")
+    if not subtasks and task_type == "memory_refresh":
+        log_info("memory_refresh task: subtasks=[] — subtask loop를 건너뛰고 finalize로 진입")
+    else:
+        log_info(f"subtask {len(subtasks)}개 생성됨")
 
     # ─── Human Review: Plan 승인 대기 ───
     human_review = effective.get("human_review_policy", {})
@@ -1253,12 +1264,15 @@ def run_pipeline(args):
                 sys.exit(1)
             save_plan_file(project_dir, task_id, plan_data)
             subtasks = create_subtask_files(project_dir, task_id, plan_data)
-            if not subtasks:
+            if not subtasks and task_type != "memory_refresh":
                 log_error("Re-plan 후 subtask가 없습니다.")
                 update_task_field(task_file, "status", "failed")
                 update_project_state(project_dir, status="idle", last_error=task_id)
                 sys.exit(1)
-            log_info(f"re-plan 완료: subtask {len(subtasks)}개 재생성")
+            if subtasks:
+                log_info(f"re-plan 완료: subtask {len(subtasks)}개 재생성")
+            else:
+                log_info("re-plan 완료: memory_refresh task — subtask 없음 (finalize로 진입)")
 
         # 승인 후 running 상태로 복귀
         update_project_state(project_dir, status="running", current_task_id=task_id)
@@ -1665,12 +1679,18 @@ def _continue_after_plan_review(result, args, ctx, plan_data, subtasks,
             sys.exit(1)
         save_plan_file(project_dir, task_id, plan_data)
         subtasks = create_subtask_files(project_dir, task_id, plan_data)
-        if not subtasks:
+        # resume 경로에서도 memory_refresh task는 빈 subtask를 허용한다.
+        resume_task_data = load_json(task_file)
+        resume_task_type = resume_task_data.get("task_type", "feature")
+        if not subtasks and resume_task_type != "memory_refresh":
             log_error("Re-plan 후 subtask가 없습니다.")
             update_task_field(task_file, "status", "failed")
             update_project_state(project_dir, status="idle", last_error=task_id)
             sys.exit(1)
-        log_info(f"re-plan 완료: subtask {len(subtasks)}개 재생성")
+        if subtasks:
+            log_info(f"re-plan 완료: subtask {len(subtasks)}개 재생성")
+        else:
+            log_info("re-plan 완료: memory_refresh task — subtask 없음 (finalize로 진입)")
 
     # 승인 후 running 상태�� 복귀
     update_project_state(project_dir, status="running", current_task_id=task_id)
@@ -1990,14 +2010,51 @@ def finalize_task(agent_hub_root, project_name, task_id, task_file,
                   codebase_path, task_branch, default_branch, dummy,
                   requested_by=None):
     """
-    Subtask loop 완료 후 Summarizer 실행 + PR 생성/머지 + task 상태 업데이트.
+    Subtask loop 완료 후 MemoryUpdater → Summarizer 실행 + PR 생성/머지 + task 상태 업데이트.
     run_pipeline()과 run_pipeline_from_subtasks() 양쪽에서 호출된다.
     """
-    # ─── Summarizer 실행 ───
+    # ─── Memory Updater + Summarizer 공통 전처리 ───
     # 모든 subtask가 끝난 시점이므로 current_subtask를 먼저 비운다.
     # 남겨두면 safety_limits가 completed + current를 이중 집계해
     # max_subtask_count를 초과한 것으로 오판할 수 있다.
     update_task_field(task_file, "current_subtask", None)
+
+    # ─── Memory Updater 실행 (Summarizer 직전) ───
+    # 역할: codebase 루트의 PROJECT_NOTES.md(장기 메모리)를 이번 task 변경에 맞춰 증분 갱신.
+    # 정책:
+    #   - agent가 직접 PROJECT_NOTES.md만 수정한다 (다른 파일 수정 금지).
+    #   - 변경이 생기면 WFC가 "[{task_id}] memory: PROJECT_NOTES.md 갱신" 커밋으로 묶어 PR에 포함.
+    #   - 실패해도 PR 생성은 차단하지 않는다 (경고만). Summarizer 이후 push는 계속 진행.
+    log_step("Memory Updater 실행")
+    update_pipeline_stage(task_file, "memory_updater")
+    memory_success, memory_data = run_agent(
+        agent_hub_root, "memory_updater", project_name, task_id,
+        dummy=dummy,
+    )
+    if not memory_success:
+        log_warn("Memory Updater 실패 — PROJECT_NOTES.md 갱신 없이 계속 진행합니다.")
+    elif memory_data and memory_data.get("updated"):
+        log_info(
+            "[memory] PROJECT_NOTES.md 갱신됨: "
+            f"sections={memory_data.get('sections_changed') or []}"
+        )
+        # agent가 만든 PROJECT_NOTES.md 변경을 커밋 (push는 PR 생성 시 1회).
+        # 변경이 실제로 있을 때만 커밋되고, 없으면 조용히 스킵된다.
+        if git_enabled and codebase_path:
+            memory_author_name = git_config.get("author_name", "agent-bot")
+            memory_author_email = git_config.get("author_email", "agent@example.com")
+            try:
+                git_commit_worktree_no_push(
+                    codebase_path,
+                    f"[{task_id}] memory: PROJECT_NOTES.md 갱신",
+                    memory_author_name, memory_author_email,
+                )
+            except RuntimeError as memory_commit_err:
+                log_warn(f"[memory] 커밋 실패 — 변경은 worktree에 남습니다: {memory_commit_err}")
+    else:
+        log_info("[memory] 이번 task에서는 장기 메모리에 반영할 변경 없음")
+
+    # ─── Summarizer 실행 ───
     log_step("Summarizer 실행")
     update_pipeline_stage(task_file, "summarizer")
     success, summary_data = run_agent(

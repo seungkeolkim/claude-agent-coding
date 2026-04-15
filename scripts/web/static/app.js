@@ -488,6 +488,11 @@ document.getElementById('btn-new-task').addEventListener('click', () => {
     showModal('New Task', `
         <label>Project:</label>
         <select id="new-task-project">${projOptions}</select>
+        <label>Type:</label>
+        <select id="new-task-type" onchange="onTaskTypeChange()">
+            <option value="feature" selected>feature (일반 개발)</option>
+            <option value="memory_refresh">memory_refresh (PROJECT_NOTES.md 재생성)</option>
+        </select>
         <label>Title:</label>
         <input id="new-task-title" type="text" />
         <label>Description:</label>
@@ -504,13 +509,25 @@ document.getElementById('btn-new-task').addEventListener('click', () => {
     ]);
 });
 
+function onTaskTypeChange() {
+    // memory_refresh 선택 시 title에 기본값을 채워 넣어 편의 제공
+    const typeEl = document.getElementById('new-task-type');
+    const titleEl = document.getElementById('new-task-title');
+    if (typeEl && titleEl && typeEl.value === 'memory_refresh' && !titleEl.value.trim()) {
+        titleEl.value = '메모리 재생성 (PROJECT_NOTES.md)';
+    }
+}
+
 async function doSubmitTask() {
     const project = document.getElementById('new-task-project').value;
     const title = document.getElementById('new-task-title').value;
     const description = document.getElementById('new-task-desc').value;
     const priority = document.getElementById('new-task-priority').value;
+    const task_type = document.getElementById('new-task-type').value;
     if (!project || !title.trim()) { alert('프로젝트와 제목을 입력해주세요.'); return; }
-    await dispatch('submit', project, { title, description, priority });
+    const params = { title, description, priority };
+    if (task_type && task_type !== 'feature') params.task_type = task_type;
+    await dispatch('submit', project, params);
     closeModal();
     loadTasks();
 }

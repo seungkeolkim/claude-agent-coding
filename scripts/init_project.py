@@ -172,6 +172,87 @@ def create_project_directory_structure(project_root: Path) -> None:
         (project_root / directory_name).mkdir(exist_ok=True)
 
 
+# codebase 루트에 생성되는 장기 메모리 문서 파일명.
+# MemoryUpdater agent가 task 완료 시점마다 증분 갱신한다.
+PROJECT_NOTES_FILENAME = "PROJECT_NOTES.md"
+
+# codebase 루트에 생성되는 Claude Code용 포인터 파일.
+# 본문은 두지 않고 PROJECT_NOTES.md를 읽도록 안내만 한다.
+CLAUDE_POINTER_FILENAME = "CLAUDE.md"
+
+
+def _project_notes_template(project_name: str, description: str) -> str:
+    """PROJECT_NOTES.md 초기 템플릿을 반환한다.
+
+    MemoryUpdater가 task마다 섹션을 채워 나간다. 초기에는 자리표시자만 둔다.
+    """
+    return (
+        f"# {project_name} — Project Notes\n\n"
+        f"> 이 문서는 프로젝트의 **장기 메모리**입니다.\n"
+        f"> 설계 결정, 컨벤션, 주요 변경 이력이 누적됩니다.\n"
+        f"> 각 task 완료 시 MemoryUpdater agent가 증분 갱신합니다.\n\n"
+        f"## 프로젝트 개요\n\n"
+        f"{description.strip()}\n\n"
+        f"## 아키텍처\n\n"
+        f"_아직 기록된 내용이 없습니다._\n\n"
+        f"## 컨벤션\n\n"
+        f"_아직 기록된 내용이 없습니다._\n\n"
+        f"## 주요 결정\n\n"
+        f"_아직 기록된 내용이 없습니다._\n\n"
+        f"## 최근 변경 이력\n\n"
+        f"_task 완료 시마다 최신 항목이 위에 추가됩니다 (최대 10개 유지)._\n"
+    )
+
+
+def _claude_pointer_template() -> str:
+    """CLAUDE.md 포인터 템플릿을 반환한다.
+
+    Claude Code가 codebase에 cd하면 자동 인식되는 파일이지만,
+    본 시스템은 LLM 런타임에 종속되지 않는 PROJECT_NOTES.md를 단일 출처로 삼는다.
+    """
+    return (
+        "# Claude Code 안내\n\n"
+        "이 프로젝트의 설계·컨벤션·누적 메모는 "
+        "[`PROJECT_NOTES.md`](./PROJECT_NOTES.md)를 먼저 읽으세요.\n\n"
+        "PROJECT_NOTES.md는 Agent Hub의 MemoryUpdater가 task 완료 시점마다 "
+        "증분 갱신하는 장기 메모리 문서입니다.\n"
+    )
+
+
+def generate_codebase_memory_files(
+    codebase_path: str,
+    project_name: str,
+    description: str,
+) -> dict:
+    """codebase 루트에 PROJECT_NOTES.md와 CLAUDE.md 포인터를 생성한다.
+
+    이미 존재하는 파일은 덮어쓰지 않는다 (사용자 기존 문서 보호).
+
+    Returns:
+        {"project_notes": bool, "claude_pointer": bool} — 각 파일이 이번에 생성됐는지 여부.
+    """
+    codebase_root = Path(codebase_path)
+    created = {"project_notes": False, "claude_pointer": False}
+
+    project_notes_path = codebase_root / PROJECT_NOTES_FILENAME
+    if not project_notes_path.exists():
+        project_notes_path.write_text(
+            _project_notes_template(project_name, description),
+            encoding="utf-8",
+        )
+        created["project_notes"] = True
+
+    claude_pointer_path = codebase_root / CLAUDE_POINTER_FILENAME
+    if not claude_pointer_path.exists():
+        claude_pointer_path.write_text(
+            _claude_pointer_template(),
+            encoding="utf-8",
+        )
+        created["claude_pointer"] = True
+
+    return created
+
+
 def generate_project_yaml(
     project_root: Path,
     project_name: str,

@@ -122,7 +122,7 @@ stateDiagram-v2
 `in_progress` 상태일 때 `pipeline_stage` 필드로 세부 진행 단계를 추적:
 
 ```
-git_reset → planner → plan_review → git_branch → coder → reviewer → git_push → summarizer → pr_create → finalizing → done
+git_reset → planner → plan_review → git_branch → coder → reviewer → memory_updater → summarizer → git_push → pr_create → finalizing → done
 ```
 
 | pipeline_stage | 설명 |
@@ -133,8 +133,9 @@ git_reset → planner → plan_review → git_branch → coder → reviewer → 
 | git_branch | git branch 생성 중 |
 | coder | Coder agent 실행 중 (pipeline_stage_detail: subtask ID) |
 | reviewer | Reviewer agent 실행 중 |
-| git_push | subtask 커밋 + push 중 |
-| summarizer | Summarizer agent 실행 중 |
+| memory_updater | MemoryUpdater agent 실행 중. codebase 루트 `PROJECT_NOTES.md`를 증분 갱신하고, 변경 있을 시 WFC가 `[{task_id}] memory: ...` 커밋으로 묶는다. 실패해도 PR 생성은 계속 진행 |
+| summarizer | Summarizer agent 실행 중 (이 시점의 diff에는 memory_updater의 PROJECT_NOTES.md 변경이 포함됨) |
+| git_push | PR 생성 직전 task 브랜치를 origin으로 단 1회 push |
 | pr_create | PR 생성 중 |
 | finalizing | 최종 정리 중 |
 | done | 파이프라인 완료 |

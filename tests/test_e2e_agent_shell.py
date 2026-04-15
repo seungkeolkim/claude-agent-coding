@@ -105,6 +105,16 @@ class TestRunAgentShDummy:
         assert result.returncode == 0, f"stderr: {result.stderr}"
         assert "verdict" in result.stdout or "report" in result.stdout.lower()
 
+    def test_memory_updater_dummy(self):
+        """memory_updater dummy가 updated=false 결과 JSON을 반환한다.
+
+        dummy는 실제로 PROJECT_NOTES.md를 수정하지 않고 스키마에 맞는 JSON만 출력한다.
+        """
+        result = self._run_agent("memory_updater")
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        assert "memory_update_complete" in result.stdout
+        assert "updated" in result.stdout
+
 
 class TestRunAgentShForceResult:
     """run_agent.sh --force-result 모드."""

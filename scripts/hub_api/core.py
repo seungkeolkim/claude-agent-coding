@@ -280,6 +280,13 @@ class HubAPI:
         # 8. project_state.json 초기화
         state_path = init_project.initialize_project_state(project_root, name)
 
+        # 8-1. codebase 루트에 장기 메모리 문서(PROJECT_NOTES.md)와
+        #      Claude Code 포인터(CLAUDE.md) 템플릿을 생성한다.
+        #      이미 해당 파일들이 있으면 건드리지 않는다 (사용자 기존 문서 보호).
+        init_project.generate_codebase_memory_files(
+            expanded_codebase_path, name, description,
+        )
+
         # 9. priority queue 파일 3개 초기화 (빈 배열)
         from hub_api import queue_helpers
         queue_helpers.ensure_queue_files(project_root)
@@ -304,7 +311,8 @@ class HubAPI:
                config_override: Optional[dict] = None,
                source: str = "cli",
                priority: str = "default",
-               requested_by: Optional[str] = None) -> SubmitResult:
+               requested_by: Optional[str] = None,
+               task_type: str = "feature") -> SubmitResult:
         """
         새 task를 생성하고 priority queue에 등록한다.
 
@@ -316,11 +324,19 @@ class HubAPI:
         Args:
             priority: "critical" | "urgent" | "default" (기본: default).
                 실행 순서: critical > urgent > default (같은 priority 내 id순).
+            task_type: task 종류. 기본 "feature" (일반 개발).
+                "memory_refresh"는 PROJECT_NOTES.md 장기 메모리 재생성용 특수 task로,
+                Planner가 subtasks=[]를 반환하고 MemoryUpdater가 codebase 전체를 스캔한다.
         """
         from hub_api import queue_helpers
         if priority not in queue_helpers.PRIORITIES:
             raise ValueError(
                 f"잘못된 priority: {priority!r}. 허용: {queue_helpers.PRIORITIES}"
+            )
+        valid_task_types = ("feature", "memory_refresh")
+        if task_type not in valid_task_types:
+            raise ValueError(
+                f"잘못된 task_type: {task_type!r}. 허용: {valid_task_types}"
             )
         self._require_active_project(project)
 
@@ -367,6 +383,10 @@ class HubAPI:
             "submitted_via": source,
             "requested_by": requested_by,
             "submitted_at": now,
+            # task 종류. 기본 "feature"는 일반 개발. "memory_refresh"는 Planner가
+            # subtasks=[]를 반환하고 MemoryUpdater가 codebase 전체 스캔으로
+            # PROJECT_NOTES.md를 재생성하는 특수 경로.
+            "task_type": task_type,
             "status": "submitted",
             "branch": None,
             "attachments": attachment_list,

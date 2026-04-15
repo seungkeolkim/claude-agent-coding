@@ -118,13 +118,44 @@ def cmd_submit(args):
             config_override=config_override,
             priority=args.priority,
             requested_by=os.environ.get("USER") or "cli",
+            task_type=getattr(args, "type", None) or "feature",
         )
         print(f"{GREEN}[OK]{NC} task 제출 완료")
         print(f"  task_id:  {BOLD}{result.task_id}{NC}")
         print(f"  project:  {result.project}")
         print(f"  priority: {args.priority}")
         print(f"  file:     {os.path.basename(result.file_path)}")
-    except FileNotFoundError as e:
+    except (FileNotFoundError, ValueError) as e:
+        print(f"{RED}[ERROR]{NC} {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_refresh_memory(args):
+    """장기 메모리(PROJECT_NOTES.md) 재생성 task를 큐에 등록한다.
+
+    일반 개발과 동일한 파이프라인을 재사용한다:
+      - Planner는 subtasks=[]를 반환 (task_type=memory_refresh 인지)
+      - subtask loop는 빈 배열이므로 즉시 통과
+      - MemoryUpdater가 full-scan 모드로 codebase 전체를 스캔해 PROJECT_NOTES.md 재생성
+      - Summarizer → PR 생성 (사용자 리뷰)
+    """
+    api = get_hub_api()
+    try:
+        result = api.submit(
+            project=args.project,
+            title="Long-term memory refresh (PROJECT_NOTES.md 재생성)",
+            description=(
+                "codebase 전체를 스캔하여 PROJECT_NOTES.md를 재생성합니다. "
+                "사용자가 agent 없이 직접 개발한 변경을 장기 메모리에 반영하기 위한 특수 task."
+            ),
+            priority=args.priority,
+            requested_by=os.environ.get("USER") or "cli",
+            task_type="memory_refresh",
+        )
+        print(f"{GREEN}[OK]{NC} memory refresh task 제출 완료")
+        print(f"  task_id:  {BOLD}{result.task_id}{NC}")
+        print(f"  project:  {result.project}")
+    except (FileNotFoundError, ValueError) as e:
         print(f"{RED}[ERROR]{NC} {e}", file=sys.stderr)
         sys.exit(1)
 
@@ -417,7 +448,31 @@ def build_parser() -> argparse.ArgumentParser:
         default="default",
         help="task 우선순위 (기본: default). critical > urgent > default 순서로 실행",
     )
+    sp.add_argument(
+        "--type",
+        choices=["feature", "memory_refresh"],
+        default="feature",
+        help=(
+            "task 종류 (기본: feature). "
+            "memory_refresh는 PROJECT_NOTES.md 재생성 전용 (Planner는 subtasks=[]를 반환하고 "
+            "MemoryUpdater가 codebase 전체를 스캔)."
+        ),
+    )
     sp.set_defaults(func=cmd_submit)
+
+    # ─── refresh-memory (submit --type memory_refresh 축약) ───
+    sp = subparsers.add_parser(
+        "refresh-memory",
+        help="장기 메모리(PROJECT_NOTES.md) 재생성 task 등록",
+    )
+    sp.add_argument("--project", required=True, help="프로젝트명")
+    sp.add_argument(
+        "--priority",
+        choices=["critical", "urgent", "default"],
+        default="default",
+        help="task 우선순위 (기본: default)",
+    )
+    sp.set_defaults(func=cmd_refresh_memory)
 
     # ─── list ───
     sp = subparsers.add_parser("list", help="task 목록 조회")
