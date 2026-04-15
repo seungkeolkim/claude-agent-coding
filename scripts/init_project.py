@@ -153,6 +153,17 @@ def ask_git_settings() -> dict:
     }
 
 
+def ask_telegram_enabled() -> bool:
+    """Telegram bridge 연동 여부를 입력받는다.
+
+    True면 프로젝트 생성 시 forum topic이 자동 생성되고 이후 알림이 라우팅된다.
+    테스트용/임시 프로젝트는 False 권장. (config.yaml의 telegram.enabled가 false면
+    이 값과 무관하게 bridge 자체가 동작하지 않는다.)
+    """
+    answer = input("\nTelegram bridge에 이 프로젝트를 등록할까요? (y/n, 기본: y): ").strip().lower()
+    return answer not in ("n", "no")
+
+
 def create_project_directory_structure(project_root: Path) -> None:
     """프로젝트 루트 및 하위 runtime 디렉토리를 생성한다."""
     project_root.mkdir(parents=True, exist_ok=True)
@@ -167,6 +178,7 @@ def generate_project_yaml(
     description: str,
     codebase_path: str,
     git_settings: dict,
+    telegram_enabled: bool = True,
 ) -> Path:
     """project.yaml 파일을 생성한다.
 
@@ -185,6 +197,11 @@ def generate_project_yaml(
             "service_port": git_settings.pop("_service_port", 3000),
         },
         "git": git_settings,
+        # Telegram 연동 (Phase 2.3). enabled=true면 프로젝트 생성/종료 시 bridge가
+        # forum topic을 자동으로 생성/닫는다. 테스트용/임시 프로젝트는 false 권장.
+        "telegram": {
+            "enabled": bool(telegram_enabled),
+        },
         "testing": {
             "unit_test": {
                 "enabled": False,
@@ -234,6 +251,9 @@ def initialize_project_state(project_root: Path, project_name: str) -> Path:
         "last_activity_at": datetime.now(timezone.utc).isoformat(),
         "overrides": {},
         "update_history": [],
+        # Telegram 연동 (Phase 2.3). bridge가 topic 생성 후 {"chat_id": ..., "thread_id": ...}로 채움.
+        # telegram.enabled=false이거나 bridge 미기동 시 None 유지.
+        "telegram": None,
     }
 
     state_path = project_root / "project_state.json"
@@ -263,6 +283,9 @@ def main() -> None:
     # 4. git 설정
     git_settings = ask_git_settings()
 
+    # 4-1. Telegram 연동 여부
+    telegram_enabled = ask_telegram_enabled()
+
     # 5. HubAPI를 통해 프로젝트 생성
     # hub_api를 사용하는 대화형 경로에서는 사용자가 직접 값을 입력했으므로
     # 플레이스홀더가 아닌 실제 값이 들어간다.
@@ -275,6 +298,7 @@ def main() -> None:
         description=description,
         codebase_path=codebase_path,
         git_settings=git_settings,
+        telegram_enabled=telegram_enabled,
     )
 
     # 6. 신규 코드베이스에 git init (대화형 전용 — 프로그래밍 API에서는 수행하지 않음)

@@ -231,7 +231,8 @@ class ChatProcessor:
 
     def __init__(self, agent_hub_root: str, session_id: str,
                  on_message: Callable[[dict], None],
-                 frontend: str = "web"):
+                 frontend: str = "web",
+                 requested_by: Optional[str] = None):
         """
         ChatProcessor를 초기화한다.
 
@@ -246,6 +247,7 @@ class ChatProcessor:
         self._frontend = frontend
         self._on_message = on_message
         self._hub_api = HubAPI(agent_hub_root)
+        self._requested_by = requested_by  # 기본값. submit_message에서 call별로 덮어쓸 수 있다.
 
         # claude -p 서브프로세스 관리
         self._process: Optional[subprocess.Popen] = None
@@ -549,6 +551,7 @@ class ChatProcessor:
                 project=project,
                 params=params,
                 source="web_chat",
+                requested_by=self._requested_by,
             )
             response = dispatch(self._hub_api, request)
             result_text = _format_response_plain(response, action)
@@ -630,7 +633,8 @@ _sessions_lock = threading.Lock()
 def get_or_create_session(agent_hub_root: str,
                           session_id: Optional[str],
                           on_message: Callable[[dict], None],
-                          frontend: str = "web") -> ChatProcessor:
+                          frontend: str = "web",
+                          requested_by: Optional[str] = None) -> ChatProcessor:
     """
     세션을 가져오거나 새로 생성한다.
 
@@ -645,7 +649,12 @@ def get_or_create_session(agent_hub_root: str,
     """
     with _sessions_lock:
         if session_id and session_id in _active_sessions:
-            return _active_sessions[session_id]
+            existing = _active_sessions[session_id]
+            # 기존 세션이어도 caller가 최신 user identity를 줬다면 갱신한다
+            # (Telegram에서 같은 topic에 다른 사용자가 메시지를 보낼 수 있음).
+            if requested_by is not None:
+                existing._requested_by = requested_by
+            return existing
 
         if not session_id:
             session_id = generate_session_id()
@@ -655,6 +664,7 @@ def get_or_create_session(agent_hub_root: str,
             session_id=session_id,
             on_message=on_message,
             frontend=frontend,
+            requested_by=requested_by,
         )
         _active_sessions[session_id] = processor
         return processor

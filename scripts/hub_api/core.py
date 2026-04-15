@@ -195,6 +195,7 @@ class HubAPI:
         description: str,
         codebase_path: str,
         git_settings: Optional[dict] = None,
+        telegram_enabled: bool = True,
     ) -> CreateProjectResult:
         """
         새 프로젝트를 생성한다.
@@ -273,6 +274,7 @@ class HubAPI:
         yaml_path = init_project.generate_project_yaml(
             project_root, name, description,
             expanded_codebase_path, effective_git_settings,
+            telegram_enabled=telegram_enabled,
         )
 
         # 8. project_state.json 초기화
@@ -281,6 +283,10 @@ class HubAPI:
         # 9. priority queue 파일 3개 초기화 (빈 배열)
         from hub_api import queue_helpers
         queue_helpers.ensure_queue_files(project_root)
+
+        # 10. Telegram bridge에 topic 생성 요청 (project.yaml의 telegram.enabled=true일 때만).
+        #     bridge 미기동이어도 명령 파일은 queue에 남아 bridge 기동 시 소비된다.
+        _enqueue_telegram_command(self.root, "create_topic", name)
 
         return CreateProjectResult(
             project_name=name,
@@ -297,7 +303,8 @@ class HubAPI:
                attachments: Optional[list] = None,
                config_override: Optional[dict] = None,
                source: str = "cli",
-               priority: str = "default") -> SubmitResult:
+               priority: str = "default",
+               requested_by: Optional[str] = None) -> SubmitResult:
         """
         새 task를 생성하고 priority queue에 등록한다.
 
@@ -358,6 +365,7 @@ class HubAPI:
             "title": title,
             "description": description,
             "submitted_via": source,
+            "requested_by": requested_by,
             "submitted_at": now,
             "status": "submitted",
             "branch": None,
@@ -593,6 +601,7 @@ class HubAPI:
             attachments=original_task.get("attachments"),
             config_override=config_override or original_task.get("config_override", {}),
             source=original_task.get("submitted_via", "cli"),
+            requested_by=original_task.get("requested_by"),
         )
 
     # ═══════════════════════════════════════════════════════════
@@ -662,7 +671,9 @@ class HubAPI:
 
     def approve(self, project: str, task_id: str,
                 message: Optional[str] = None,
-                attachments: Optional[list] = None) -> bool:
+                attachments: Optional[list] = None,
+                source: Optional[str] = None,
+                requested_by: Optional[str] = None) -> bool:
         """
         plan/replan을 승인한다.
         task JSON의 human_interaction.response에 승인 기록.
@@ -671,11 +682,14 @@ class HubAPI:
         return self._respond_to_interaction(
             project, task_id, action="approve",
             message=message, attachments=attachments,
+            source=source, requested_by=requested_by,
         )
 
     def reject(self, project: str, task_id: str,
                message: str,
-               attachments: Optional[list] = None) -> bool:
+               attachments: Optional[list] = None,
+               source: Optional[str] = None,
+               requested_by: Optional[str] = None) -> bool:
         """
         plan/replan을 거부(수정 요청)한다.
         message는 필수 — 왜 거부하는지, 어떻게 수정할지.
@@ -683,6 +697,7 @@ class HubAPI:
         return self._respond_to_interaction(
             project, task_id, action="modify",
             message=message, attachments=attachments,
+            source=source, requested_by=requested_by,
         )
 
     def feedback(self, project: str, task_id: str,
@@ -714,8 +729,15 @@ class HubAPI:
 
     def _respond_to_interaction(self, project: str, task_id: str,
                                 action: str, message: Optional[str] = None,
-                                attachments: Optional[list] = None) -> bool:
-        """human interaction에 응답을 기록하는 내부 헬퍼."""
+                                attachments: Optional[list] = None,
+                                source: Optional[str] = None,
+                                requested_by: Optional[str] = None) -> bool:
+        """human interaction에 응답을 기록하는 내부 헬퍼.
+
+        응답 완료 후 `plan_review_responded` 알림을 emit한다. 이 덕분에
+        한 채널(예: Web)에서 승인해도 다른 채널(예: Telegram)의 사용자가
+        "승인됨" 알림을 받을 수 있다 (채널 간 상태 동기화).
+        """
         tasks_dir = self._tasks_dir(project)
         task_file = self._find_task_file(tasks_dir, task_id)
         if not task_file:
@@ -730,13 +752,18 @@ class HubAPI:
         if not hi:
             return False
 
-        # 응답 기록
-        hi["response"] = {
+        # 응답 기록 — source/requested_by를 함께 남겨 채널 간 동기화 시 표시에 사용.
+        response_record = {
             "action": action,
             "message": message or "",
             "attachments": attachments or [],
             "responded_at": datetime.now(timezone.utc).isoformat(),
         }
+        if source:
+            response_record["source"] = source
+        if requested_by:
+            response_record["responded_by"] = requested_by
+        hi["response"] = response_record
         task["human_interaction"] = hi
 
         # 승인이면 상태를 planned로 되돌림 (WFC가 다음 단계 진행)
@@ -747,6 +774,41 @@ class HubAPI:
             task["status"] = "needs_replan"
 
         self._save_json_atomic(task_file, task)
+
+        # 채널 간 sync — 승인/거부 이벤트를 notifications.json에 기록.
+        # Telegram bridge는 이 파일을 폴링하여 해당 topic에 자동 전송한다.
+        try:
+            noti = self._get_notification_module()
+            project_dir = self._project_dir(project)
+            hi_type = hi.get("type", "plan_review")  # plan_review / replan_review
+            if action == "approve":
+                action_label = "승인됨"
+            elif action == "modify":
+                action_label = "수정 요청됨"
+            else:
+                action_label = action
+            kind_label = "Replan" if "replan" in hi_type else "Plan"
+            by_part = f" by {requested_by}" if requested_by else ""
+            via_part = f" (via {source})" if source else ""
+            msg = f"{kind_label} {action_label}{by_part}{via_part}"
+            if message:
+                msg += f" — {message}"
+            noti.emit_notification(
+                project_dir=project_dir,
+                event_type="plan_review_responded",
+                task_id=task_id,
+                message=msg,
+                details={
+                    "project": project,
+                    "action": action,
+                    "kind": hi_type,
+                    "responded_by": requested_by or "",
+                    "source": source or "",
+                    "user_message": message or "",
+                },
+            )
+        except Exception:
+            pass
         return True
 
     # ═══════════════════════════════════════════════════════════
@@ -754,7 +816,9 @@ class HubAPI:
     # ═══════════════════════════════════════════════════════════
 
     def complete_pr_review(self, project: str, task_id: str,
-                           result: str, message: Optional[str] = None) -> bool:
+                           result: str, message: Optional[str] = None,
+                           source: Optional[str] = None,
+                           requested_by: Optional[str] = None) -> bool:
         """
         PR 리뷰 결과를 반영하여 waiting_for_human_pr_approve 상태에서 탈출한다.
 
@@ -793,11 +857,45 @@ class HubAPI:
             task["status"] = "failed"
             task["failure_reason"] = f"PR 거부됨: {message or '사유 없음'}"
 
+        if source:
+            task["pr_reviewed_via"] = source
+        if requested_by:
+            task["pr_reviewed_by"] = requested_by
+
         self._save_json_atomic(task_file, task)
+
+        # 채널 간 sync 알림 (merge_pr / close_pr는 각자 별도 이벤트를 이미 emit하므로,
+        # 여기서는 외부 gh 작업 없이 상태만 바뀌는 complete_pr_review 경로만 알린다).
+        try:
+            noti = self._get_notification_module()
+            project_dir = self._project_dir(project)
+            by_part = f" by {requested_by}" if requested_by else ""
+            via_part = f" (via {source})" if source else ""
+            label = "머지 확정" if result == "merged" else "거부 확정"
+            msg = f"PR {label}{by_part}{via_part}"
+            if message:
+                msg += f" — {message}"
+            noti.emit_notification(
+                project_dir=project_dir,
+                event_type="pr_review_responded",
+                task_id=task_id,
+                message=msg,
+                details={
+                    "project": project,
+                    "result": result,
+                    "responded_by": requested_by or "",
+                    "source": source or "",
+                    "user_message": message or "",
+                },
+            )
+        except Exception:
+            pass
         return True
 
     def merge_pr(self, project: str, task_id: str,
-                 message: Optional[str] = None) -> bool:
+                 message: Optional[str] = None,
+                 source: Optional[str] = None,
+                 requested_by: Optional[str] = None) -> bool:
         """
         waiting_for_human_pr_approve 상태의 task PR을 실제로 머지한다.
 
@@ -862,23 +960,36 @@ class HubAPI:
         task["pr_reviewed_at"] = datetime.now(timezone.utc).isoformat()
         if message:
             task["pr_review_message"] = message
+        if source:
+            task["pr_reviewed_via"] = source
+        if requested_by:
+            task["pr_reviewed_by"] = requested_by
         # 재시도 성공 시 이전 에러 기록 제거 (UI에 stale 에러 노출 방지)
         task.pop("pr_merge_error", None)
         task.pop("pr_merge_error_at", None)
 
         self._save_json_atomic(task_file, task)
 
-        # PR 머지 완료 알림 (auto_merge 경로와 동일한 이벤트 타입으로 통일)
+        # PR 머지 완료 알림 (auto_merge 경로와 동일한 이벤트 타입으로 통일).
+        # details에 responded_by/source를 함께 실어 다른 채널에서 "누가 머지했는지"를 표시.
         try:
             noti = self._get_notification_module()
             project_dir = self._project_dir(project)
             title = task.get("title", "")
+            by_part = f" by {requested_by}" if requested_by else ""
+            via_part = f" (via {source})" if source else ""
+            base = f"PR 머지 완료: {title}" if title else "PR 머지 완료"
             noti.emit_notification(
                 project_dir=project_dir,
                 event_type="pr_merged",
                 task_id=task_id,
-                message=f"PR 머지 완료: {title}" if title else "PR 머지 완료",
-                details={"pr_url": pr_url},
+                message=f"{base}{by_part}{via_part}",
+                details={
+                    "pr_url": pr_url,
+                    "project": project,
+                    "responded_by": requested_by or "",
+                    "source": source or "",
+                },
             )
         except Exception:
             pass
@@ -886,7 +997,9 @@ class HubAPI:
         return True
 
     def close_pr(self, project: str, task_id: str,
-                 message: Optional[str] = None) -> bool:
+                 message: Optional[str] = None,
+                 source: Optional[str] = None,
+                 requested_by: Optional[str] = None) -> bool:
         """
         waiting_for_human_pr_approve 상태의 task PR을 실제로 닫는다.
 
@@ -929,8 +1042,36 @@ class HubAPI:
         task["pr_reviewed_at"] = datetime.now(timezone.utc).isoformat()
         if message:
             task["pr_review_message"] = message
+        if source:
+            task["pr_reviewed_via"] = source
+        if requested_by:
+            task["pr_reviewed_by"] = requested_by
 
         self._save_json_atomic(task_file, task)
+
+        # 채널 간 sync 알림 — 다른 채널에서 PR이 닫혔음을 알 수 있도록.
+        try:
+            noti = self._get_notification_module()
+            project_dir = self._project_dir(project)
+            by_part = f" by {requested_by}" if requested_by else ""
+            via_part = f" (via {source})" if source else ""
+            reason = message or "사용자 요청으로 닫음"
+            noti.emit_notification(
+                project_dir=project_dir,
+                event_type="pr_review_responded",
+                task_id=task_id,
+                message=f"PR 닫힘{by_part}{via_part} — {reason}",
+                details={
+                    "project": project,
+                    "result": "closed",
+                    "pr_url": pr_url,
+                    "responded_by": requested_by or "",
+                    "source": source or "",
+                    "user_message": message or "",
+                },
+            )
+        except Exception:
+            pass
         return True
 
     def _load_pr_task(self, project: str, task_id: str) -> tuple:
@@ -1034,6 +1175,7 @@ class HubAPI:
         state["current_task_id"] = None
         state["last_updated"] = datetime.now(timezone.utc).isoformat()
         self._save_json_atomic(state_path, state)
+        _enqueue_telegram_command(self.root, "close_topic", project)
         return True
 
     def reopen_project(self, project: str) -> bool:
@@ -1058,6 +1200,7 @@ class HubAPI:
         state["lifecycle"] = "active"
         state["last_updated"] = datetime.now(timezone.utc).isoformat()
         self._save_json_atomic(state_path, state)
+        _enqueue_telegram_command(self.root, "reopen_topic", project)
         return True
 
     # ═══════════════════════════════════════════════════════════
@@ -1305,3 +1448,57 @@ def _make_slug(title: str, max_len: int = 40) -> str:
     if len(slug) > max_len:
         slug = slug[:max_len].rstrip('-')
     return slug
+
+
+# ═══════════════════════════════════════════════════════════
+# Telegram bridge hook (Phase 2.3)
+# ═══════════════════════════════════════════════════════════
+
+def _enqueue_telegram_command(agent_hub_root: str, action: str, project: str) -> None:
+    """Telegram bridge에 처리 요청 파일을 기록한다.
+
+    프로젝트 단위 opt-out: project.yaml의 telegram.enabled=false면 enqueue 자체를
+    스킵한다 (테스트용/임시 프로젝트 보호). 키가 없으면 backward-compat으로 활성 처리.
+
+    bridge가 기동 중이 아니더라도 조용히 queue에 쌓아두며, bridge가 다음 기동 시
+    소비한다. 실패해도 HubAPI 주 경로를 막지 않는다 (fire-and-forget).
+    """
+    if not _project_telegram_enabled(agent_hub_root, project):
+        return
+    try:
+        import uuid as _uuid
+        cmd_dir = os.path.join(agent_hub_root, "data", "telegram_commands")
+        os.makedirs(cmd_dir, exist_ok=True)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        cid = _uuid.uuid4().hex[:8]
+        path = os.path.join(cmd_dir, f"{ts}_{cid}_{action}.json")
+        payload = {
+            "action": action,
+            "project": project,
+            "requested_at": datetime.now(timezone.utc).isoformat(),
+        }
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        os.replace(tmp, path)
+    except Exception:
+        # 로그도 선택적. HubAPI 주 경로를 절대 막지 않는다.
+        pass
+
+
+def _project_telegram_enabled(agent_hub_root: str, project: str) -> bool:
+    """project.yaml의 telegram.enabled을 읽는다. 파일/키 없으면 True (호환)."""
+    try:
+        import yaml as _yaml
+        path = os.path.join(agent_hub_root, "projects", project, "project.yaml")
+        if not os.path.isfile(path):
+            return True
+        with open(path) as f:
+            data = _yaml.safe_load(f) or {}
+        section = data.get("telegram")
+        if section is None:
+            return True
+        return bool(section.get("enabled", True))
+    except Exception:
+        return True

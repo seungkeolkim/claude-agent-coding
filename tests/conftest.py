@@ -181,6 +181,18 @@ def _create_ready_sentinel(tasks_dir, task_id):
 # ═══════════════════════════════════════════════════════════
 
 
+@pytest.fixture(autouse=True)
+def _disable_telegram_command_enqueue(monkeypatch):
+    """테스트가 실제 telegram_commands/ 에 명령을 흘리지 못하도록 봉쇄.
+
+    개별 테스트에서 create_project / close_project / reopen_project를 호출하면
+    bridge가 동작 중일 경우 실 Telegram 그룹에 forum topic이 우후죽순 생긴다.
+    테스트 동안에는 enqueue 함수를 no-op으로 패치한다.
+    """
+    from hub_api import core as _core
+    monkeypatch.setattr(_core, "_enqueue_telegram_command", lambda *a, **kw: None)
+
+
 @pytest.fixture
 def agent_hub_root():
     """Agent Hub 루트 디렉토리 경로."""

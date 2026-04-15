@@ -27,6 +27,9 @@ UNIT_TESTS=(
     "tests/test_task_utils.py"
     "tests/test_usage_checker.py"
     "tests/test_chatbot.py"
+    "tests/test_telegram_client.py"
+    "tests/test_telegram_formatter.py"
+    "tests/test_telegram_router.py"
 )
 
 INTEGRATION_TESTS=(

@@ -539,27 +539,87 @@ def git_create_task_branch(codebase_path, branch_name, default_branch):
     return branch_name
 
 
-def git_push(codebase_path, remote, branch=None):
-    """현재 브랜치를 원격에 push한다. upstream이 없으면 자동 설정."""
+def _env_without_vscode_git():
+    """VSCode 터미널에서 상속된 git 인증 관련 env를 제거한 dict 반환.
+
+    VSCode가 주입한 GIT_ASKPASS는 IPC socket(`VSCODE_GIT_IPC_HANDLE`)으로 크리덴셜을
+    요청한다. WFC는 VSCode와 별도 프로세스라 socket이 끊기면 `ECONNREFUSED`로 실패한다.
+    `-c http.extraheader`로 토큰을 직접 넣을 때도 askpass가 먼저 가로채지 않도록 제거.
+    """
+    env = os.environ.copy()
+    for var in (
+        "GIT_ASKPASS",
+        "VSCODE_GIT_IPC_HANDLE",
+        "VSCODE_GIT_ASKPASS_NODE",
+        "VSCODE_GIT_ASKPASS_MAIN",
+        "VSCODE_GIT_ASKPASS_EXTRA_ARGS",
+        "SSH_ASKPASS",
+    ):
+        env.pop(var, None)
+    return env
+
+
+def git_push(codebase_path, remote, branch=None, token=None):
+    """현재 브랜치를 원격에 push한다. upstream이 없으면 자동 설정.
+
+    token이 주어지면 `http.extraheader`로 HTTP Basic 인증을 인라인 주입한다.
+    - OS credential helper / VSCode askpass 경로를 우회하므로 다중 사용자 환경에서도
+      동일한 service-account 토큰으로 push 가능.
+    - 로그에는 토큰을 출력하지 않는다 (log_info는 cmd를 찍지 않고, 실패 stderr에서
+      토큰을 마스킹).
+    """
+    import base64
+    env = _env_without_vscode_git()
+
+    cmd = ["git"]
+    if token:
+        basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+        cmd += ["-c", f"http.extraheader=Authorization: Basic {basic}"]
+    cmd += ["push"]
     if branch:
-        git_run(codebase_path, "push", "--set-upstream", remote, branch)
+        cmd += ["--set-upstream", remote, branch]
     else:
-        git_run(codebase_path, "push", remote)
+        cmd += [remote]
+
+    # 표시용 cmd: 토큰이 들어간 -c 인자는 마스킹
+    display = " ".join("<token-header>" if (token and "Basic " in a) else a for a in cmd)
+    log_info(f"[git] {display}")
+
+    result = subprocess.run(cmd, cwd=codebase_path, capture_output=True, text=True, env=env)
+    if result.returncode != 0:
+        stderr = result.stderr or ""
+        if token:
+            stderr = stderr.replace(token, "***")
+        log_error(f"[git] push 실패: {stderr.strip()}")
+        raise RuntimeError(f"git push 실패: {stderr.strip()}")
     log_info(f"[git] push 완료: {remote} {branch or ''}")
 
 
+def _format_task_tag(task_id, requested_by):
+    """커밋/PR 제목 접두사. requested_by 있으면 [task_id][user], 없으면 [task_id]."""
+    if requested_by:
+        return f"[{task_id}][{requested_by}]"
+    return f"[{task_id}]"
+
+
 def git_commit_subtask(codebase_path, task_id, subtask_id, subtask_title,
-                       author_name, author_email, remote=None, branch=None):
+                       author_name, author_email, remote=None, branch=None,
+                       token=None, requested_by=None):
     """
     subtask 완료 후 변경사항을 커밋하고 push한다.
     변경사항이 없으면 스킵한다.
+
+    Args:
+        token: push 시 http.extraheader로 인라인 주입할 OAuth 토큰 (선택).
+        requested_by: 커밋 메시지에 박을 요청자 태그 (선택).
     """
     if not git_has_changes(codebase_path):
         log_info(f"[git] 변경사항 없음 — 커밋 스킵 ({subtask_id})")
         return False
 
     git_run(codebase_path, "add", "-A")
-    commit_msg = f"[{task_id}] {subtask_id}: {subtask_title}"
+    tag = _format_task_tag(task_id, requested_by)
+    commit_msg = f"{tag} {subtask_id}: {subtask_title}"
     git_run(
         codebase_path, "commit",
         "-m", commit_msg,
@@ -568,7 +628,7 @@ def git_commit_subtask(codebase_path, task_id, subtask_id, subtask_title,
     log_info(f"[git] 커밋 완료: {commit_msg}")
 
     if remote:
-        git_push(codebase_path, remote, branch)
+        git_push(codebase_path, remote, branch, token=token)
 
     return True
 
@@ -891,6 +951,7 @@ def _load_pipeline_context(args):
     base_branch = git_config.get("base_branch", default_branch)
 
     # Git provider 인증
+    auth_token = ""
     if git_enabled:
         git_provider = git_config.get("provider", "github")
         auth_token = git_config.get("auth_token", "")
@@ -913,6 +974,7 @@ def _load_pipeline_context(args):
         "pipeline": pipeline,
         "git_config": git_config,
         "git_enabled": git_enabled,
+        "auth_token": auth_token,
         "codebase_path": codebase_path,
         "default_branch": default_branch,
         "base_branch": base_branch,
@@ -932,10 +994,12 @@ def run_pipeline(args):
     pipeline = ctx["pipeline"]
     git_config = ctx["git_config"]
     git_enabled = ctx["git_enabled"]
+    auth_token = ctx.get("auth_token", "")
     codebase_path = ctx["codebase_path"]
     default_branch = ctx["default_branch"]
     base_branch = ctx["base_branch"]
     task_branch = None
+    requested_by = task.get("requested_by")
 
     log_step(f"파이프라인 시작: project={args.project} task={task_id}")
 
@@ -1195,6 +1259,7 @@ def run_pipeline(args):
                     git_config.get("author_name", "Agent Hub"),
                     git_config.get("author_email", "agent@hub"),
                     remote=git_remote, branch=task_branch,
+                    token=auth_token, requested_by=requested_by,
                 )
             except RuntimeError as e:
                 log_error(f"[git] subtask {subtask_id} 커밋/push 실패: {e}")
@@ -1217,6 +1282,7 @@ def run_pipeline(args):
         agent_hub_root, args.project, task_id, task_file,
         completed_subtasks, git_enabled, git_config,
         codebase_path, task_branch, default_branch, args.dummy,
+        requested_by=requested_by,
     )
 
 
@@ -1597,6 +1663,7 @@ def _continue_after_plan_review(result, args, ctx, plan_data, subtasks,
                     git_config.get("author_name", "Agent Hub"),
                     git_config.get("author_email", "agent@hub"),
                     remote=git_remote, branch=task_branch,
+                    token=auth_token, requested_by=requested_by,
                 )
             except RuntimeError as e:
                 log_error(f"[git] subtask {subtask_id} 커밋/push 실패: {e}")
@@ -1615,6 +1682,7 @@ def _continue_after_plan_review(result, args, ctx, plan_data, subtasks,
         agent_hub_root, args.project, task_id, task_file,
         completed_subtasks, git_enabled, git_config,
         codebase_path, task_branch, default_branch, args.dummy,
+        requested_by=requested_by,
     )
 
 
@@ -1686,6 +1754,21 @@ def run_pipeline_from_subtasks(agent_hub_root, project_name, task_id, task_file,
     completed_subtasks = list(already_completed)
     git_config = git_config or {}
 
+    # 토큰/requested_by는 task_file과 config에서 직접 resolve (caller 시그니처 간결 유지).
+    _task_for_meta = load_json(task_file) if os.path.exists(task_file) else {}
+    requested_by = _task_for_meta.get("requested_by")
+    auth_token = git_config.get("auth_token", "")
+    if not auth_token:
+        try:
+            cfg_path = os.path.join(agent_hub_root, "config.yaml")
+            with open(cfg_path) as _f:
+                _sys_config = yaml.safe_load(_f) or {}
+            auth_token = (_sys_config.get("machines", {})
+                          .get("executor", {})
+                          .get("github_token", "")) or ""
+        except Exception:
+            auth_token = ""
+
     for i, subtask in enumerate(subtasks):
         subtask_id = subtask.get("subtask_id", f"{task_id}-{i+1}")
 
@@ -1726,6 +1809,7 @@ def run_pipeline_from_subtasks(agent_hub_root, project_name, task_id, task_file,
                     git_config.get("author_name", "Agent Hub"),
                     git_config.get("author_email", "agent@hub"),
                     remote=git_remote, branch=task_branch,
+                    token=auth_token, requested_by=requested_by,
                 )
             except RuntimeError as e:
                 log_error(f"[git] subtask {subtask_id} 커밋/push 실패: {e}")
@@ -1743,12 +1827,14 @@ def run_pipeline_from_subtasks(agent_hub_root, project_name, task_id, task_file,
         agent_hub_root, project_name, task_id, task_file,
         completed_subtasks, git_enabled, git_config,
         codebase_path, task_branch, default_branch, dummy,
+        requested_by=requested_by,
     )
 
 
 def finalize_task(agent_hub_root, project_name, task_id, task_file,
                   completed_subtasks, git_enabled, git_config,
-                  codebase_path, task_branch, default_branch, dummy):
+                  codebase_path, task_branch, default_branch, dummy,
+                  requested_by=None):
     """
     Subtask loop 완료 후 Summarizer 실행 + PR 생성/머지 + task 상태 업데이트.
     run_pipeline()과 run_pipeline_from_subtasks() 양쪽에서 호출된다.
@@ -1761,17 +1847,18 @@ def finalize_task(agent_hub_root, project_name, task_id, task_file,
         dummy=dummy,
     )
 
-    pr_title = f"[{task_id}] Task completed"
+    tag = _format_task_tag(task_id, requested_by)
+    pr_title = f"{tag} Task completed"
     pr_body = f"Automated PR for task {task_id}"
     task_summary = ""
 
     if success and summary_data:
         raw_title = summary_data.get("pr_title", pr_title)
-        # task ID 접두사 보장: [00001] Add feature...
-        if not raw_title.startswith(f"[{task_id}]"):
-            pr_title = f"[{task_id}] {raw_title}"
-        else:
-            pr_title = raw_title
+        # Summarizer가 이미 [task_id] 접두사를 넣었을 수 있으므로 벗겨낸 뒤 tag를 붙인다.
+        import re as _re
+        stripped = _re.sub(rf"^\[{task_id}\]\s*", "", raw_title)
+        stripped = _re.sub(r"^\[[^\]]+\]\s*", "", stripped) if requested_by else stripped
+        pr_title = f"{tag} {stripped}" if stripped else f"{tag} Task completed"
         pr_body = summary_data.get("pr_body", pr_body)
         task_summary = summary_data.get("task_summary", "")
         update_task_field(task_file, "summary", task_summary)

@@ -11,6 +11,8 @@ import logging
 import os
 import threading
 import time
+import uuid
+from datetime import datetime, timezone
 from typing import Callable
 
 from scripts.web.db import Database
@@ -37,6 +39,9 @@ class FileSyncer:
 
         # mtime 캐시: {file_path: last_known_mtime}
         self._mtime_cache: dict[str, float] = {}
+
+        # agent_hub_root: telegram bridge command queue를 쓰기 위해 projects_dir 상위에서 도출.
+        self._agent_hub_root = os.path.dirname(os.path.abspath(projects_dir))
 
         # 백그라운드 스레드
         self._stop_event = threading.Event()
@@ -69,6 +74,8 @@ class FileSyncer:
                 logger.info("폴더 소실 감지 → 프로젝트 '%s' closed 처리", p["name"])
                 if self.on_change:
                     self.on_change({"type": "project_updated", "project": p["name"]})
+                # Telegram bridge에도 topic close 요청 (bridge 미기동이어도 큐에 남는다).
+                self._enqueue_telegram_close(p["name"])
 
         self.sync_sessions()
 
@@ -296,3 +303,30 @@ class FileSyncer:
             except Exception as e:
                 logger.error("sync_all 실패: %s", e)
             self._stop_event.wait(interval)
+
+    # ─── Telegram bridge hook ───
+
+    def _enqueue_telegram_close(self, project: str) -> None:
+        """Telegram bridge에 close_topic 명령 파일을 기록한다.
+
+        폴더 소실 감지 경로(HubAPI를 거치지 않는 close)에서 호출된다.
+        bridge 미기동이어도 queue에 쌓여 다음 기동 시 소비된다. fire-and-forget.
+        """
+        try:
+            cmd_dir = os.path.join(self._agent_hub_root, "data", "telegram_commands")
+            os.makedirs(cmd_dir, exist_ok=True)
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            cid = uuid.uuid4().hex[:8]
+            path = os.path.join(cmd_dir, f"{ts}_{cid}_close_topic.json")
+            payload = {
+                "action": "close_topic",
+                "project": project,
+                "requested_at": datetime.now(timezone.utc).isoformat(),
+            }
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+                f.write("\n")
+            os.replace(tmp, path)
+        except Exception as e:
+            logger.warning("telegram close_topic enqueue 실패 (%s): %s", project, e)
