@@ -1994,6 +1994,10 @@ def finalize_task(agent_hub_root, project_name, task_id, task_file,
     run_pipeline()과 run_pipeline_from_subtasks() 양쪽에서 호출된다.
     """
     # ─── Summarizer 실행 ───
+    # 모든 subtask가 끝난 시점이므로 current_subtask를 먼저 비운다.
+    # 남겨두면 safety_limits가 completed + current를 이중 집계해
+    # max_subtask_count를 초과한 것으로 오판할 수 있다.
+    update_task_field(task_file, "current_subtask", None)
     log_step("Summarizer 실행")
     update_pipeline_stage(task_file, "summarizer")
     success, summary_data = run_agent(
