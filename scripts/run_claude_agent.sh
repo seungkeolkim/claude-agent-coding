@@ -512,7 +512,25 @@ if [[ "$DUMMY" == "true" ]]; then
     # agent별 더미 응답 생성
     case "$AGENT_TYPE" in
         planner)
-            DUMMY_RESULT=$(cat <<EOJSON
+            # task_type을 읽어 memory_refresh이면 빈 subtasks를 반환한다
+            # (memory_refresh는 Planner가 코드 변경 계획을 세우지 않고 MemoryUpdater에 위임).
+            PLANNER_TASK_TYPE=$(python3 -c "
+import json
+with open('${TASK_FILE}') as f:
+    print(json.load(f).get('task_type', 'feature'))
+" 2>/dev/null || echo "feature")
+            if [[ "$PLANNER_TASK_TYPE" == "memory_refresh" ]]; then
+                DUMMY_RESULT=$(cat <<EOJSON
+{
+  "action": "plan_created",
+  "task_id": "${TASK_ID}",
+  "strategy_note": "[dummy] memory_refresh — codebase 변경 계획 없음. MemoryUpdater가 full-scan으로 PROJECT_NOTES.md 재생성",
+  "subtasks": []
+}
+EOJSON
+)
+            else
+                DUMMY_RESULT=$(cat <<EOJSON
 {
   "action": "plan_created",
   "task_id": "${TASK_ID}",
@@ -533,6 +551,7 @@ if [[ "$DUMMY" == "true" ]]; then
 }
 EOJSON
 )
+            fi
             ;;
         coder)
             DUMMY_RESULT=$(cat <<EOJSON

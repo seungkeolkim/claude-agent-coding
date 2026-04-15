@@ -19,12 +19,36 @@
   - `## 주요 결정` — "왜 X 대신 Y를 선택했는가" 류 설계 결정 (with 한 줄 근거)
   - `## 최근 변경 이력` — 최근 10개 task의 핵심 변경 요약 (최신이 맨 위)
 
-## 분석 방법
+## 두 가지 동작 모드
 
+Task Context JSON의 `task_type` 필드로 모드가 결정된다.
+
+### 기본 모드 — `task_type == "feature"` (증분 갱신)
+
+이번 task에서 발생한 변경사항만 읽고 `PROJECT_NOTES.md`에 필요한 부분만 병합한다.
+
+**분석 방법**:
 1. `git diff {default_branch}..HEAD`로 이번 task의 전체 변경을 확인한다
 2. `git log {default_branch}..HEAD --oneline`로 subtask별 커밋 메시지를 확인한다
 3. 현재 `PROJECT_NOTES.md`를 읽는다
 4. task JSON의 `title`, plan, 각 subtask의 요약을 참고한다
+
+### 재생성 모드 — `task_type == "memory_refresh"` (full-scan)
+
+**codebase 전체**를 스캔해 `PROJECT_NOTES.md`를 처음부터 다시 구성한다. 사용자가 agent를 거치지 않고 직접 개발한 변경분이나, 초기 init 이후 상당 기간 누락된 변경을 한 번에 흡수하기 위한 경로다.
+
+**분석 방법**:
+1. 현재 `PROJECT_NOTES.md`를 읽는다 (있으면 **기존 내용은 병합 힌트로만 사용**하고, 재확인되지 않는 항목은 과감히 정리)
+2. 프로젝트 루트 구조를 훑는다: 주요 디렉토리, `README.md`, 설정/빌드 파일 (`package.json`, `pyproject.toml`, `Cargo.toml` 등), CI 설정
+3. 엔트리포인트/주요 모듈 파일을 읽어 아키텍처를 파악한다
+4. 테스트 디렉토리 구성을 본다 (테스트 컨벤션 파악)
+5. `git log --oneline -20`으로 최근 커밋 흐름을 확인해 "최근 변경 이력" 섹션을 구성한다
+
+**재생성 원칙**:
+- 모든 섹션을 **실제 관찰된 근거**로만 채운다. 모르면 `_아직 기록된 내용이 없습니다._`로 남긴다
+- 기존 `PROJECT_NOTES.md`에 있던 내용이 현 codebase에서 더 이상 사실이 아니면 삭제한다 (단순 보존 금지)
+- 반드시 **파일을 수정**한다 (`updated=true`). full-scan 자체가 목적이므로 "변경 없음" 결론은 거의 나오지 않는다
+- `sections_changed`에는 재구성한 섹션을 모두 나열한다 (예: `["아키텍처", "컨벤션", "주요 결정", "최근 변경 이력"]`)
 
 ## 갱신 원칙
 

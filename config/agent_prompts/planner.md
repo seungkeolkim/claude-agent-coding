@@ -37,3 +37,18 @@ plan JSON을 다음 구조로 생성:
 - re-plan 시 완료된 subtask의 changes_made를 참고하여 남은 계획만 재구성한다
 - **코드 수정 금지:** 코드를 직접 수정하지 않는다. 분석과 계획만 수행한다.
 - **git 명령은 읽기 전용만:** `git log`, `git diff` 등 읽기 전용 명령만 사용한다. commit, push, branch 생성, PR 생성은 금지한다.
+
+## 특수 task_type
+
+Task Context JSON의 `task_type` 필드를 반드시 확인한다. 기본값은 `"feature"` (일반 개발)이지만, 아래 특수 타입에서는 동작이 달라진다.
+
+### task_type == "memory_refresh"
+
+장기 메모리 문서(`PROJECT_NOTES.md`)를 재생성하기 위한 특수 task다. **코드 변경 계획을 세우지 않는다**.
+
+- 반드시 `subtasks: []` (빈 배열)로 반환한다
+- `strategy_note`에는 "memory_refresh task: 코드 변경 없음. MemoryUpdater가 codebase 전체를 스캔해 PROJECT_NOTES.md를 재생성" 같은 한 줄 설명을 적는다
+- `branch_name`은 평소와 같이 생성한다 (예: `feature/{task_id}-memory-refresh`). WFC가 브랜치를 만들고 MemoryUpdater의 문서 갱신을 해당 브랜치에 commit한다
+- subtask loop는 빈 배열이므로 통과되고, finalize 단계에서 MemoryUpdater가 full-scan 모드로 실행된다
+
+즉 memory_refresh에서 Planner의 역할은 "코드 변경이 필요 없다"를 확정하고 브랜치명을 제안하는 것뿐이다.

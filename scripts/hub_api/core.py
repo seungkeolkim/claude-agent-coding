@@ -311,7 +311,8 @@ class HubAPI:
                config_override: Optional[dict] = None,
                source: str = "cli",
                priority: str = "default",
-               requested_by: Optional[str] = None) -> SubmitResult:
+               requested_by: Optional[str] = None,
+               task_type: str = "feature") -> SubmitResult:
         """
         새 task를 생성하고 priority queue에 등록한다.
 
@@ -323,11 +324,19 @@ class HubAPI:
         Args:
             priority: "critical" | "urgent" | "default" (기본: default).
                 실행 순서: critical > urgent > default (같은 priority 내 id순).
+            task_type: task 종류. 기본 "feature" (일반 개발).
+                "memory_refresh"는 PROJECT_NOTES.md 장기 메모리 재생성용 특수 task로,
+                Planner가 subtasks=[]를 반환하고 MemoryUpdater가 codebase 전체를 스캔한다.
         """
         from hub_api import queue_helpers
         if priority not in queue_helpers.PRIORITIES:
             raise ValueError(
                 f"잘못된 priority: {priority!r}. 허용: {queue_helpers.PRIORITIES}"
+            )
+        valid_task_types = ("feature", "memory_refresh")
+        if task_type not in valid_task_types:
+            raise ValueError(
+                f"잘못된 task_type: {task_type!r}. 허용: {valid_task_types}"
             )
         self._require_active_project(project)
 
@@ -374,6 +383,10 @@ class HubAPI:
             "submitted_via": source,
             "requested_by": requested_by,
             "submitted_at": now,
+            # task 종류. 기본 "feature"는 일반 개발. "memory_refresh"는 Planner가
+            # subtasks=[]를 반환하고 MemoryUpdater가 codebase 전체 스캔으로
+            # PROJECT_NOTES.md를 재생성하는 특수 경로.
+            "task_type": task_type,
             "status": "submitted",
             "branch": None,
             "attachments": attachment_list,

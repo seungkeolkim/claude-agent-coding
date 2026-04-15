@@ -1206,7 +1206,13 @@ def run_pipeline(args):
     save_plan_file(project_dir, task_id, plan_data)
     subtasks = create_subtask_files(project_dir, task_id, plan_data)
 
-    if not subtasks:
+    # task_type이 "memory_refresh"이면 subtask=[]가 정상 동작이다.
+    # Planner는 codebase 탐색 후 "변경 없음"으로 계획을 종료하고,
+    # 실제 작업은 finalize_task의 MemoryUpdater가 full-scan 모드로 담당한다.
+    task_data = load_json(task_file)
+    task_type = task_data.get("task_type", "feature")
+
+    if not subtasks and task_type != "memory_refresh":
         log_error("Planner가 subtask를 생성하지 않았습니다.")
         record_failure_reason(task_file, "Planner가 subtask를 생성하지 않음")
         update_task_field(task_file, "status", "failed")
@@ -1217,7 +1223,10 @@ def run_pipeline(args):
         )
         sys.exit(1)
 
-    log_info(f"subtask {len(subtasks)}개 생성됨")
+    if not subtasks and task_type == "memory_refresh":
+        log_info("memory_refresh task: subtasks=[] — subtask loop를 건너뛰고 finalize로 진입")
+    else:
+        log_info(f"subtask {len(subtasks)}개 생성됨")
 
     # ─── Human Review: Plan 승인 대기 ───
     human_review = effective.get("human_review_policy", {})
@@ -1255,12 +1264,15 @@ def run_pipeline(args):
                 sys.exit(1)
             save_plan_file(project_dir, task_id, plan_data)
             subtasks = create_subtask_files(project_dir, task_id, plan_data)
-            if not subtasks:
+            if not subtasks and task_type != "memory_refresh":
                 log_error("Re-plan 후 subtask가 없습니다.")
                 update_task_field(task_file, "status", "failed")
                 update_project_state(project_dir, status="idle", last_error=task_id)
                 sys.exit(1)
-            log_info(f"re-plan 완료: subtask {len(subtasks)}개 재생성")
+            if subtasks:
+                log_info(f"re-plan 완료: subtask {len(subtasks)}개 재생성")
+            else:
+                log_info("re-plan 완료: memory_refresh task — subtask 없음 (finalize로 진입)")
 
         # 승인 후 running 상태로 복귀
         update_project_state(project_dir, status="running", current_task_id=task_id)
@@ -1667,12 +1679,18 @@ def _continue_after_plan_review(result, args, ctx, plan_data, subtasks,
             sys.exit(1)
         save_plan_file(project_dir, task_id, plan_data)
         subtasks = create_subtask_files(project_dir, task_id, plan_data)
-        if not subtasks:
+        # resume 경로에서도 memory_refresh task는 빈 subtask를 허용한다.
+        resume_task_data = load_json(task_file)
+        resume_task_type = resume_task_data.get("task_type", "feature")
+        if not subtasks and resume_task_type != "memory_refresh":
             log_error("Re-plan 후 subtask가 없습니다.")
             update_task_field(task_file, "status", "failed")
             update_project_state(project_dir, status="idle", last_error=task_id)
             sys.exit(1)
-        log_info(f"re-plan 완료: subtask {len(subtasks)}개 재생성")
+        if subtasks:
+            log_info(f"re-plan 완료: subtask {len(subtasks)}개 재생성")
+        else:
+            log_info("re-plan 완료: memory_refresh task — subtask 없음 (finalize로 진입)")
 
     # 승인 후 running 상태�� 복귀
     update_project_state(project_dir, status="running", current_task_id=task_id)

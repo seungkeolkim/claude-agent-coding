@@ -108,6 +108,87 @@ class TestCodebaseMemoryFiles:
         assert "# 기존 CLAUDE만" in (codebase / "CLAUDE.md").read_text(encoding="utf-8")
 
 
+class TestMemoryRefreshTaskType:
+    """task_type=memory_refresh 경로 동작 검증."""
+
+    def test_submit_accepts_memory_refresh_type(self, agent_hub_root, tmp_path):
+        """submit이 task_type='memory_refresh'를 받고 task JSON에 기록한다."""
+        # 지연 import — conftest의 sys.path 세팅을 사용
+        from hub_api.core import HubAPI
+        import shutil as _shutil
+
+        api = HubAPI(agent_hub_root)
+        codebase = str(tmp_path / "codebase-mr")
+        project_name = f"test_mr_{os.getpid()}"
+
+        api.create_project(
+            name=project_name,
+            description="memory_refresh 테스트",
+            codebase_path=codebase,
+        )
+        try:
+            result = api.submit(
+                project=project_name,
+                title="memory refresh",
+                description="full-scan",
+                task_type="memory_refresh",
+            )
+            import json as _json
+            with open(result.file_path, encoding="utf-8") as f:
+                task = _json.load(f)
+            assert task["task_type"] == "memory_refresh"
+        finally:
+            project_dir = os.path.join(agent_hub_root, "projects", project_name)
+            _shutil.rmtree(project_dir, ignore_errors=True)
+
+    def test_submit_default_task_type_is_feature(self, agent_hub_root, tmp_path):
+        """task_type 미지정 시 기본값 'feature'가 들어간다 (하위 호환)."""
+        from hub_api.core import HubAPI
+        import shutil as _shutil
+
+        api = HubAPI(agent_hub_root)
+        codebase = str(tmp_path / "codebase-default")
+        project_name = f"test_default_{os.getpid()}"
+
+        api.create_project(
+            name=project_name, description="기본 테스트", codebase_path=codebase,
+        )
+        try:
+            result = api.submit(
+                project=project_name, title="일반 task", description="",
+            )
+            import json as _json
+            with open(result.file_path, encoding="utf-8") as f:
+                task = _json.load(f)
+            assert task["task_type"] == "feature"
+        finally:
+            project_dir = os.path.join(agent_hub_root, "projects", project_name)
+            _shutil.rmtree(project_dir, ignore_errors=True)
+
+    def test_submit_rejects_invalid_task_type(self, agent_hub_root, tmp_path):
+        """알 수 없는 task_type은 ValueError로 거부된다."""
+        from hub_api.core import HubAPI
+        import shutil as _shutil
+
+        api = HubAPI(agent_hub_root)
+        codebase = str(tmp_path / "codebase-bad")
+        project_name = f"test_bad_{os.getpid()}"
+
+        api.create_project(
+            name=project_name, description="", codebase_path=codebase,
+        )
+        try:
+            with pytest.raises(ValueError, match="task_type"):
+                api.submit(
+                    project=project_name, title="x", description="",
+                    task_type="unknown_type",
+                )
+        finally:
+            project_dir = os.path.join(agent_hub_root, "projects", project_name)
+            _shutil.rmtree(project_dir, ignore_errors=True)
+
+
+
 class TestMemoryUpdaterPrompt:
     """memory_updater agent prompt 파일이 올바른 위치에 있고 필수 섹션을 담는다."""
 
