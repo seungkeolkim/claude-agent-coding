@@ -1,6 +1,6 @@
 # Task Lifecycle — Finite State Machine
 
-> 최종 업데이트: 2026-04-06
+> 최종 업데이트: 2026-04-15
 > Task JSON의 `status` 필드가 거치는 모든 상태와 전이를 표현한다.
 
 ## 상태 분류
@@ -71,7 +71,7 @@ stateDiagram-v2
 |------|--------|------|
 | planned | Planner 성공 + review_plan=false | `workflow_controller.py` run_pipeline() |
 | waiting_for_human_plan_confirm | Planner 성공 + review_plan=true | `workflow_controller.py` request_human_review() |
-| failed | Planner 실행 실패 / subtask 0개 생성 | `workflow_controller.py` run_pipeline() |
+| failed | base_branch 리셋 실패 / Planner 실행 실패 / subtask 0개 생성 | `workflow_controller.py` run_pipeline() |
 | cancelled | 사용자 cancel 명령 | `core.py` cancel() |
 
 ### waiting_for_human_plan_confirm →
@@ -122,11 +122,12 @@ stateDiagram-v2
 `in_progress` 상태일 때 `pipeline_stage` 필드로 세부 진행 단계를 추적:
 
 ```
-planner → plan_review → git_branch → coder → reviewer → git_push → summarizer → pr_create → finalizing → done
+git_reset → planner → plan_review → git_branch → coder → reviewer → git_push → summarizer → pr_create → finalizing → done
 ```
 
 | pipeline_stage | 설명 |
 |----------------|------|
+| git_reset | Planner 실행 전에 codebase를 `base_branch` 최신 상태로 강제 리셋 (이전 task의 미커밋 변경/untracked 파일 폐기 + `origin/<base>` 동기화) |
 | planner | Planner agent 실행 중 |
 | plan_review | Human review 대기 중 |
 | git_branch | git branch 생성 중 |
