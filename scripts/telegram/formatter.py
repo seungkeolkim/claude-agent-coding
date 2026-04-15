@@ -29,6 +29,8 @@ _EVENT_STYLES = {
     "pr_merge_failed":         {"icon": "⚠️", "label": "PR 머지 실패"},
     "plan_review_requested":   {"icon": "🟡", "label": "Plan Review 요청"},
     "replan_review_requested": {"icon": "🟡", "label": "Replan Review 요청"},
+    "plan_review_responded":   {"icon": "📬", "label": "Plan 응답"},
+    "pr_review_responded":     {"icon": "📬", "label": "PR 응답"},
     "escalation":              {"icon": "🚨", "label": "에스컬레이션"},
 }
 

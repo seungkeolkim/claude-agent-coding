@@ -240,6 +240,8 @@ def _handle_approve(api, request: Request) -> Response:
         request.project,
         request.params["task_id"],
         message=request.params.get("message"),
+        source=request.source,
+        requested_by=request.requested_by,
     )
     if ok:
         return _ok(True, f"task {request.params['task_id']} 승인 완료")
@@ -257,6 +259,8 @@ def _handle_reject(api, request: Request) -> Response:
         request.project,
         request.params["task_id"],
         message=request.params["message"],
+        source=request.source,
+        requested_by=request.requested_by,
     )
     if ok:
         return _ok(True, f"task {request.params['task_id']} 수정 요청 완료")
@@ -414,6 +418,8 @@ def _handle_complete_pr_review(api, request: Request) -> Response:
         request.params["task_id"],
         result=request.params["result"],
         message=request.params.get("message"),
+        source=request.source,
+        requested_by=request.requested_by,
     )
     if ok:
         result_label = "머지 완료" if request.params["result"] == "merged" else "거부 처리"
@@ -432,6 +438,8 @@ def _handle_merge_pr(api, request: Request) -> Response:
         request.project,
         request.params["task_id"],
         message=request.params.get("message"),
+        source=request.source,
+        requested_by=request.requested_by,
     )
     return _ok(True, f"task {request.params['task_id']} PR 머지 완료")
 
@@ -447,6 +455,8 @@ def _handle_close_pr(api, request: Request) -> Response:
         request.project,
         request.params["task_id"],
         message=request.params.get("message"),
+        source=request.source,
+        requested_by=request.requested_by,
     )
     return _ok(True, f"task {request.params['task_id']} PR 닫기 완료")
 

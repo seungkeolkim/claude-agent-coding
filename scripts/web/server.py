@@ -147,7 +147,8 @@ def _run_pr_action_background(action: str, project: str, task_id: str, message: 
         params = {"task_id": task_id}
         if message:
             params["message"] = message
-        request = HubRequest(action=action, project=project, params=params, source="web")
+        request = HubRequest(action=action, project=project, params=params,
+                             source="web", requested_by="web")
         response = hub_dispatch(hub_api, request)
 
         if response.success:
@@ -199,6 +200,9 @@ async def api_dispatch(body: dict):
     """
     request = HubRequest.from_dict(body)
     request.source = "web"
+    # 현재 web은 단일 사용자 가정. 다중 사용자 지원 시 auth에서 식별자 주입.
+    if not request.requested_by:
+        request.requested_by = "web"
 
     # merge_pr / close_pr → 비동기 처리
     if request.action in PR_ASYNC_ACTIONS:

@@ -409,6 +409,15 @@ class TelegramBridge:
         project = d.callback_project
         task_id = d.callback_task_id
 
+        # 이미 다른 채널(Web/CLI)에서 처리된 버튼인지 먼저 확인.
+        # approve/reject_modify/reject_cancel은 모두 waiting_for_human_plan_confirm
+        # 상태에서만 유효하므로, 그 외 상태면 친절한 "이미 처리됨" 메시지로 대응.
+        if action in ("approve", "reject_modify", "reject_cancel"):
+            already = self._already_responded_notice(project, task_id)
+            if already:
+                self._safe_send(d.chat_id, d.thread_id, already)
+                return
+
         if action == "approve":
             self._dispatch_and_reply(d, "approve", project=project,
                                      params={"task_id": task_id})
@@ -428,6 +437,61 @@ class TelegramBridge:
             return
         self._safe_send(d.chat_id, d.thread_id,
                         f"⚠️ 처리되지 않은 버튼 action: {action}")
+
+    def _already_responded_notice(self, project: Optional[str],
+                                   task_id: Optional[str]) -> Optional[str]:
+        """task가 이미 응답 처리된 상태면 안내 메시지를 반환한다.
+
+        waiting_for_human_plan_confirm 상태에 **있지 않으면** 이미 누군가
+        Web/CLI/다른 채널에서 처리했거나, task가 이미 다른 phase로 넘어간 것.
+        그 사실과 함께 누가 언제 어느 채널로 응답했는지 human_interaction.response에서
+        읽어 사용자에게 알려준다.
+        """
+        if not project or not task_id:
+            return None
+        try:
+            task = self._hub_api.get_task(project, task_id)
+        except Exception:
+            return None
+        if task is None:
+            return None
+
+        status = getattr(task, "status", None) or (
+            task.get("status") if isinstance(task, dict) else None
+        )
+        if status == "waiting_for_human_plan_confirm":
+            return None  # 아직 대기 중 — 정상 dispatch 진행
+
+        # 응답 기록 조회 (get_task가 Task dataclass일 수도, dict일 수도 있음).
+        hi = None
+        if isinstance(task, dict):
+            hi = task.get("human_interaction")
+        else:
+            hi = getattr(task, "human_interaction", None)
+            if hi is not None and not isinstance(hi, dict):
+                hi = getattr(hi, "__dict__", None) or {}
+
+        response = (hi or {}).get("response") if isinstance(hi, dict) else None
+        if not response:
+            # 응답이 안 보이면 최소한 현재 상태만이라도 알려준다.
+            return (
+                f"⚠️ 이 버튼은 더 이상 유효하지 않습니다.\n"
+                f"task {task_id} 현재 상태: {status or 'unknown'}"
+            )
+
+        action_label = {
+            "approve": "✅ 승인됨",
+            "modify": "📝 수정 요청됨",
+        }.get(response.get("action"), response.get("action", "처리됨"))
+        by = response.get("responded_by") or "unknown"
+        src = response.get("source") or "unknown"
+        at = response.get("responded_at", "")
+        time_str = at[:19].replace("T", " ") if at else ""
+        return (
+            f"ℹ️ 이 요청은 이미 {action_label}되었습니다.\n"
+            f"by {by} (via {src}){' · ' + time_str if time_str else ''}\n"
+            f"현재 상태: {status or 'unknown'}"
+        )
 
     def _dispatch_and_reply(self, d: RoutingDecision, action: str,
                             project: Optional[str] = None,

@@ -12,6 +12,8 @@ TM이 폴링하여 터미널에 출력한다.
     pr_merge_failed         — PR 머지 실패 (merge conflict 등 사용자 개입 필요)
     plan_review_requested   — plan 승인 대기
     replan_review_requested — replan 승인 대기
+    plan_review_responded   — plan/replan에 대한 사람 응답(승인/수정) 기록 (채널 간 동기화)
+    pr_review_responded     — PR 리뷰에 대한 사람 응답 기록 (close 등, 채널 간 동기화)
     escalation              — 에스컬레이션 발생
 
 저장 위치: projects/{name}/notifications.json
@@ -41,6 +43,8 @@ EVENT_STYLES = {
     "pr_merge_failed": {"color": RED, "label": "PR 머지 실패"},
     "plan_review_requested": {"color": YELLOW, "label": "승인 요청"},
     "replan_review_requested": {"color": YELLOW, "label": "재계획 승인 요청"},
+    "plan_review_responded": {"color": GREEN, "label": "Plan 응답"},
+    "pr_review_responded": {"color": GREEN, "label": "PR 응답"},
     "escalation": {"color": RED, "label": "에스컬레이션"},
 }
 

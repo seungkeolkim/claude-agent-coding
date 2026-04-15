@@ -177,7 +177,8 @@ def cmd_approve(args):
     """plan/replan을 승인한다."""
     api = get_hub_api()
     try:
-        ok = api.approve(args.project, args.task_id, message=args.message)
+        ok = api.approve(args.project, args.task_id, message=args.message,
+                         source="cli", requested_by=os.environ.get("USER") or "cli")
         if ok:
             print(f"{GREEN}[OK]{NC} task {args.task_id} 승인 완료")
         else:
@@ -194,7 +195,8 @@ def cmd_reject(args):
         print(f"{RED}[ERROR]{NC} --message는 필수입니다 (거부 사유).", file=sys.stderr)
         sys.exit(1)
     try:
-        ok = api.reject(args.project, args.task_id, message=args.message)
+        ok = api.reject(args.project, args.task_id, message=args.message,
+                        source="cli", requested_by=os.environ.get("USER") or "cli")
         if ok:
             print(f"{GREEN}[OK]{NC} task {args.task_id} 수정 요청 완료")
         else:
