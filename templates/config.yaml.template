@@ -29,6 +29,13 @@ claude:
   reporter_model: "sonnet"
   max_turns_per_session: 50
 
+  # 세션 재사용 (true 권장)
+  # true면 (task_id, agent_type) 단위로 claude 세션을 공유해,
+  # 같은 task 내 같은 agent의 여러 subtask/attempt가 이전 맥락을 기억한다.
+  # subtask2의 coder가 subtask1에서 "왜 그렇게 바꿨는가"라는 의도까지 전달받을 수 있다.
+  # false면 기존처럼 매 호출 cold start.
+  session_reuse: true
+
   # Usage 기반 실행 제어
   # 5시간 세션 사용량이 이 threshold 이상이면 해당 레벨의 실행을 대기
   usage_thresholds:

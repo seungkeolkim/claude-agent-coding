@@ -669,12 +669,62 @@ fi
 PID_DIR="${AGENT_HUB_ROOT}/.pids"
 mkdir -p "$PID_DIR"
 
+# ─── Claude 세션 재사용 결정 ───
+# (task_id, agent_type) 단위로 UUID를 발급해 같은 task 안 같은 agent의
+# 모든 subtask/attempt가 하나의 세션을 공유한다. retry/다음 subtask에서
+# "이전에 왜 이렇게 바꿨는가"라는 의도가 자연스럽게 전달된다.
+#
+# config.yaml의 claude.session_reuse가 false이면 비활성화. 기본값 true.
+SESSION_REUSE=$(read_yaml_value "$CONFIG_FILE" "claude.session_reuse")
+if [[ -z "$SESSION_REUSE" ]]; then
+    SESSION_REUSE="true"
+fi
+
+SESSION_ID=""
+SESSION_MODE=""
+if [[ "$SESSION_REUSE" == "true" ]]; then
+    SESSION_OUTPUT=$(python3 "${SCRIPT_DIR}/allocate_session_id.py" \
+        "$TASK_FILE" "$AGENT_TYPE" || true)
+    if [[ -n "$SESSION_OUTPUT" ]]; then
+        SESSION_ID=$(echo "$SESSION_OUTPUT" | awk '{print $1}')
+        SESSION_MODE=$(echo "$SESSION_OUTPUT" | awk '{print $2}')
+        echo "[run_claude_agent] session: id=${SESSION_ID} mode=${SESSION_MODE}"
+    else
+        echo "[run_claude_agent] session_id 발급 실패 — cold start로 진행" >&2
+    fi
+fi
+
+# resume 세션에는 "이전 맥락은 참고용, 이번 지시가 최우선" 가드를 프롬프트 맨 앞에 붙인다.
+# coder가 subtask2에서 subtask1 때의 의도를 기억하되 그것에 고착되지 않도록 한다.
+if [[ "$SESSION_MODE" == "resume" ]]; then
+    PROMPT="## 세션 재개 안내
+이 세션에는 같은 task의 이전 호출(다른 subtask 또는 이전 attempt) 맥락이 남아 있을 수 있습니다.
+그 맥락은 '왜 그렇게 바꿨는가'를 이해하는 배경 자료이며, 이번 턴의 우선순위는 다음과 같습니다:
+
+1. 아래 Task/Subtask/Plan Context와 명시적 지시사항이 최우선
+2. 이전 세션에서 내린 결정이 이번 subtask의 요구사항과 충돌하면, 이번 요구사항을 따른다
+3. 이전 판단을 재사용하기 전, 이번 context에서 여전히 유효한지 검증
+
+---
+${PROMPT}"
+fi
+
 # ─── Claude Code CLI 실행 ───
 cd "$CODEBASE_PATH"
 
+# claude 인자 조립 (세션 재사용 여부에 따라 --session-id / --resume 분기)
+CLAUDE_ARGS=(--model "$MODEL" -p "${PROMPT}" --output-format json --dangerously-skip-permissions)
+if [[ -n "$SESSION_ID" ]]; then
+    if [[ "$SESSION_MODE" == "resume" ]]; then
+        CLAUDE_ARGS+=(--resume "$SESSION_ID")
+    else
+        CLAUDE_ARGS+=(--session-id "$SESSION_ID")
+    fi
+fi
+
 # claude를 백그라운드로 실행하고 PID를 기록한다
 # 종료 시 PID 파일을 자동 삭제하기 위해 trap을 설정한다
-claude --model "$MODEL" -p "${PROMPT}" --output-format json --dangerously-skip-permissions 2>&1 | tee "$LOG_FILE" &
+claude "${CLAUDE_ARGS[@]}" 2>&1 | tee "$LOG_FILE" &
 CLAUDE_PID=$!
 
 # PID 파일 생성 (agent 정보 포함)
