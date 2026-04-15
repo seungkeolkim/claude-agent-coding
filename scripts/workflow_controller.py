@@ -519,6 +519,59 @@ def git_has_changes(codebase_path):
     return bool(result.stdout.strip())
 
 
+def git_reset_to_base_branch(codebase_path, base_branch, remote="origin", token=None):
+    """
+    Planner 실행 직전에 codebase를 base_branch의 최신 상태로 강제 리셋한다.
+
+    task는 프로젝트 단위로 직렬 실행되므로, 이 시점에 남아 있는 미커밋/미추적 변경은
+    이전 task의 산출물이다. 정상 종료된 이전 task는 이미 remote에 push되어 PR로
+    보존되어 있거나(merge_strategy=pr_and_continue) 머지 완료(auto_merge)이고,
+    비정상 종료된 경우는 폐기 대상이므로 무조건 리셋해도 안전하다.
+
+    절차:
+      1. git reset --hard           (staged/unstaged 폐기)
+      2. git clean -fd              (untracked 파일/디렉토리 제거)
+      3. git checkout <base_branch> (base_branch로 이동)
+      4. git fetch <remote> <base>  (remote 최신 상태 가져오기, 실패 시 경고만)
+      5. git reset --hard <remote>/<base> (머지된 이전 task를 로컬에 반영)
+
+    Args:
+        codebase_path: 대상 git 저장소 경로.
+        base_branch: project.yaml의 git.base_branch (예: "main").
+        remote: remote 이름 (기본 "origin").
+        token: fetch 시 http.extraheader로 인라인 주입할 PAT (선택).
+               None이면 기본 자격 증명 경로 사용. VSCode askpass env는 항상 strip.
+    """
+    import base64
+    log_info(f"[git] base_branch로 리셋: {base_branch}")
+
+    # 1~3. 로컬 정리 후 base로 이동
+    git_run(codebase_path, "reset", "--hard")
+    git_run(codebase_path, "clean", "-fd")
+    git_run(codebase_path, "checkout", base_branch)
+
+    # 4. remote fetch (네트워크/권한 문제는 치명적이지 않으므로 실패해도 진행)
+    env = _env_without_vscode_git()
+    fetch_cmd = ["git"]
+    if token:
+        basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+        fetch_cmd += ["-c", f"http.extraheader=Authorization: Basic {basic}"]
+    fetch_cmd += ["fetch", remote, base_branch]
+    display = " ".join("<token-header>" if (token and "Basic " in a) else a for a in fetch_cmd)
+    log_info(f"[git] {display}")
+    result = subprocess.run(fetch_cmd, cwd=codebase_path, capture_output=True, text=True, env=env)
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        if token:
+            stderr = stderr.replace(token, "***")
+        log_warn(f"[git] fetch 실패 (로컬 base_branch로 계속 진행): {stderr}")
+        return
+
+    # 5. remote에 fast-forward (이전 task의 머지 반영)
+    git_run(codebase_path, "reset", "--hard", f"{remote}/{base_branch}")
+    log_info(f"[git] base_branch 동기화 완료: {remote}/{base_branch}")
+
+
 def git_create_task_branch(codebase_path, branch_name, default_branch):
     """
     task용 feature 브랜치를 생성하고 checkout한다.
@@ -1012,6 +1065,27 @@ def run_pipeline(args):
 
     if args.dummy:
         log_info("DUMMY 모드: git 작업 스킵")
+
+    # ─── Pre-Planner: codebase를 base_branch로 강제 리셋 ───
+    # Planner가 이전 task의 미정리 작업 트리를 오염된 컨텍스트로 인식하지 않도록,
+    # Planner 실행 전에 base_branch의 최신 상태로 되돌린다.
+    # task는 프로젝트 단위로 직렬 실행되므로 남아 있는 변경은 모두 폐기 안전.
+    if git_enabled and not args.dummy:
+        update_pipeline_stage(task_file, "git_reset")
+        git_remote = git_config.get("remote", "origin")
+        try:
+            git_reset_to_base_branch(codebase_path, base_branch,
+                                     remote=git_remote, token=auth_token or None)
+        except Exception as e:
+            log_error(f"base_branch 리셋 실패: {e}")
+            record_failure_reason(task_file, f"base_branch 리셋 실패: {e}")
+            update_task_field(task_file, "status", "failed")
+            update_project_state(project_dir, status="idle", last_error=task_id)
+            emit_notification(
+                project_dir=project_dir, event_type="task_failed", task_id=task_id,
+                message=f"base_branch 리셋 실패: {e}",
+            )
+            sys.exit(1)
 
     # ─── Phase 1: Planner ───
     log_step("Phase 1: Planner 실행")
