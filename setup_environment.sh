@@ -45,7 +45,7 @@ record_warn() { TOTAL_CHECKS=$((TOTAL_CHECKS + 1)); WARNING_CHECKS=$((WARNING_CH
 
 check_system_requirements() {
     echo ""
-    echo -e "${BOLD}[1/4] 시스템 필수 도구 검증${NC}"
+    echo -e "${BOLD}[1/5] 시스템 필수 도구 검증${NC}"
     echo ""
 
     # --- Python 3 ---
@@ -127,7 +127,7 @@ check_system_requirements() {
 
 setup_python_environment() {
     echo ""
-    echo -e "${BOLD}[2/4] Python 가상환경 + pip 의존성${NC}"
+    echo -e "${BOLD}[2/5] Python 가상환경 + pip 의존성${NC}"
     echo ""
 
     if [[ "$CHECK_ONLY" == "--check" ]]; then
@@ -209,7 +209,7 @@ setup_python_environment() {
 
 check_configuration_files() {
     echo ""
-    echo -e "${BOLD}[3/4] 설정 파일 확인${NC}"
+    echo -e "${BOLD}[3/5] 설정 파일 확인${NC}"
     echo ""
 
     # config.yaml
@@ -258,7 +258,7 @@ check_configuration_files() {
 
 check_directory_structure() {
     echo ""
-    echo -e "${BOLD}[4/4] 디렉토리 구조${NC}"
+    echo -e "${BOLD}[4/5] 디렉토리 구조${NC}"
     echo ""
 
     # runtime 디렉토리 (gitignored)
@@ -280,6 +280,78 @@ check_directory_structure() {
             fi
         fi
     done
+}
+
+
+# ═══════════════════════════════════════════════════════════
+# 5. E2E 테스트 환경 (Docker + Playwright 이미지)
+# ═══════════════════════════════════════════════════════════
+# docs/e2e-test-design-decision.md §4.6-4, §4.6-7 결정에 따라
+# setup 시점에 Docker 환경 검증 + Playwright 이미지 최초 빌드 수행.
+# 이미 빌드되어 있으면 layer cache로 거의 no-op.
+
+check_e2e_docker_environment() {
+    echo ""
+    echo -e "${BOLD}[5/5] E2E 테스트 환경 (Docker + Playwright 이미지)${NC}"
+    echo ""
+
+    local e2e_image="agent-hub-e2e-playwright"
+    local dockerfile_dir="$SCRIPT_DIR/docker/e2e-playwright"
+
+    # --- docker CLI ---
+    if ! command -v docker &>/dev/null; then
+        log_warn "docker: 설치되지 않음 (E2E 테스트 사용 시 필요)"
+        log_info "설치: https://docs.docker.com/engine/install/"
+        record_warn
+        return
+    fi
+    local docker_version
+    docker_version=$(docker --version 2>&1)
+    log_ok "docker: ${docker_version}"
+    record_pass
+
+    # --- docker 데몬 접근 권한 ---
+    if docker ps &>/dev/null; then
+        log_ok "docker 데몬: 접근 가능"
+        record_pass
+    else
+        log_warn "docker 데몬: 접근 불가 (권한 또는 데몬 미기동)"
+        log_info "sudo 없이 실행: sudo usermod -aG docker \$USER  (로그아웃 후 재로그인)"
+        log_info "데몬 시작: sudo systemctl start docker"
+        record_warn
+        return
+    fi
+
+    # --- Dockerfile 존재 ---
+    if [ ! -f "$dockerfile_dir/Dockerfile" ]; then
+        log_fail "Dockerfile 없음: $dockerfile_dir/Dockerfile"
+        record_fail
+        return
+    fi
+    log_ok "Dockerfile 존재함: docker/e2e-playwright/"
+    record_pass
+
+    # --- 이미지 존재 + 빌드 ---
+    if docker image inspect "$e2e_image" &>/dev/null; then
+        log_ok "Playwright 이미지 존재함: $e2e_image"
+        record_pass
+    else
+        if [[ "$CHECK_ONLY" == "--check" ]]; then
+            log_warn "Playwright 이미지 없음: $e2e_image (실행 시 auto_build)"
+            log_info "수동 빌드: ./scripts/build_e2e_image.sh"
+            record_warn
+        else
+            log_info "Playwright 이미지 빌드 중 (최초 1회 ~수분 소요)..."
+            if E2E_IMAGE="$e2e_image" "$SCRIPT_DIR/scripts/build_e2e_image.sh" &>/dev/null; then
+                log_ok "Playwright 이미지 빌드 완료: $e2e_image"
+                record_pass
+            else
+                log_warn "Playwright 이미지 빌드 실패 (E2E 테스트 사용 시 필요)"
+                log_info "수동 실행: ./scripts/build_e2e_image.sh"
+                record_warn
+            fi
+        fi
+    fi
 }
 
 
@@ -337,4 +409,5 @@ check_system_requirements
 setup_python_environment
 check_configuration_files
 check_directory_structure
+check_e2e_docker_environment
 print_summary

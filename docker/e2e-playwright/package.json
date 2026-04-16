@@ -1,0 +1,10 @@
+{
+  "name": "agent-hub-e2e-playwright",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Playwright test runner + MCP server 통합 이미지 (Agent Hub E2E)",
+  "dependencies": {
+    "@playwright/test": "1.52.0",
+    "@playwright/mcp": "latest"
+  }
+}

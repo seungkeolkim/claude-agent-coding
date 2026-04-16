@@ -665,6 +665,159 @@ EOJSON
     exit 0
 fi
 
+# ═══════════════════════════════════════════════════════════
+# e2e_tester 전용: Playwright + MCP Docker 컨테이너 준비
+# ═══════════════════════════════════════════════════════════
+# docs/e2e-test-design-decision.md §5.3/§5.8 구현.
+# e2e_tester 호출 전에 컨테이너를 기동하고 임시 .mcp.json을 만들어
+# Claude 세션에 MCP를 주입한다. trap으로 컨테이너 정리 보장.
+#
+# 여기서 설정되는 변수들(후속 블록에서 사용):
+#   E2E_CONTAINER_NAME       컨테이너 이름
+#   E2E_MCP_CONFIG_FILE      임시 .mcp.json 경로
+#   E2E_HOST_PORT            MCP SSE 호스트 포트
+#   E2E_ARTIFACTS_DIR        호스트 스크린샷/비디오/trace 경로
+#   E2E_TESTS_DIR            호스트 .spec.ts 경로 (볼륨 마운트)
+#   E2E_PROMPT_EXTRA         프롬프트에 덧붙일 "## E2E 실행 설정" 섹션
+
+E2E_CONTAINER_NAME=""
+E2E_MCP_CONFIG_FILE=""
+E2E_HOST_PORT=""
+E2E_ARTIFACTS_DIR=""
+E2E_TESTS_DIR=""
+E2E_PROMPT_EXTRA=""
+E2E_MCP_LOG_RETENTION="on-failure"
+
+if [[ "$AGENT_TYPE" == "e2e_tester" && "$DRY_RUN" != "true" && "$DUMMY" != "true" && -n "${SUBTASK_FILE:-}" ]]; then
+    # ─── config.yaml / project.yaml 에서 tester 설정 읽기 ───
+    E2E_IMAGE=$(read_yaml_value "$CONFIG_FILE" "machines.tester.docker.image")
+    [[ -z "$E2E_IMAGE" ]] && E2E_IMAGE="agent-hub-e2e-playwright"
+    E2E_AUTO_BUILD=$(read_yaml_value "$CONFIG_FILE" "machines.tester.docker.auto_build")
+    [[ -z "$E2E_AUTO_BUILD" ]] && E2E_AUTO_BUILD="true"
+    E2E_NETWORK=$(read_yaml_value "$CONFIG_FILE" "machines.tester.docker.network")
+    [[ -z "$E2E_NETWORK" ]] && E2E_NETWORK="host"
+    E2E_HEALTHCHECK_TIMEOUT=$(read_yaml_value "$CONFIG_FILE" "machines.tester.docker.healthcheck_timeout_seconds")
+    [[ -z "$E2E_HEALTHCHECK_TIMEOUT" ]] && E2E_HEALTHCHECK_TIMEOUT="30"
+    E2E_MCP_ISOLATED=$(read_yaml_value "$CONFIG_FILE" "machines.tester.mcp.isolated")
+    [[ -z "$E2E_MCP_ISOLATED" ]] && E2E_MCP_ISOLATED="true"
+    E2E_MCP_INTERNAL_PORT=$(read_yaml_value "$CONFIG_FILE" "machines.tester.mcp.internal_port")
+    [[ -z "$E2E_MCP_INTERNAL_PORT" ]] && E2E_MCP_INTERNAL_PORT="8931"
+    E2E_MCP_LOG_RETENTION=$(read_yaml_value "$CONFIG_FILE" "machines.tester.mcp.log_retention")
+    [[ -z "$E2E_MCP_LOG_RETENTION" ]] && E2E_MCP_LOG_RETENTION="on-failure"
+
+    E2E_BROWSER=$(read_yaml_value "$CONFIG_FILE" "machines.tester.browser")
+    [[ -z "$E2E_BROWSER" ]] && E2E_BROWSER="chromium"
+    E2E_VIEWPORT_W=$(read_yaml_value "$CONFIG_FILE" "machines.tester.viewport.width")
+    [[ -z "$E2E_VIEWPORT_W" ]] && E2E_VIEWPORT_W="1280"
+    E2E_VIEWPORT_H=$(read_yaml_value "$CONFIG_FILE" "machines.tester.viewport.height")
+    [[ -z "$E2E_VIEWPORT_H" ]] && E2E_VIEWPORT_H="720"
+
+    # retry_count: project.yaml override가 우선
+    E2E_RETRY_COUNT=$(read_yaml_value "$PROJECT_YAML" "testing.e2e_test.retry_count")
+    if [[ -z "$E2E_RETRY_COUNT" ]]; then
+        E2E_RETRY_COUNT=$(read_yaml_value "$CONFIG_FILE" "machines.tester.retry_count")
+    fi
+    [[ -z "$E2E_RETRY_COUNT" ]] && E2E_RETRY_COUNT="0"
+
+    # test_source / base_url / static_test_dir
+    E2E_TEST_SOURCE=$(read_yaml_value "$PROJECT_YAML" "testing.e2e_test.test_source")
+    [[ -z "$E2E_TEST_SOURCE" ]] && E2E_TEST_SOURCE="dynamic"
+    E2E_MODE=$(read_yaml_value "$PROJECT_YAML" "testing.e2e_test.mode")
+    [[ -z "$E2E_MODE" ]] && E2E_MODE="browser"
+    E2E_BASE_URL=$(read_yaml_value "$PROJECT_YAML" "testing.e2e_test.base_url")
+    E2E_STATIC_TEST_DIR=$(read_yaml_value "$PROJECT_YAML" "testing.e2e_test.static_test_dir")
+
+    # base_url 자동 추론 (§4.6-2)
+    if [[ -z "$E2E_BASE_URL" ]]; then
+        _SERVICE_PORT=$(read_yaml_value "$PROJECT_YAML" "codebase.service_port")
+        if [[ -n "$_SERVICE_PORT" ]]; then
+            E2E_BASE_URL="http://localhost:${_SERVICE_PORT}"
+        fi
+    fi
+
+    # ─── artifacts / tests 디렉토리 준비 ───
+    _PROJECT_NAME="$(basename "$PROJECT_DIR")"
+    _SUB_SEQ="${SUBTASK_SEQ:-00}"
+    E2E_CONTAINER_NAME="e2e-${_PROJECT_NAME}-${TASK_ID}-${_SUB_SEQ}"
+    E2E_ARTIFACTS_DIR="${LOG_DIR}/e2e-artifacts/${SUBTASK_ID:-unknown}"
+    E2E_TESTS_DIR="${CODEBASE_PATH}/e2e-tests/${SUBTASK_ID:-unknown}"
+    mkdir -p "$E2E_ARTIFACTS_DIR" "$E2E_TESTS_DIR"
+
+    # ─── 컨테이너 기동 (호스트 포트 획득) ───
+    echo "[run_claude_agent] E2E 컨테이너 기동 중: $E2E_CONTAINER_NAME"
+    E2E_HOST_PORT=$(
+        E2E_IMAGE="$E2E_IMAGE" \
+        E2E_AUTO_BUILD="$E2E_AUTO_BUILD" \
+        E2E_NETWORK="$E2E_NETWORK" \
+        E2E_HEALTHCHECK_TIMEOUT="$E2E_HEALTHCHECK_TIMEOUT" \
+        E2E_MCP_ISOLATED="$E2E_MCP_ISOLATED" \
+        E2E_MCP_INTERNAL_PORT="$E2E_MCP_INTERNAL_PORT" \
+        "${SCRIPT_DIR}/e2e_container_runner.sh" start \
+            "$E2E_CONTAINER_NAME" "$E2E_TESTS_DIR" "$E2E_ARTIFACTS_DIR"
+    )
+    if [[ -z "$E2E_HOST_PORT" ]]; then
+        echo "[run_claude_agent] E2E 컨테이너 기동 실패" >&2
+        exit 1
+    fi
+    echo "[run_claude_agent] E2E 컨테이너 ready (host_port=$E2E_HOST_PORT)"
+
+    # ─── 임시 .mcp.json 생성 ───
+    E2E_MCP_CONFIG_FILE="/tmp/mcp-${TASK_ID}-${_SUB_SEQ}.$$.json"
+    cat > "$E2E_MCP_CONFIG_FILE" <<EOMCP
+{
+  "mcpServers": {
+    "playwright": {
+      "url": "http://localhost:${E2E_HOST_PORT}/sse"
+    }
+  }
+}
+EOMCP
+    echo "[run_claude_agent] MCP config 생성: $E2E_MCP_CONFIG_FILE"
+
+    # ─── 프롬프트에 주입할 E2E 실행 설정 ───
+    E2E_TEST_ACCOUNTS_JSON=$(python3 -c "
+import yaml, json
+with open('${PROJECT_YAML}') as f:
+    cfg = yaml.safe_load(f) or {}
+accounts = cfg.get('testing', {}).get('e2e_test', {}).get('test_accounts', []) or []
+print(json.dumps(accounts, ensure_ascii=False))
+")
+
+    E2E_PROMPT_EXTRA="
+
+---
+## E2E 실행 설정
+- AGENT_HUB_ROOT: ${AGENT_HUB_ROOT}
+- mode: ${E2E_MODE}
+- test_source: ${E2E_TEST_SOURCE}
+- browser: ${E2E_BROWSER}
+- viewport_w: ${E2E_VIEWPORT_W}
+- viewport_h: ${E2E_VIEWPORT_H}
+- base_url: ${E2E_BASE_URL:-(unset)}
+- static_test_dir: ${E2E_STATIC_TEST_DIR:-(unset)}
+- tests_dir (호스트, 볼륨 마운트됨 → 컨테이너의 /e2e/tests): ${E2E_TESTS_DIR}
+- artifacts_dir (호스트, 볼륨 마운트됨 → 컨테이너의 /e2e/test-results): ${E2E_ARTIFACTS_DIR}
+- container: ${E2E_CONTAINER_NAME}
+- mcp_sse_url: http://localhost:${E2E_HOST_PORT}/sse
+- retry_count: ${E2E_RETRY_COUNT}
+- test_accounts: ${E2E_TEST_ACCOUNTS_JSON}
+
+Phase 3 검증 명령(그대로 Bash tool에서 실행 가능):
+\`\`\`bash
+${AGENT_HUB_ROOT}/scripts/e2e_container_runner.sh exec-test ${E2E_CONTAINER_NAME} \\
+  --browser ${E2E_BROWSER} \\
+  --base-url '${E2E_BASE_URL}' \\
+  --retries ${E2E_RETRY_COUNT} \\
+  --viewport-w ${E2E_VIEWPORT_W} \\
+  --viewport-h ${E2E_VIEWPORT_H}
+\`\`\`
+
+실행 후 \`${E2E_ARTIFACTS_DIR}/report.json\`을 Read로 읽어 집계하세요.
+"
+    # PROMPT에 E2E 실행 설정 append
+    PROMPT="${PROMPT}${E2E_PROMPT_EXTRA}"
+fi
+
 # ─── PID 관리 디렉토리 ───
 PID_DIR="${AGENT_HUB_ROOT}/.pids"
 mkdir -p "$PID_DIR"
@@ -722,6 +875,11 @@ if [[ -n "$SESSION_ID" ]]; then
     fi
 fi
 
+# e2e_tester: MCP 주입
+if [[ -n "$E2E_MCP_CONFIG_FILE" ]]; then
+    CLAUDE_ARGS+=(--mcp-config "$E2E_MCP_CONFIG_FILE")
+fi
+
 # claude를 백그라운드로 실행하고 PID를 기록한다
 # 종료 시 PID 파일을 자동 삭제하기 위해 trap을 설정한다
 claude "${CLAUDE_ARGS[@]}" 2>&1 | tee "$LOG_FILE" &
@@ -753,10 +911,50 @@ EOPID
 
 echo "[run_claude_agent] PID ${CLAUDE_PID} 기록됨: ${PID_FILE}"
 
-# 프로세스 종료 시 PID 파일 정리
+# 프로세스 종료 시 PID 파일 정리 + e2e 컨테이너/MCP config 정리 + MCP 로그 보존
 cleanup_pid() {
     rm -f "$PID_FILE"
     echo "[run_claude_agent] PID 파일 정리됨: ${PID_FILE}"
+
+    # e2e_tester 정리 (E2E_CONTAINER_NAME이 세팅된 경우에만)
+    if [[ -n "${E2E_CONTAINER_NAME:-}" ]]; then
+        # MCP 로그 보존 정책 판정
+        local should_save_mcp="false"
+        case "${E2E_MCP_LOG_RETENTION:-on-failure}" in
+            always)
+                should_save_mcp="true"
+                ;;
+            on-failure)
+                # report.json의 stats.unexpected (failed 개수)로 판정. 파일 없으면 저장(비정상 종료)
+                if [[ -f "${E2E_ARTIFACTS_DIR}/report.json" ]]; then
+                    local _failed
+                    _failed=$(python3 -c "
+import json
+try:
+    d = json.load(open('${E2E_ARTIFACTS_DIR}/report.json'))
+    print(d.get('stats', {}).get('unexpected', 1))
+except Exception:
+    print(1)
+" 2>/dev/null || echo "1")
+                    [[ "$_failed" != "0" ]] && should_save_mcp="true"
+                else
+                    should_save_mcp="true"
+                fi
+                ;;
+            never)
+                should_save_mcp="false"
+                ;;
+        esac
+
+        if [[ "$should_save_mcp" == "true" && -d "${E2E_ARTIFACTS_DIR:-}" ]]; then
+            docker logs "$E2E_CONTAINER_NAME" > "${E2E_ARTIFACTS_DIR}/mcp-session.log" 2>&1 || true
+            echo "[run_claude_agent] MCP 세션 로그 보존: ${E2E_ARTIFACTS_DIR}/mcp-session.log"
+        fi
+
+        "${SCRIPT_DIR}/e2e_container_runner.sh" stop \
+            "$E2E_CONTAINER_NAME" \
+            --mcp-config "${E2E_MCP_CONFIG_FILE:-}" || true
+    fi
 }
 trap cleanup_pid EXIT
 
