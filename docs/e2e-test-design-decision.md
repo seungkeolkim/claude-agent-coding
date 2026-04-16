@@ -457,7 +457,7 @@ e2e_tester 분기에서 기존 패턴에 추가:
 
 ---
 
-## 6. 구현 순서 (향후)
+## 6. 구현 순서 (완료 — 커밋 `579af43`, 2026-04-16)
 
 1. **`docker/e2e-playwright/`** 디렉토리
    - `Dockerfile` (MCP + test CLI 통합 이미지, `mcr.microsoft.com/playwright:v1.52.0-noble` 베이스)
@@ -497,44 +497,119 @@ e2e_tester 분기에서 기존 패턴에 추가:
 
 ---
 
-## 7. 검증 방법 (향후)
+## 7. 검증 방법 (진행 중)
 
-### 7.1 컨테이너 단독 검증
+> ✅ 완료 / ⏳ 다음 세션 / ⚠️ 설계상 스킵
 
-1. **이미지 빌드**: `docker build -t agent-hub-e2e-playwright docker/e2e-playwright/`
-2. **수동 기동**: `docker run -d -p 0:8931 --network=host --name e2e-manual-test agent-hub-e2e-playwright`
-3. **포트 조회**: `docker port e2e-manual-test 8931` → 할당된 호스트 포트 확인
-4. **MCP SSE 접근**: `curl -N http://localhost:${PORT}/sse` → event-stream 응답 수신
-5. **docker exec 테스트**: 최소 `.spec.ts` 배치 후 `docker exec e2e-manual-test npx playwright test /e2e/tests --reporter=json` → JSON 결과 확인
-6. **정리**: `docker stop e2e-manual-test && docker rm e2e-manual-test`
+### 7.1 컨테이너 단독 검증 — ✅ 완료
 
-### 7.2 runner 스크립트 검증
+1. ✅ **이미지 빌드**: `./scripts/build_e2e_image.sh` (내부에서 `docker build -t agent-hub-e2e-playwright docker/e2e-playwright/`) — 최초 빌드 ~55초, 캐시 재빌드 즉시
+2. ✅ **수동 기동 + 포트**: `scripts/e2e_container_runner.sh start e2e-smoke-test /tmp/smoke-tests /tmp/smoke-artifacts` → host network에서는 `8931` 그대로, MCP SSE 헬스체크 `http=200` 통과
+3. ✅ **MCP SSE 접근**: `curl http://localhost:8931/sse` → `event: endpoint / data: /sse?sessionId=...` 수신
+4. ✅ **docker exec 테스트**: `example.com` 대상 1-spec `.spec.ts` 배치 후 `scripts/e2e_container_runner.sh exec-test ...` → `1 passed`, `/tmp/smoke-artifacts/report.json` 생성, `stats: {expected: 1, unexpected: 0}`
+5. ✅ **정리**: `scripts/e2e_container_runner.sh stop e2e-smoke-test` 정상
 
-7. `e2e_container_runner.sh start` 단독 실행 → HOST_PORT stdout 확인
-8. MCP healthcheck 실패 시나리오 (예: 포트 미바인딩) → 타임아웃 후 종료 코드 확인
-9. `trap` 동작 검증: runner 중간에 SIGTERM → 컨테이너와 `.mcp.json`이 모두 정리되는지
+### 7.2 runner 스크립트 검증 — ✅ 대부분 완료
 
-### 7.3 Claude + MCP 연동 검증
+6. ✅ `e2e_container_runner.sh start` stdout이 순수 호스트 포트만 남도록 모든 진단 로그를 stderr로 분리한 구조 검증됨 (호출 쪽에서 `$(... start ...)` 캡처 가능).
+7. ⏳ MCP healthcheck 실패 시나리오 (포트 미바인딩 등) → 다음 세션에서 강제 주입 테스트
+8. ⏳ `trap` SIGTERM 시나리오 → 다음 세션 (`run_claude_agent.sh` 통합 경로에서 자연 검증 예정)
 
-10. `claude -p --mcp-config /tmp/mcp-test.json "브라우저로 http://example.com 열고 타이틀 읽어줘"` → MCP tool 호출 로그 확인
-11. 실패 재현: Claude가 존재하지 않는 selector를 넣은 spec 작성 → Phase 3 실패 → Phase 4 MCP 재탐색 로그 수집
+### 7.3 Claude + MCP 연동 검증 — ⏳ 다음 세션
 
-### 7.4 WFC 파이프라인 검증
+9. ⏳ `run_claude_agent.sh e2e_tester` 실제 모드 호출 시 생성되는 `/tmp/mcp-{task}-{subtask}.$.json` 파일이 `--mcp-config`로 Claude CLI에 주입 → Claude가 `playwright.browser_*` MCP tool을 사용하여 example.com 탐색 후 spec 작성.
+10. ⏳ 실패 재현: 존재하지 않는 selector를 넣은 spec → Phase 3 fail → Phase 4 MCP 재탐색 로그(`mcp-session.log`) 수집 (on-failure 보존 정책 발동 확인).
 
-12. dummy 모드: `./run_agent.sh run e2e_tester --project test-project --task 00001 --dummy` → 기존 더미 JSON 흐름 유지 확인
-13. `test_source=static`: 기존 `.spec.ts` 배치 → Phase 1/2 skip 후 Phase 3만 실행
-14. `test_source=dynamic`: Claude가 MCP로 탐색 후 spec 작성 → 실제 pass 관찰
-15. `test_source=both`: dynamic 생성분 + static 모두 실행 → **AND 판정 (§4.6-5)** 한쪽만 실패해도 `overall_result=fail`, reporter JSON에 dynamic/static 분리 기록
+### 7.4 WFC 파이프라인 검증 — ⏳ 다음 세션
 
-### 7.5 동시성/격리 검증
+11. ⚠️ dummy 모드 pipeline: `run_claude_agent.sh` L691 가드(`DUMMY != true`)로 e2e_tester 분기 전체가 스킵됨 → dummy 경로 검증 의미 없음. 실제 모드로만 검증 진행.
+12. ⏳ `test_source=static`: 기존 `.spec.ts` 배치 → Phase 1/2 skip 후 Phase 3만 실행
+13. ⏳ `test_source=dynamic`: Claude가 MCP로 탐색 후 spec 작성 → 실제 pass 관찰 **(다음 세션 첫 항목)**
+14. ⏳ `test_source=both`: dynamic + static → AND 판정(§4.6-5), reporter JSON에 dynamic/static 분리 기록
 
-16. 서로 다른 두 프로젝트의 e2e_tester를 **동시 실행** → 서로 다른 호스트 포트 할당 + 컨테이너명 충돌 없음
-17. 같은 task 내 subtask 순차 실행 → 이전 컨테이너 완전 정리 후 다음 시작 확인
-18. 실패/인터럽트 시 컨테이너 고아(orphan) 없음 → `docker ps -a | grep e2e-` 비어있음 확인
+### 7.5 동시성/격리 검증 — ⏳ 다음 세션
+
+15. ⏳ 서로 다른 두 프로젝트의 e2e_tester를 동시 실행 → 포트/컨테이너명 충돌 없음
+16. ⏳ 같은 task 내 subtask 순차 실행 → 이전 컨테이너 완전 정리 후 다음 시작
+17. ⏳ 실패/인터럽트 시 컨테이너 고아 없음 → `docker ps -a | grep e2e-` 비어있음
+
+### 7.6 보조 스크립트 — ✅ 완료
+
+18. ✅ `setup_environment.sh --check` 5단계 21/21 통과 (E2E Docker 환경 섹션 포함)
+19. ✅ `e2e_watcher.sh` 기본 실행 → `[DEPRECATED]` 배너 + exit 2; `E2E_WATCHER_ACK_DEPRECATED=true` 설정 시 구 구현 실행 (SSH 시도)
 
 ---
 
-## 8. 참고 자료
+## 8. 구현 결과 및 런타임 수정 사항 (2026-04-16)
+
+### 8.1 구현된 파일 (커밋 `579af43`)
+
+**신규:**
+- `docker/e2e-playwright/Dockerfile` — `mcr.microsoft.com/playwright:v1.52.0-noble` 기반. MCP 서버를 CMD로 기동.
+- `docker/e2e-playwright/package.json` — `@playwright/test@1.52.0` + `@playwright/mcp@latest`
+- `docker/e2e-playwright/playwright.config.ts` — env-var 주도 설정 + reporter `[['json', {outputFile: '/e2e/test-results/report.json'}], ['list']]`
+- `scripts/build_e2e_image.sh` — 수동 빌드 래퍼 (`E2E_IMAGE` override + docker build 추가 인자 passthrough). runner auto_build와 setup_environment 빌드 경로 모두 이 래퍼를 재사용하여 DRY.
+- `scripts/e2e_container_runner.sh` — `start` / `exec-test` / `stop` 서브커맨드. 호스트 네트워크에서는 내부 포트(8931) 그대로 사용.
+
+**수정:**
+- `scripts/run_claude_agent.sh` — e2e_tester 분기 추가 (L691 `DUMMY != true` 가드). 컨테이너 기동 + 동적 `.mcp.json` 생성 + `--mcp-config` 전달 + cleanup trap의 log_retention 정책.
+- `scripts/e2e_watcher.sh` — DEPRECATED 배너 + `E2E_WATCHER_ACK_DEPRECATED` 미설정 시 exit 2
+- `setup_environment.sh` — [5/5] E2E Docker 환경 검증 단계 추가
+- `templates/config.yaml.template` — `machines.tester`를 Docker+MCP 스펙으로 재작성
+- `templates/project.yaml.template` — `testing.e2e_test`에 mode/test_source/base_url/static_test_dir 필드
+- `config/agent_prompts/e2e_tester.md` — 4-Phase 흐름으로 전면 재작성
+- `docs/agent-system-spec-v07.md` — §2.1/§2.2/§4.3/§6.3/§6.4/§15 갱신
+
+### 8.2 런타임 검증에서 발견된 버그 2종 (같은 커밋에 포함)
+
+두 버그 모두 설계 자체 결함이 아니라 shell/Playwright CLI의 세부 동작을 잘못 이해해서 생긴 것. 검증 중 재현 → 수정 → 재검증까지 완료.
+
+**버그 #1 — wait_for_mcp_ready()의 curl 폴백 로직이 SSE 응답과 충돌**
+
+증상: 정상 기동된 컨테이너의 SSE 엔드포인트에 대해 헬스체크가 30초 내내 실패.
+
+원인:
+```bash
+# (수정 전)
+status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 "..." 2>/dev/null || echo "000")
+```
+SSE는 헤더 200을 먼저 보낸 뒤 스트림을 끊지 않음. `--max-time 2`로 curl이 exit 28로 빠지는데, 이때 stdout에는 이미 `200`이 찍혀 있음. 그 뒤 `||` 분기가 발동해 `000`이 덧붙어 최종 치환값이 `200000`이 되어 정규식 `^(200|204|405|406)$`에 매칭 실패.
+
+수정: exit code를 무시하고 stdout만 신뢰.
+```bash
+status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 "..." 2>/dev/null) || true
+status="${status:-000}"
+```
+
+**버그 #2 — exec-test의 `--reporter=json` CLI 플래그가 config의 outputFile 설정을 override**
+
+증상: 테스트는 pass, stdout에 JSON도 출력되지만 `artifacts_dir/report.json` 파일이 생성되지 않음.
+
+원인: `playwright.config.ts`의 `reporter: [['json', {outputFile: '/e2e/test-results/report.json'}], ['list']]` 설정이 있는데, 호출부가 `npx playwright test --config=... --reporter=json`로 또 한 번 지정. Playwright는 CLI `--reporter` 플래그가 주어지면 config의 reporter 설정을 통째로 대체하며, 이 때 CLI로 준 `json`은 outputFile 없이 stdout으로만 출력.
+
+수정: `exec-test`에서 `--reporter=json` CLI 플래그 제거. config의 `[json, list]` 조합을 그대로 사용 → 콘솔에는 list reporter, 파일에는 json reporter가 동시에 동작.
+
+### 8.3 수동 검증 결과
+
+| 검증 | 결과 | 비고 |
+|------|------|------|
+| ./scripts/build_e2e_image.sh | ✅ | 최초 빌드 ~55s, 캐시 재빌드 즉시 |
+| container start/stop 사이클 | ✅ | 호스트 포트 8931 stdout만 출력 확인 |
+| MCP SSE 헬스체크 (버그 #1 fix 후) | ✅ | `http=200` 감지 |
+| exec-test (버그 #2 fix 후) | ✅ | 1-spec example.com pass, report.json 생성, stats.unexpected=0 |
+| setup_environment.sh --check | ✅ | 21/21 |
+| e2e_watcher.sh deprecated | ✅ | 기본 exit 2, ACK env 시 구 코드 실행 |
+| WFC/Claude MCP 통합 경로 | ⏳ | §7.3, §7.4 — 다음 세션으로 이월 |
+
+### 8.4 다음 세션 첫 작업 (Option A: 실제 모드 1회 스모크)
+
+test-project의 e2e_test를 임시로 enabled:true + base_url=https://example.com 으로 패치하고, 임시 task/subtask JSON을 `/tmp/e2e-verify/`에 두고 `run_claude_agent.sh e2e_tester`를 실제 모드로 호출하여 통합 경로(컨테이너 기동 + .mcp.json + Claude 실행 + 4-Phase + cleanup)를 1회 검증.
+
+상세 절차는 handoff `docs_for_claude/021-handoff-playwright-mcp-docker-e2e.md` 참조.
+
+---
+
+## 9. 참고 자료
 
 ### 도구 비교 / 시장 추세
 - [Playwright vs Cypress vs Selenium 2026 다운로드 통계](https://tech-insider.org/playwright-vs-cypress-vs-selenium-2026/)
@@ -557,11 +632,11 @@ e2e_tester 분기에서 기존 패턴에 추가:
 
 ---
 
-## 9. 후속 논의 과제
+## 10. 후속 논의 과제
 
 본 문서의 결정 범위 밖이지만 구현 진행 중 발산 논의에서 식별된 항목들.
 
-### 9.1 같은 코드베이스 다중 인스턴스 동시 실행
+### 10.1 같은 코드베이스 다중 인스턴스 동시 실행
 
 §4.6-2 논의 중 제기: **같은 프로젝트의 task가 동시에 실행되어 codebase 서버를 중복 기동하려 할 때** 포트/DB 충돌.
 
@@ -574,14 +649,14 @@ e2e_tester 분기에서 기존 패턴에 추가:
     3. 기타 외부 자원(S3 bucket, Redis key prefix 등) 충돌 방지
 - **결정**: 이번 Phase 범위 외. 별도 과제로 분리하여 `docs/agent-system-spec-v07.md` §15 TODO에 추가 예정.
 
-### 9.2 desktop 모드 구현 세부
+### 10.2 desktop 모드 구현 세부
 
 §4.5에서 `mode: desktop` slot만 확보. 실제 구현 시 다음 결정 필요:
 - Electron 앱 테스트는 Playwright가 직접 지원하지만 네이티브 앱은 별도 도구 (Appium, WinAppDriver) 필요
 - Docker 내부에서 GUI 필요 → xvfb 또는 데스크탑 이미지로 교체
 - 본 문서 scope 밖. 실제 desktop 프로젝트 유입 시 별도 설계 문서 작성.
 
-### 9.3 MCP 세션 중 Claude 크래시 복구
+### 10.3 MCP 세션 중 Claude 크래시 복구
 
 컨테이너는 구동 중인데 Claude CLI가 중간에 죽는 경우:
 - WFC의 graceful resume 경로와 통합 필요
