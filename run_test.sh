@@ -30,11 +30,13 @@ UNIT_TESTS=(
     "tests/test_telegram_client.py"
     "tests/test_telegram_formatter.py"
     "tests/test_telegram_router.py"
+    "tests/test_session_reuse.py"
 )
 
 INTEGRATION_TESTS=(
     "tests/test_wfc_pipeline.py"
     "tests/test_hub_api.py"
+    "tests/test_memory_updater_integration.py"
 )
 
 E2E_TESTS=(
