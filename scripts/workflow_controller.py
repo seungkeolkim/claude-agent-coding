@@ -1274,6 +1274,39 @@ def run_pipeline(args):
             else:
                 log_info("re-plan 완료: memory_refresh task — subtask 없음 (finalize로 진입)")
 
+            # ─── Human Review: Replan 승인 대기 ───
+            # plan_review의 modify 결과로 만들어진 새 plan도 review_replan 정책에 따라
+            # 사용자 승인을 받아야 한다. 이전에는 이 단계가 누락되어 새 plan이
+            # 검토 없이 바로 실행되던 버그가 있었다.
+            if human_review.get("review_replan", False) and not args.dummy:
+                update_pipeline_stage(task_file, "plan_review",
+                                      f"subtask {len(subtasks)}개 (replan)")
+                plan_path = os.path.join("tasks", task_id, "plan.json")
+                request_human_review(
+                    task_file, task_id, "replan_review",
+                    plan_path, len(subtasks),
+                    project_dir=project_dir,
+                )
+                replan_result = wait_for_human_response(
+                    task_file, project_dir, task_id, timeout_hours,
+                    re_notification_interval_hours=re_noti_hours,
+                )
+                if replan_result == "cancel":
+                    log_warn("사용자가 replan을 취소했습니다.")
+                    update_task_field(task_file, "status", "cancelled")
+                    update_project_state(project_dir, status="idle")
+                    sys.exit(0)
+                elif replan_result == "modify":
+                    log_error("replan 후 재수정 요청. 에스컬레이션이 필요합니다.")
+                    update_task_field(task_file, "status", "escalated")
+                    update_project_state(project_dir, status="idle", last_error=task_id)
+                    emit_notification(
+                        project_dir=project_dir, event_type="escalation", task_id=task_id,
+                        message="replan 후 재수정 요청으로 에스컬레이션 발생",
+                    )
+                    sys.exit(1)
+                # approve/timeout → 계속 진행
+
         # 승인 후 running 상태로 복귀
         update_project_state(project_dir, status="running", current_task_id=task_id)
         update_task_field(task_file, "status", "in_progress")
@@ -1692,7 +1725,40 @@ def _continue_after_plan_review(result, args, ctx, plan_data, subtasks,
         else:
             log_info("re-plan 완료: memory_refresh task — subtask 없음 (finalize로 진입)")
 
-    # 승인 후 running 상태�� 복귀
+        # ─── Human Review: Replan 승인 대기 ───
+        # plan_review의 modify 결과로 만들어진 새 plan도 review_replan 정책에 따라
+        # 사용자 승인을 받아야 한다 (run_pipeline()의 동일 분기와 대칭).
+        if human_review.get("review_replan", False) and not args.dummy:
+            timeout_hours = human_review.get("auto_approve_timeout_hours", 24)
+            update_pipeline_stage(task_file, "plan_review",
+                                  f"subtask {len(subtasks)}개 (replan)")
+            plan_path = os.path.join("tasks", task_id, "plan.json")
+            request_human_review(
+                task_file, task_id, "replan_review",
+                plan_path, len(subtasks),
+                project_dir=project_dir,
+            )
+            replan_result = wait_for_human_response(
+                task_file, project_dir, task_id, timeout_hours,
+                re_notification_interval_hours=re_noti_hours,
+            )
+            if replan_result == "cancel":
+                log_warn("사용자가 replan을 취소했습니다.")
+                update_task_field(task_file, "status", "cancelled")
+                update_project_state(project_dir, status="idle")
+                sys.exit(0)
+            elif replan_result == "modify":
+                log_error("replan 후 재수정 요청. 에스컬레이션이 필요합니다.")
+                update_task_field(task_file, "status", "escalated")
+                update_project_state(project_dir, status="idle", last_error=task_id)
+                emit_notification(
+                    project_dir=project_dir, event_type="escalation", task_id=task_id,
+                    message="replan 후 재수정 요청으로 에스컬레이션 발생",
+                )
+                sys.exit(1)
+            # approve/timeout → 계속 진행
+
+    # 승인 후 running 상태로 복귀
     update_project_state(project_dir, status="running", current_task_id=task_id)
     update_task_field(task_file, "status", "in_progress")
 
