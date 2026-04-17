@@ -613,7 +613,7 @@ status="${status:-000}"
 
 ## 9. 통합 검증 결과 (2026-04-17)
 
-### 9.1 추가 수정사항 (커밋 `bf92762`, `cde55c2`, `156bdda`)
+### 9.1 추가 수정사항 (커밋 `bf92762`, `cde55c2`, `156bdda` + 미커밋 1건)
 
 **버그 #3 — MCP config `type: sse` 누락 (커밋 `bf92762`)**
 
@@ -651,6 +651,14 @@ status="${status:-000}"
 1. `_handle_sigterm`: flag + `_forward_sigterm_to_children()` (비블로킹)
 2. `run_subtask_pipeline`: post_review 루프 / reporter retry 전 `_shutdown_requested` 체크
 3. `_cleanup_child_processes` (atexit): SIGTERM→15초→SIGKILL + `_cleanup_orphan_e2e_containers` + `_cleanup_mcp_temp_files`
+
+**버그 #7 — artifacts 설정(video/screenshots/trace) 미전달 (미커밋)**
+
+증상: `config.yaml`에서 `artifacts.video: "on"`을 설정했으나 E2E 테스트 후 video 파일이 생성되지 않음.
+
+원인: `run_claude_agent.sh`가 `config.yaml`의 `machines.tester.artifacts.*` 값을 읽지 않았음. `exec-test` 호출 시 `--video`, `--screenshots`, `--trace` 옵션을 전달하지 않아 `e2e_container_runner.sh`의 기본값(`video=off`)이 적용됨.
+
+수정: `run_claude_agent.sh`에서 artifacts 3개 값(`E2E_SCREENSHOTS`, `E2E_VIDEO`, `E2E_TRACE`)을 config.yaml에서 읽고, Phase 3 검증 명령 프롬프트에 `--screenshots`, `--video`, `--trace` 옵션 추가.
 
 ### 9.2 전체 테스트 매트릭스
 
