@@ -55,13 +55,24 @@ testing:
     #     description: "API 엔드포인트 테스트"
     default_suites: []
 
+  # E2E 테스트는 Playwright + MCP-in-Docker 컨테이너에서 실행됩니다.
+  # 상세 설계: docs/e2e-test-design-decision.md
   e2e_test:
     enabled: false
+    mode: "browser"                   # browser | desktop (§9.2 slot)
     tool: "playwright"
+    test_source: "dynamic"            # dynamic | static | both
+                                      #   dynamic: Claude가 MCP로 앱을 탐색 후 .spec.ts를 동적으로 작성
+                                      #   static : static_test_dir의 기존 테스트만 실행 (탐색/작성 스킵)
+                                      #   both   : dynamic + static 모두 실행 (AND 판정 — 둘 다 통과해야 pass)
+    base_url: ""                      # 비우면 http://localhost:{codebase.service_port} 자동 추론
+    static_test_dir: ""               # test_source=static|both 일 때 기존 .spec.ts 위치 (codebase 내 상대경로)
     test_accounts: []
     #   - email: "test@example.com"
     #     password: "password123"
     #     role: "user"
+    # tester 값을 이 프로젝트에서만 override 하고 싶을 때 (선택):
+    # retry_count: 1                  # Playwright 자체 retry (§4.6-3)
 
   integration_test:
     enabled: false

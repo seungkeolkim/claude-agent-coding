@@ -1,5 +1,18 @@
 #!/usr/bin/env bash
-# e2e_watcher.sh — 테스트장비용 E2E 요청 감시 스크립트
+# ═══════════════════════════════════════════════════════════
+# [DEPRECATED] e2e_watcher.sh
+# ═══════════════════════════════════════════════════════════
+# 이 스크립트는 구(舊) 원격 테스트장비 + SSH sentinel 방식의 구현체입니다.
+# 2026-04-16부로 Playwright + MCP-in-Docker 통합 컨테이너 방식으로 전환되었으며
+# (docs/e2e-test-design-decision.md), 더 이상 WFC 파이프라인에서 호출되지 않습니다.
+#
+# 현재 E2E 실행 진입점:
+#   - scripts/run_claude_agent.sh (e2e_tester 분기)
+#   - scripts/e2e_container_runner.sh (컨테이너 생명주기)
+#
+# 참고용으로만 남아 있으며, 실행 시 즉시 종료됩니다.
+# ═══════════════════════════════════════════════════════════
+# e2e_watcher.sh — 테스트장비용 E2E 요청 감시 스크립트 (레거시)
 #
 # 테스트장비(Windows WSL 또는 PowerShell)에서 실행.
 # 실행장비의 handoffs/ 디렉토리를 SSH로 감시하여
@@ -11,6 +24,14 @@
 # 필요 환경:
 #   - 실행장비로의 SSH 접근 가능
 #   - config.yaml의 tester 섹션 설정 완료
+
+if [[ "${E2E_WATCHER_ACK_DEPRECATED:-}" != "true" ]]; then
+    echo "[DEPRECATED] e2e_watcher.sh는 더 이상 사용되지 않습니다." >&2
+    echo "  새 진입점: scripts/run_claude_agent.sh (e2e_tester 분기)" >&2
+    echo "  설계 문서: docs/e2e-test-design-decision.md" >&2
+    echo "  그래도 구(舊) 코드 참조 목적으로 실행하려면 E2E_WATCHER_ACK_DEPRECATED=true 를 설정하세요." >&2
+    exit 2
+fi
 
 set -euo pipefail
 

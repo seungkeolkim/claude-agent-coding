@@ -11,12 +11,32 @@ machines:
     github_token: ""                # GitHub API/PR 자동화에 필요 시 설정 (ghp_xxxxx)
     git_credential_helper: "store"
     service_bind_address: "0.0.0.0"
+  # E2E 테스트 실행 환경 (Playwright + MCP-in-Docker)
+  # docs/e2e-test-design-decision.md 참고.
   tester:
-    browser: "chromium"
+    mode: "browser"                   # browser | desktop (desktop은 §9.2 slot)
+    browser: "chromium"               # chromium | firefox | webkit (MCP Docker는 chromium 권장)
+    language: "typescript"            # §4.6-1 — TypeScript 단일
     viewport:
       width: 1280
       height: 720
-    ssh_reconnect_interval_seconds: 5
+    retry_count: 0                    # §4.6-3 — Playwright 자체 retry. 0이 기본, 프로젝트별 override 가능
+    docker:
+      image: "agent-hub-e2e-playwright"
+      auto_build: true                # §4.6-7 — runner 안전망. setup에서 빌드된 경우 no-op
+      network: "host"                 # host | bridge (빌드 중인 서비스가 localhost에 있으면 host)
+      timeout_seconds: 300
+      healthcheck_timeout_seconds: 30
+    mcp:
+      enabled: true
+      internal_port: 8931             # 컨테이너 내부 고정 포트 (호스트는 동적 할당)
+      isolated: true                  # --isolated 플래그 (세션 격리)
+      browser_close_before_test: true # Phase 2.5 (탐색용 브라우저 정리)
+      log_retention: "on-failure"     # §4.6-6 — on-failure | always | never
+    artifacts:
+      screenshots: "only-on-failure"
+      video: "off"
+      trace: "retain-on-failure"
 
 # ─── Claude Code ───
 claude:

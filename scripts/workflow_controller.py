@@ -38,15 +38,142 @@ from pathlib import Path
 _shutdown_requested = False
 
 
+def _get_child_pids(parent_pid=None):
+    """/proc 파일시스템에서 재귀적으로 자식 PID 목록을 수집한다."""
+    if parent_pid is None:
+        parent_pid = os.getpid()
+    children = []
+    try:
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            try:
+                with open(f"/proc/{entry}/stat") as f:
+                    stat = f.read().split()
+                    ppid = int(stat[3])
+                    if ppid == parent_pid:
+                        pid = int(entry)
+                        children.append(pid)
+                        # 재귀: 손자 프로세스도 수집
+                        children.extend(_get_child_pids(pid))
+            except (FileNotFoundError, IndexError, ValueError, PermissionError):
+                continue
+    except FileNotFoundError:
+        pass
+    return children
+
+
+def _cleanup_child_processes():
+    """WFC 종료 전 모든 자식 프로세스와 Docker 컨테이너를 정리한다.
+
+    1) 자식 프로세스에 SIGTERM 전파 → 15초 대기 → SIGKILL
+    2) e2e- 접두사 Docker 컨테이너 강제 제거
+    3) MCP 임시 파일 정리
+    """
+    children = _get_child_pids()
+
+    # SIGTERM → 자식의 trap 핸들러가 정리 시도
+    for pid in children:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+
+    if children:
+        # trap 핸들러가 docker stop 등을 수행할 시간을 충분히 준다
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            alive = [p for p in children if _pid_exists(p)]
+            if not alive:
+                break
+            time.sleep(0.5)
+
+        # 15초 후에도 남아있으면 강제 종료
+        for pid in [p for p in children if _pid_exists(p)]:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    # Docker 컨테이너 직접 정리 (자식 trap이 실패했을 경우 안전망)
+    _cleanup_orphan_e2e_containers()
+
+    # MCP 임시 파일 정리
+    _cleanup_mcp_temp_files()
+
+
+def _cleanup_orphan_e2e_containers():
+    """e2e- 접두사 Docker 컨테이너를 강제 제거한다."""
+    try:
+        result = subprocess.run(
+            ["docker", "ps", "-a", "--filter", "name=e2e-", "--format", "{{.Names}}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for name in result.stdout.strip().splitlines():
+            if name.startswith("e2e-"):
+                subprocess.run(
+                    ["docker", "rm", "-f", name],
+                    capture_output=True, timeout=15,
+                )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+
+
+def _cleanup_mcp_temp_files():
+    """/tmp/mcp-*.json 임시 파일을 정리한다."""
+    import glob as glob_mod
+    for f in glob_mod.glob("/tmp/mcp-*.json"):
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+
+
+def _pid_exists(pid):
+    """프로세스가 살아있는지 확인한다."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # 권한 없어도 존재는 함
+
+
+def _forward_sigterm_to_children():
+    """자식 프로세스에 SIGTERM을 전파한다 (블로킹 없음).
+
+    시그널 핸들러에서 호출되므로 sleep/waitpid 등
+    블로킹 작업은 하지 않는다. 자식의 trap 핸들러가
+    Docker 컨테이너 등을 정리하게 되고, subprocess.run()이
+    빨리 완료되어 WFC 종료 흐름으로 진입한다.
+    """
+    for pid in _get_child_pids():
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+
+
 def _handle_sigterm(signum, frame):
-    """SIGTERM/SIGINT 핸들러. 종료 플래그만 세팅한다."""
+    """SIGTERM/SIGINT 핸들러. 종료 플래그 세팅 + 자식에 SIGTERM 전파.
+
+    자식에게 SIGTERM을 보내서 subprocess.run()이 빨리 끝나게 한다.
+    블로킹 대기(cleanup)는 atexit에서 수행.
+    """
     global _shutdown_requested
     _shutdown_requested = True
+    _forward_sigterm_to_children()
+
+import atexit
 
 import yaml
 
 from notification import emit_notification
 from usage_checker import wait_until_below_threshold
+
+# sys.exit() 호출 시에도 자식 프로세스가 정리되도록 atexit 등록
+atexit.register(_cleanup_child_processes)
 
 # ─── 색상 출력 (터미널용) ───
 GREEN = "\033[0;32m"
@@ -2492,6 +2619,10 @@ def run_subtask_pipeline(agent_hub_root, project_name, task_id, subtask_id,
 
     # ─── 나머지 pipeline 단계 (setup/tester/reporter 등) ───
     for agent_type in post_review_phase:
+        if _shutdown_requested:
+            log_info(f"[{subtask_id}] SIGTERM 수신 — pipeline 중단, 종료")
+            return False
+
         if not dummy and usage_thresholds:
             agent_stage_threshold = usage_thresholds.get("new_agent_stage", 0.90)
             wait_until_below_threshold(
@@ -2520,6 +2651,9 @@ def run_subtask_pipeline(agent_hub_root, project_name, task_id, subtask_id,
 
         # Reporter: 실패 판정 → 전체 subtask 재시도
         if agent_type == "reporter" and result.get("verdict") == "fail":
+            if _shutdown_requested:
+                log_info(f"[{subtask_id}] SIGTERM 수신 — 재시도 건너뜀, 종료")
+                return False
             log_warn(f"[{subtask_id}] reporter 실패 판정 — subtask 재시도")
             update_task_counter(task_file, "current_subtask_retry", increment=True)
             return run_subtask_pipeline(
