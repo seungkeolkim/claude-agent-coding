@@ -92,7 +92,11 @@ Bash tool을 사용하여 호스트 runner 스크립트를 호출합니다. 이 
 
 1. `{artifacts_dir}/report.json`을 Read로 확인
 2. Playwright JSON reporter 포맷에서 테스트별 pass/fail 집계
-3. test_source=both이면 dynamic/static을 분리 기록 (AND 판정 — 둘 중 하나라도 fail이면 전체 fail)
+3. test_source=both이면 dynamic/static을 분리 기록 (AND 판정 — 둘 중 하나라도 fail이면 전체 fail):
+   - **static 파일 판별법**: E2E 실행 설정의 `static_files` 항목에 나열된 파일명이 static 테스트.
+     report.json의 각 테스트에서 `file` 경로의 basename이 static_files 목록에 있으면 static, 없으면 dynamic으로 분류.
+   - 예: static_files가 `animal-buttons.spec.ts`이고, report.json에 해당 파일의 테스트 3개 + 그 외 파일의 테스트 4개가 있으면 → static: 3개, dynamic: 4개.
+   - source_results의 dynamic/static 각각 passed/failed/total을 별도 집계한 뒤 AND 판정.
 
 `AGENT_HUB_ROOT`는 Agent Hub 저장소의 절대경로로, 프롬프트 하단에 주입됩니다.
 

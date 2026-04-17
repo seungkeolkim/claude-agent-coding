@@ -746,6 +746,7 @@ if [[ "$AGENT_TYPE" == "e2e_tester" && "$DRY_RUN" != "true" && "$DUMMY" != "true
     # ─── static/both 모드: 기존 테스트 파일을 tests_dir에 복사 ───
     # 컨테이너는 E2E_TESTS_DIR만 /e2e/tests/에 마운트하므로,
     # static_test_dir의 .spec.ts를 여기에 복사해야 Playwright가 찾을 수 있다.
+    E2E_STATIC_FILE_LIST=""
     if [[ "$E2E_TEST_SOURCE" == "static" || "$E2E_TEST_SOURCE" == "both" ]]; then
         if [[ -n "$E2E_STATIC_TEST_DIR" ]]; then
             _STATIC_ABS="${CODEBASE_PATH}/${E2E_STATIC_TEST_DIR}"
@@ -753,6 +754,9 @@ if [[ "$AGENT_TYPE" == "e2e_tester" && "$DRY_RUN" != "true" && "$DUMMY" != "true
                 echo "[run_claude_agent] static 테스트 복사: $_STATIC_ABS → $E2E_TESTS_DIR"
                 cp -r "$_STATIC_ABS"/*.spec.ts "$E2E_TESTS_DIR/" 2>/dev/null || true
                 cp -r "$_STATIC_ABS"/*.spec.js "$E2E_TESTS_DIR/" 2>/dev/null || true
+                # both 모드 AND 판정용: static 테스트 파일 목록 수집
+                E2E_STATIC_FILE_LIST=$(cd "$E2E_TESTS_DIR" && ls *.spec.ts *.spec.js 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+                echo "[run_claude_agent] static 파일 목록: $E2E_STATIC_FILE_LIST"
             else
                 echo "[run_claude_agent] 경고: static_test_dir 존재하지 않음: $_STATIC_ABS" >&2
             fi
@@ -814,6 +818,7 @@ print(json.dumps(accounts, ensure_ascii=False))
 - viewport_h: ${E2E_VIEWPORT_H}
 - base_url: ${E2E_BASE_URL:-(unset)}
 - static_test_dir: ${E2E_STATIC_TEST_DIR:-(unset)}
+- static_files: ${E2E_STATIC_FILE_LIST:-(none)}
 - tests_dir (호스트, 볼륨 마운트됨 → 컨테이너의 /e2e/tests): ${E2E_TESTS_DIR}
 - artifacts_dir (호스트, 볼륨 마운트됨 → 컨테이너의 /e2e/test-results): ${E2E_ARTIFACTS_DIR}
 - container: ${E2E_CONTAINER_NAME}
