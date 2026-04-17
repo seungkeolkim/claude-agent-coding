@@ -497,8 +497,8 @@ def wait_for_human_response(task_file, project_dir, task_id, timeout_hours,
 
         elapsed = time.time() - start_time
 
-        # 타임아웃 확인
-        if elapsed >= timeout_seconds:
+        # 타임아웃 확인 (timeout_hours <= 0이면 무한 대기)
+        if timeout_hours > 0 and elapsed >= timeout_seconds:
             log_warn(f"자동 승인 (timeout {timeout_hours}h 초과)")
             # 자동 승인 기록
             task = load_json(task_file)
