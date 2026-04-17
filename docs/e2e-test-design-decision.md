@@ -1,7 +1,7 @@
 # E2E 테스트 아키텍처 의사결정 문서
 
-> 작성: 2026-04-16
-> 상태: **의사결정 완료, 구현 미착수**
+> 작성: 2026-04-16, 갱신: 2026-04-17
+> 상태: **구현 및 통합 검증 완료** (§7 전항목 ✅, 커밋 `156bdda`)
 > 브랜치: `feature/playwright-e2e-test`
 > 관련: `docs/agent-system-spec-v07.md` §4 E2E Test Agent, §6.3, §15.3
 
@@ -497,9 +497,9 @@ e2e_tester 분기에서 기존 패턴에 추가:
 
 ---
 
-## 7. 검증 방법 (진행 중)
+## 7. 검증 방법 (2026-04-17 완료)
 
-> ✅ 완료 / ⏳ 다음 세션 / ⚠️ 설계상 스킵
+> ✅ 완료 / ⚠️ 설계상 스킵 / 🐛 이슈 발견 후 수정
 
 ### 7.1 컨테이너 단독 검증 — ✅ 완료
 
@@ -509,34 +509,43 @@ e2e_tester 분기에서 기존 패턴에 추가:
 4. ✅ **docker exec 테스트**: `example.com` 대상 1-spec `.spec.ts` 배치 후 `scripts/e2e_container_runner.sh exec-test ...` → `1 passed`, `/tmp/smoke-artifacts/report.json` 생성, `stats: {expected: 1, unexpected: 0}`
 5. ✅ **정리**: `scripts/e2e_container_runner.sh stop e2e-smoke-test` 정상
 
-### 7.2 runner 스크립트 검증 — ✅ 대부분 완료
+### 7.2 runner 스크립트 검증 — ✅ 완료
 
-6. ✅ `e2e_container_runner.sh start` stdout이 순수 호스트 포트만 남도록 모든 진단 로그를 stderr로 분리한 구조 검증됨 (호출 쪽에서 `$(... start ...)` 캡처 가능).
-7. ⏳ MCP healthcheck 실패 시나리오 (포트 미바인딩 등) → 다음 세션에서 강제 주입 테스트
-8. ⏳ `trap` SIGTERM 시나리오 → 다음 세션 (`run_claude_agent.sh` 통합 경로에서 자연 검증 예정)
+6. ✅ `e2e_container_runner.sh start` stdout이 순수 호스트 포트만 남도록 모든 진단 로그를 stderr로 분리한 구조 검증됨
+7. ✅ **MCP healthcheck 실패**: 포트 충돌(EADDRINUSE) 시 5초 타임아웃 → 컨테이너 로그 출력 → 컨테이너 자동 제거 → exit 1
+8. ✅ **auto_build=false + 이미지 없음**: 즉시 에러 + 빌드 명령 안내 → exit 1
+9. ✅ **build 실패 (Dockerfile 없음)**: "Dockerfile을 찾을 수 없습니다" → exit 1
 
-### 7.3 Claude + MCP 연동 검증 — ⏳ 다음 세션
+### 7.3 Claude + MCP 연동 검증 — ✅ 완료
 
-9. ⏳ `run_claude_agent.sh e2e_tester` 실제 모드 호출 시 생성되는 `/tmp/mcp-{task}-{subtask}.$.json` 파일이 `--mcp-config`로 Claude CLI에 주입 → Claude가 `playwright.browser_*` MCP tool을 사용하여 example.com 탐색 후 spec 작성.
-10. ⏳ 실패 재현: 존재하지 않는 selector를 넣은 spec → Phase 3 fail → Phase 4 MCP 재탐색 로그(`mcp-session.log`) 수집 (on-failure 보존 정책 발동 확인).
+10. ✅ **smoke test (dynamic, task 00154~00155)**: WFC 전체 파이프라인 (planner → coder → reviewer → setup → e2e_tester → reporter → PR auto-merge) 정상 동작. 7/7 dynamic E2E 테스트 pass.
+11. ✅ MCP config의 `"type": "sse"` 누락 → Claude CLI 스키마 거부 → 수정 완료 (커밋 `bf92762`)
 
-### 7.4 WFC 파이프라인 검증 — ⏳ 다음 세션
+### 7.4 WFC 파이프라인 검증 — ✅ 완료
 
-11. ⚠️ dummy 모드 pipeline: `run_claude_agent.sh` L691 가드(`DUMMY != true`)로 e2e_tester 분기 전체가 스킵됨 → dummy 경로 검증 의미 없음. 실제 모드로만 검증 진행.
-12. ⏳ `test_source=static`: 기존 `.spec.ts` 배치 → Phase 1/2 skip 후 Phase 3만 실행
-13. ⏳ `test_source=dynamic`: Claude가 MCP로 탐색 후 spec 작성 → 실제 pass 관찰 **(다음 세션 첫 항목)**
-14. ⏳ `test_source=both`: dynamic + static → AND 판정(§4.6-5), reporter JSON에 dynamic/static 분리 기록
+12. ⚠️ dummy 모드 pipeline: `run_claude_agent.sh` L691 가드(`DUMMY != true`)로 e2e_tester 분기 전체가 스킵됨 → dummy 경로 검증 의미 없음
+13. ✅ **test_source=dynamic (task 00154, 00155, 00160)**: Claude가 MCP로 탐색 후 spec 작성 → 6~7개 테스트 pass → PR 머지 완료
+14. ✅ **test_source=static (task 00156)**: 기존 `.spec.ts` 복사 → Phase 3만 실행 → 5개 static 테스트 pass
+15. 🐛 **test_source=both (task 00158)**: static 파일은 복사되었으나 agent가 `static: skipped` 보고 → **static/dynamic 구분 불가 이슈 발견** → `static_files` 프롬프트 주입으로 수정 (커밋 `156bdda`)
 
-### 7.5 동시성/격리 검증 — ⏳ 다음 세션
+### 7.5 동시성/격리 검증 — ✅ 완료
 
-15. ⏳ 서로 다른 두 프로젝트의 e2e_tester를 동시 실행 → 포트/컨테이너명 충돌 없음
-16. ⏳ 같은 task 내 subtask 순차 실행 → 이전 컨테이너 완전 정리 후 다음 시작
-17. ⏳ 실패/인터럽트 시 컨테이너 고아 없음 → `docker ps -a | grep e2e-` 비어있음
+16. ⚠️ 멀티 프로젝트 동시 실행: host network 모드에서 고정 포트 8931 → 포트 충돌 불가피. §10.1에서 추후 해결
+17. ✅ **SIGKILL 인터럽트 (task 00159)**: orphan 컨테이너 발생 — SIGKILL은 trap 우회하므로 **예상된 동작**
+18. ✅ **SIGTERM 인터럽트 (task 00161)**: `run_claude_agent.sh` trap 정상 발동 → 컨테이너 정지/제거 + MCP 파일 삭제 + PID 파일 삭제. WFC exit code -15 감지 → subtask 실패 처리
+19. 🐛 **WFC retry orphan (task 00161)**: SIGTERM 후 WFC가 재시도를 시작하면서 새 컨테이너 생성 → WFC 종료 시 재시도 컨테이너 orphan 발생 → **WFC cleanup 로직 추가로 수정** (커밋 `156bdda`)
+20. ✅ **SIGTERM orphan fix 검증 (task 00168)**: WFC SIGTERM → atexit cleanup → Docker 컨테이너 + MCP 파일 모두 정리 확인
 
 ### 7.6 보조 스크립트 — ✅ 완료
 
-18. ✅ `setup_environment.sh --check` 5단계 21/21 통과 (E2E Docker 환경 섹션 포함)
-19. ✅ `e2e_watcher.sh` 기본 실행 → `[DEPRECATED]` 배너 + exit 2; `E2E_WATCHER_ACK_DEPRECATED=true` 설정 시 구 구현 실행 (SSH 시도)
+21. ✅ `setup_environment.sh --check` 5단계 21/21 통과 (E2E Docker 환경 섹션 포함)
+22. ✅ `e2e_watcher.sh` 기본 실행 → `[DEPRECATED]` 배너 + exit 2
+
+### 7.7 Config regression — ✅ 완료
+
+23. ✅ 14개 설정값 정확히 읽힘: image, auto_build, network, healthcheck_timeout, mcp_port, isolated, browser, viewport, retry_count, test_source, static_test_dir, log_retention
+24. ✅ `base_url` 자동 추론: `codebase.service_port=3000` → `http://localhost:3000`
+25. ✅ `retry_count` fallback: project.yaml에 없으면 config.yaml → 없으면 기본값 0
 
 ---
 
@@ -589,7 +598,7 @@ status="${status:-000}"
 
 수정: `exec-test`에서 `--reporter=json` CLI 플래그 제거. config의 `[json, list]` 조합을 그대로 사용 → 콘솔에는 list reporter, 파일에는 json reporter가 동시에 동작.
 
-### 8.3 수동 검증 결과
+### 8.3 수동 검증 결과 (2026-04-16)
 
 | 검증 | 결과 | 비고 |
 |------|------|------|
@@ -599,17 +608,76 @@ status="${status:-000}"
 | exec-test (버그 #2 fix 후) | ✅ | 1-spec example.com pass, report.json 생성, stats.unexpected=0 |
 | setup_environment.sh --check | ✅ | 21/21 |
 | e2e_watcher.sh deprecated | ✅ | 기본 exit 2, ACK env 시 구 코드 실행 |
-| WFC/Claude MCP 통합 경로 | ⏳ | §7.3, §7.4 — 다음 세션으로 이월 |
-
-### 8.4 다음 세션 첫 작업 (Option A: 실제 모드 1회 스모크)
-
-test-project의 e2e_test를 임시로 enabled:true + base_url=https://example.com 으로 패치하고, 임시 task/subtask JSON을 `/tmp/e2e-verify/`에 두고 `run_claude_agent.sh e2e_tester`를 실제 모드로 호출하여 통합 경로(컨테이너 기동 + .mcp.json + Claude 실행 + 4-Phase + cleanup)를 1회 검증.
-
-상세 절차는 handoff `docs_for_claude/021-handoff-playwright-mcp-docker-e2e.md` 참조.
 
 ---
 
-## 9. 참고 자료
+## 9. 통합 검증 결과 (2026-04-17)
+
+### 9.1 추가 수정사항 (커밋 `bf92762`, `cde55c2`, `156bdda`)
+
+**버그 #3 — MCP config `type: sse` 누락 (커밋 `bf92762`)**
+
+증상: Claude CLI가 `.mcp.json`을 읽고 `mcpServers.playwright: Does not adhere to MCP server configuration schema` 거부.
+
+원인: 생성된 `.mcp.json`에 `"url"`만 있고 `"type": "sse"` 필드가 없었음. Claude CLI는 type 필드를 필수로 요구.
+
+수정: `run_claude_agent.sh`의 MCP config JSON 템플릿에 `"type": "sse"` 추가.
+
+**버그 #4 — static 테스트 파일 미탑재 (커밋 `cde55c2`)**
+
+증상: `test_source=static`에서 "static_test_dir 존재하지 않음" 경고. static 테스트가 실행되지 않음.
+
+원인: 컨테이너는 `e2e-tests/{subtask_id}/`만 볼륨 마운트하는데, static 테스트는 `e2e-tests/static/`에 있었음.
+
+수정: `run_claude_agent.sh`에서 static 테스트 파일을 `E2E_TESTS_DIR`로 복사하는 로직 추가.
+
+**버그 #5 — both 모드 AND 판정 불가 (커밋 `156bdda`)**
+
+증상: `test_source=both`에서 agent가 `static: skipped` 보고. static/dynamic 결과를 구분하지 못함.
+
+원인: agent에게 어떤 파일이 static인지 알려주지 않았음. 모든 테스트가 같은 디렉토리에서 실행되어 구분 불가.
+
+수정:
+- `run_claude_agent.sh`: static 복사 후 파일 목록 수집 → `E2E_STATIC_FILE_LIST` → 프롬프트에 `static_files` 주입
+- `e2e_tester.md`: report.json의 file 경로 basename으로 static/dynamic 분류 방법 명시
+
+**버그 #6 — WFC SIGTERM 시 orphan 컨테이너 (커밋 `156bdda`)**
+
+증상: WFC에 SIGTERM → e2e_tester 종료 → WFC가 재시도 시작 → task=failed 종료 → 재시도 컨테이너 orphan.
+
+원인: (1) WFC SIGTERM 핸들러가 flag만 설정, 자식에 전파 안 함 (2) pipeline 재시도 전 shutdown 체크 없음 (3) sys.exit 시 orphan Docker 컨테이너 정리 안 함.
+
+수정 (3중 방어):
+1. `_handle_sigterm`: flag + `_forward_sigterm_to_children()` (비블로킹)
+2. `run_subtask_pipeline`: post_review 루프 / reporter retry 전 `_shutdown_requested` 체크
+3. `_cleanup_child_processes` (atexit): SIGTERM→15초→SIGKILL + `_cleanup_orphan_e2e_containers` + `_cleanup_mcp_temp_files`
+
+### 9.2 전체 테스트 매트릭스
+
+| 카테고리 | 테스트 | Task | 결과 |
+|----------|--------|------|------|
+| **1. Smoke** | dynamic 전체 파이프라인 | 00154, 00155, 00160 | ✅ PASS |
+| **2-1. Mode** | test_source=dynamic | 00154, 00155 | ✅ PASS |
+| **2-2. Mode** | test_source=static | 00156 | ✅ PASS |
+| **2-3. Mode** | test_source=both | 00158 | 🐛 → fix `156bdda` |
+| **3-1. 격리** | SIGKILL 인터럽트 | 00159 | ✅ EXPECTED (orphan) |
+| **3-2. 격리** | SIGTERM 인터럽트 | 00161 | ✅ PASS (trap 정상) |
+| **3-3. 격리** | WFC retry orphan | 00161 | 🐛 → fix `156bdda` |
+| **3-4. 격리** | SIGTERM orphan fix 검증 | 00168 | ✅ PASS |
+| **4-1. Edge** | healthcheck 실패 (포트 충돌) | 직접 테스트 | ✅ PASS |
+| **4-2. Edge** | auto_build=false + 이미지 없음 | 직접 테스트 | ✅ PASS |
+| **4-3. Edge** | build 실패 (Dockerfile 없음) | 직접 테스트 | ✅ PASS |
+| **5. Config** | 14개 설정값 + base_url 추론 | 직접 테스트 | ✅ PASS |
+
+### 9.3 알려진 제한사항
+
+1. **멀티 프로젝트 동시 e2e**: host network + 고정 포트 8931 → 동시 실행 시 포트 충돌. bridge network + 동적 포트로 전환 필요 (§10.1)
+2. **both 모드 AND 판정**: 프롬프트 기반 분류이므로 agent 행동에 의존. 완벽한 보장을 원하면 runner 레벨에서 subdirectory 분리 필요 (§10.4)
+3. **SIGKILL orphan**: OS 레벨 강제 종료 시 trap 우회되어 orphan 발생. cron이나 systemd watchdog으로 `docker ps -a --filter name=e2e-` 주기 정리 필요
+
+---
+
+## 10. 참고 자료
 
 ### 도구 비교 / 시장 추세
 - [Playwright vs Cypress vs Selenium 2026 다운로드 통계](https://tech-insider.org/playwright-vs-cypress-vs-selenium-2026/)
@@ -632,11 +700,11 @@ test-project의 e2e_test를 임시로 enabled:true + base_url=https://example.co
 
 ---
 
-## 10. 후속 논의 과제
+## 11. 후속 논의 과제
 
 본 문서의 결정 범위 밖이지만 구현 진행 중 발산 논의에서 식별된 항목들.
 
-### 10.1 같은 코드베이스 다중 인스턴스 동시 실행
+### 11.1 같은 코드베이스 다중 인스턴스 동시 실행
 
 §4.6-2 논의 중 제기: **같은 프로젝트의 task가 동시에 실행되어 codebase 서버를 중복 기동하려 할 때** 포트/DB 충돌.
 
@@ -649,16 +717,32 @@ test-project의 e2e_test를 임시로 enabled:true + base_url=https://example.co
     3. 기타 외부 자원(S3 bucket, Redis key prefix 등) 충돌 방지
 - **결정**: 이번 Phase 범위 외. 별도 과제로 분리하여 `docs/agent-system-spec-v07.md` §15 TODO에 추가 예정.
 
-### 10.2 desktop 모드 구현 세부
+### 11.2 desktop 모드 구현 세부
 
 §4.5에서 `mode: desktop` slot만 확보. 실제 구현 시 다음 결정 필요:
 - Electron 앱 테스트는 Playwright가 직접 지원하지만 네이티브 앱은 별도 도구 (Appium, WinAppDriver) 필요
 - Docker 내부에서 GUI 필요 → xvfb 또는 데스크탑 이미지로 교체
 - 본 문서 scope 밖. 실제 desktop 프로젝트 유입 시 별도 설계 문서 작성.
 
-### 10.3 MCP 세션 중 Claude 크래시 복구
+### 11.3 MCP 세션 중 Claude 크래시 복구
 
 컨테이너는 구동 중인데 Claude CLI가 중간에 죽는 경우:
 - WFC의 graceful resume 경로와 통합 필요
 - 현재는 `trap`으로 컨테이너까지 정리 → resume 시 처음부터 재시작
 - "Phase 2까지 완료된 `.spec.ts`만 보존하고 Phase 3부터 재개" 같은 최적화는 Phase 2.x 이후 고려
+
+### 11.4 both 모드 AND 판정 강화
+
+현재 구현은 프롬프트에 `static_files` 목록을 주입하여 agent가 report.json에서 분류하는 방식. agent 행동에 의존하므로 100% 보장은 어려움.
+
+- **완벽한 방안**: runner 레벨에서 `static/`, `dynamic/` 서브디렉토리 분리 → Playwright를 두 번 실행 → 각 결과를 별도 report로 집계
+- **trade-off**: 테스트 실행 시간 2배, 컨테이너 복잡도 증가
+- 현재 프롬프트 방식으로 충분한지 실 운영 데이터 관찰 후 결정
+
+### 11.5 SIGKILL orphan 자동 정리
+
+SIGKILL은 trap을 우회하므로 orphan 컨테이너가 남을 수 있음.
+
+- `cron` 또는 `systemd timer`로 `docker ps -a --filter name=e2e- --filter status=running --format '{{.Names}} {{.CreatedAt}}'`를 주기 검사
+- 30분 이상 실행 중인 e2e 컨테이너는 자동 제거
+- 또는 Task Manager 시작 시 orphan 체크 루틴 추가
