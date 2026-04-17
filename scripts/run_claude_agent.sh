@@ -712,6 +712,14 @@ if [[ "$AGENT_TYPE" == "e2e_tester" && "$DRY_RUN" != "true" && "$DUMMY" != "true
     E2E_VIEWPORT_H=$(read_yaml_value "$CONFIG_FILE" "machines.tester.viewport.height")
     [[ -z "$E2E_VIEWPORT_H" ]] && E2E_VIEWPORT_H="720"
 
+    # artifacts 설정: screenshots / video / trace
+    E2E_SCREENSHOTS=$(read_yaml_value "$CONFIG_FILE" "machines.tester.artifacts.screenshots")
+    [[ -z "$E2E_SCREENSHOTS" ]] && E2E_SCREENSHOTS="only-on-failure"
+    E2E_VIDEO=$(read_yaml_value "$CONFIG_FILE" "machines.tester.artifacts.video")
+    [[ -z "$E2E_VIDEO" ]] && E2E_VIDEO="off"
+    E2E_TRACE=$(read_yaml_value "$CONFIG_FILE" "machines.tester.artifacts.trace")
+    [[ -z "$E2E_TRACE" ]] && E2E_TRACE="retain-on-failure"
+
     # retry_count: project.yaml override가 우선
     E2E_RETRY_COUNT=$(read_yaml_value "$PROJECT_YAML" "testing.e2e_test.retry_count")
     if [[ -z "$E2E_RETRY_COUNT" ]]; then
@@ -833,7 +841,10 @@ ${AGENT_HUB_ROOT}/scripts/e2e_container_runner.sh exec-test ${E2E_CONTAINER_NAME
   --base-url '${E2E_BASE_URL}' \\
   --retries ${E2E_RETRY_COUNT} \\
   --viewport-w ${E2E_VIEWPORT_W} \\
-  --viewport-h ${E2E_VIEWPORT_H}
+  --viewport-h ${E2E_VIEWPORT_H} \\
+  --screenshots ${E2E_SCREENSHOTS} \\
+  --video ${E2E_VIDEO} \\
+  --trace ${E2E_TRACE}
 \`\`\`
 
 실행 후 \`${E2E_ARTIFACTS_DIR}/report.json\`을 Read로 읽어 집계하세요.
