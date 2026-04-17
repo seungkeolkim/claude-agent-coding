@@ -743,6 +743,24 @@ if [[ "$AGENT_TYPE" == "e2e_tester" && "$DRY_RUN" != "true" && "$DUMMY" != "true
     E2E_TESTS_DIR="${CODEBASE_PATH}/e2e-tests/${SUBTASK_ID:-unknown}"
     mkdir -p "$E2E_ARTIFACTS_DIR" "$E2E_TESTS_DIR"
 
+    # ─── static/both 모드: 기존 테스트 파일을 tests_dir에 복사 ───
+    # 컨테이너는 E2E_TESTS_DIR만 /e2e/tests/에 마운트하므로,
+    # static_test_dir의 .spec.ts를 여기에 복사해야 Playwright가 찾을 수 있다.
+    if [[ "$E2E_TEST_SOURCE" == "static" || "$E2E_TEST_SOURCE" == "both" ]]; then
+        if [[ -n "$E2E_STATIC_TEST_DIR" ]]; then
+            _STATIC_ABS="${CODEBASE_PATH}/${E2E_STATIC_TEST_DIR}"
+            if [[ -d "$_STATIC_ABS" ]]; then
+                echo "[run_claude_agent] static 테스트 복사: $_STATIC_ABS → $E2E_TESTS_DIR"
+                cp -r "$_STATIC_ABS"/*.spec.ts "$E2E_TESTS_DIR/" 2>/dev/null || true
+                cp -r "$_STATIC_ABS"/*.spec.js "$E2E_TESTS_DIR/" 2>/dev/null || true
+            else
+                echo "[run_claude_agent] 경고: static_test_dir 존재하지 않음: $_STATIC_ABS" >&2
+            fi
+        else
+            echo "[run_claude_agent] 경고: test_source=$E2E_TEST_SOURCE이지만 static_test_dir이 비어있음" >&2
+        fi
+    fi
+
     # ─── 컨테이너 기동 (호스트 포트 획득) ───
     echo "[run_claude_agent] E2E 컨테이너 기동 중: $E2E_CONTAINER_NAME"
     E2E_HOST_PORT=$(
