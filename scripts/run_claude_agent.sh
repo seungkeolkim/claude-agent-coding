@@ -767,6 +767,7 @@ if [[ "$AGENT_TYPE" == "e2e_tester" && "$DRY_RUN" != "true" && "$DUMMY" != "true
 {
   "mcpServers": {
     "playwright": {
+      "type": "sse",
       "url": "http://localhost:${E2E_HOST_PORT}/sse"
     }
   }
