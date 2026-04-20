@@ -115,3 +115,91 @@ def test_reply_markup_none_for_non_interactive_events():
     noti = {"event_type": "task_completed", "task_id": "1",
             "details": {"project": "alpha"}}
     assert reply_markup_for_notification(noti) is None
+
+
+# ─── plan_summary 본문 렌더링 ───
+
+def _plan_review_notification(plan_summary):
+    return {
+        "event_type": "plan_review_requested",
+        "task_id": "00042",
+        "message": "Plan을 확인해주세요. subtask 2개 생성됨.",
+        "details": {"project": "my-app", "plan_summary": plan_summary},
+    }
+
+
+def test_plan_review_renders_strategy_and_subtasks():
+    """plan_review_requested 알림에 plan_summary가 붙으면 전략/subtask 블록이 렌더된다."""
+    plan_summary = {
+        "strategy_note": "원문 의도를 살려 3개 subtask로 분할한다.",
+        "subtasks": [
+            {"index": 1, "subtask_id": "00042-1",
+             "title": "데이터 모델 범용화",
+             "responsibility": "DB 모델에서 IRIS 명명을 제거한다."},
+            {"index": 2, "subtask_id": "00042-2",
+             "title": "스크래퍼 플러그인화",
+             "responsibility": "adapter 레지스트리를 도입한다."},
+        ],
+        "total_subtasks": 2,
+    }
+    rendered = format_notification(_plan_review_notification(plan_summary))
+
+    assert "*전략 노트*" in rendered
+    # blockquote 프리픽스와 escape 적용 확인
+    assert ">원문 의도를 살려 3개 subtask로 분할한다\\." in rendered
+    assert "*Subtasks \\(2개\\)*" in rendered
+    assert "*1\\.* 데이터 모델 범용화 `00042\\-1`" in rendered
+    assert "↳ DB 모델에서 IRIS 명명을 제거한다\\." in rendered
+    assert "*2\\.* 스크래퍼 플러그인화 `00042\\-2`" in rendered
+
+
+def test_plan_review_renders_truncated_marker():
+    """truncated=True 항목은 subtask_id/responsibility 없이 이탤릭 힌트로만 표기된다."""
+    plan_summary = {
+        "strategy_note": "",
+        "subtasks": [
+            {"index": 1, "subtask_id": "00042-1",
+             "title": "첫 subtask", "responsibility": "내용"},
+            {"index": 2, "subtask_id": "",
+             "title": "… 외 3개 더 (Web에서 전체 확인)",
+             "responsibility": "", "truncated": True},
+        ],
+        "total_subtasks": 4,
+    }
+    rendered = format_notification(_plan_review_notification(plan_summary))
+
+    assert "*Subtasks \\(4개\\)*" in rendered
+    # truncated entry는 `_이탤릭_` 표기만, 앞에 번호를 붙이지 않는다.
+    assert "_… 외 3개 더\\(Web에서 전체 확인\\)_" in rendered or \
+           "_… 외 3개 더 \\(Web에서 전체 확인\\)_" in rendered
+
+
+def test_plan_summary_ignored_for_non_review_events():
+    """plan_summary가 실려 있어도 plan_review/replan_review 이외에는 렌더하지 않는다."""
+    noti = {
+        "event_type": "task_completed",
+        "task_id": "1",
+        "message": "완료",
+        "details": {"plan_summary": {
+            "strategy_note": "무시되어야 함",
+            "subtasks": [{"index": 1, "title": "무시", "responsibility": "무시"}],
+            "total_subtasks": 1,
+        }},
+    }
+    rendered = format_notification(noti)
+    assert "전략 노트" not in rendered
+    assert "Subtasks" not in rendered
+
+
+def test_plan_review_without_summary_still_renders_header():
+    """plan_summary가 없어도 기존 헤더+메시지 렌더링은 깨지지 않는다 (하위 호환)."""
+    noti = {
+        "event_type": "plan_review_requested",
+        "task_id": "00042",
+        "message": "Plan을 확인해주세요. subtask 2개 생성됨.",
+        "details": {"project": "my-app"},
+    }
+    rendered = format_notification(noti)
+    assert rendered.startswith("🟡")
+    assert "Plan을 확인해주세요" in rendered
+    assert "전략 노트" not in rendered

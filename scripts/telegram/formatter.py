@@ -81,7 +81,57 @@ def format_notification(notification: dict) -> str:
     if error_summary:
         body_lines.append(f"`{_escape_for_code(error_summary)}`")
 
+    # Plan review 계열 알림에는 plan 요약을 본문에 첨부한다.
+    # (workflow_controller._build_plan_summary()가 채워주는 구조)
+    plan_summary = details.get("plan_summary") if isinstance(details, dict) else None
+    if plan_summary and event_type in ("plan_review_requested",
+                                       "replan_review_requested"):
+        body_lines.extend(_render_plan_summary_lines(plan_summary))
+
     return "\n".join(body_lines)
+
+
+def _render_plan_summary_lines(plan_summary: dict) -> list[str]:
+    """plan_summary dict을 MarkdownV2 본문 라인 배열로 변환한다.
+
+    기대 스키마 (workflow_controller._build_plan_summary):
+        {
+          "strategy_note": str,
+          "subtasks": [{"index": int, "subtask_id": str, "title": str,
+                        "responsibility": str, "truncated"?: bool}],
+          "total_subtasks": int,
+        }
+    """
+    lines: list[str] = []
+
+    strategy_note = (plan_summary.get("strategy_note") or "").strip()
+    if strategy_note:
+        lines.append("")  # 헤더와 요약 블록 사이 구분용 빈 줄
+        lines.append("*전략 노트*")
+        lines.append(f">{escape_markdown_v2(strategy_note)}")
+
+    subtasks = plan_summary.get("subtasks") or []
+    if subtasks:
+        total = plan_summary.get("total_subtasks") or len(subtasks)
+        lines.append("")
+        lines.append(f"*Subtasks \\({total}개\\)*")
+        for entry in subtasks:
+            title = (entry.get("title") or "").strip()
+            if not title:
+                continue
+            index = entry.get("index") or "?"
+            subtask_id = (entry.get("subtask_id") or "").strip()
+            # 생략용 pseudo 항목은 id/responsibility 없이 title만 렌더
+            if entry.get("truncated"):
+                lines.append(f"_{escape_markdown_v2(title)}_")
+                continue
+            id_suffix = f" `{escape_markdown_v2(subtask_id)}`" if subtask_id else ""
+            lines.append(f"*{index}\\.* {escape_markdown_v2(title)}{id_suffix}")
+            responsibility = (entry.get("responsibility") or "").strip()
+            if responsibility:
+                lines.append(f"  ↳ {escape_markdown_v2(responsibility)}")
+
+    return lines
 
 
 def build_review_keyboard(project: str, task_id: str,
