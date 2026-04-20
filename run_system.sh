@@ -528,7 +528,11 @@ try:
         stage_str = f' [{stage_info}]' if stage_info else ''
         print(f'  {PURPLE}{status}{task_str}{stage_str}{NC}{error_str}')
     elif status == 'waiting_for_human_plan_confirm':
-        print(f'  {YELLOW}{status}{task_str}{NC}{error_str}')
+        # stage/detail에 '(replan)' 마커가 박혀 있어 초기 plan 승인 대기와
+        # replan 승인 대기를 구분 가능하다.
+        stage_info = load_task_stage('${project_dir%/}', task)
+        stage_str = f' [{stage_info}]' if stage_info else ''
+        print(f'  {YELLOW}{status}{task_str}{stage_str}{NC}{error_str}')
     else:
         print(f'  {status}{task_str}{error_str}')
     # WFC 프로세스 상태 표시
