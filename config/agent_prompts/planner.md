@@ -23,6 +23,15 @@ plan JSON을 다음 구조로 생성:
 - strategy_note: 전체 전략 설명
 - subtasks 배열: subtask_id, title, primary_responsibility, description, guidance, depends_on, require_e2e, acceptance_criteria, reference_attachments
 
+### subtask_id 포맷 (필수)
+
+- 형식: `{task_id}-{N}` — N은 1부터 시작하는 정수, 생성 순서대로 부여
+- 올바른 예: `00042-1`, `00042-2`, `00042-3`
+- 잘못된 예 (금지): `S1`, `ST-01`, `st_01_bootstrap`, `subtask-1`, `1`, `42-1`
+- `depends_on`도 같은 포맷으로 작성: 예 `["00042-1", "00042-2"]`
+
+이 포맷은 후속 단계(coder, reviewer 등)가 subtask 파일 경로와 로그 파일명을 구성하는 데 사용된다. 다른 포맷을 쓰면 WFC가 plan을 거부하고 task를 즉시 실패 처리한다.
+
 ## 참고: 프로젝트 설정
 
 - **base_branch:** feature branch가 생성되는 기준 브랜치 (project.yaml의 git.base_branch)

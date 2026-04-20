@@ -1071,6 +1071,52 @@ def get_task_internal_dir(project_dir, task_id):
     return internal_dir
 
 
+def _invalid_subtask_ids(plan_data, task_id):
+    """
+    Planner 출력의 subtask_id 포맷을 검증한다.
+    계약: '{task_id}-{N}' (N은 1 이상 정수). 예: '00042-1'.
+    잘못된 id 목록을 반환. 모두 정상이면 빈 리스트.
+    """
+    pattern = re.compile(rf"^{re.escape(task_id)}-\d+$")
+    invalid = []
+    for subtask in plan_data.get("subtasks", []):
+        subtask_id = subtask.get("subtask_id", "")
+        if not pattern.match(subtask_id):
+            invalid.append(subtask_id if subtask_id else "(빈 문자열)")
+    return invalid
+
+
+def _reject_plan_if_invalid(project_dir, task_file, task_id, plan_data, stage_label=""):
+    """
+    Planner 출력의 subtask_id 포맷 계약(planner.md 참고)을 강제한다.
+    계약 위반 시 task를 failed로 마크하고 알림 전송 후 sys.exit(1).
+    계약이 지켜지면 아무 일도 하지 않는다.
+
+    stage_label: 로그/알림에 붙는 단계 라벨 (예: "Re-plan"). 기본값은 초기 plan 단계.
+    """
+    invalid = _invalid_subtask_ids(plan_data, task_id)
+    if not invalid:
+        return
+
+    prefix = f"{stage_label}: " if stage_label else ""
+    err = (
+        f"{prefix}Planner 출력 검증 실패 — 잘못된 subtask_id: {invalid}. "
+        f"필수 포맷 '{{task_id}}-N' (예: '{task_id}-1'). "
+        f"config/agent_prompts/planner.md의 'subtask_id 포맷' 섹션 참고."
+    )
+    log_error(err)
+    record_failure_reason(task_file, err)
+    update_task_field(task_file, "status", "failed")
+    update_project_state(project_dir, status="idle", last_error=task_id)
+    emit_notification(
+        project_dir=project_dir,
+        event_type="task_failed",
+        task_id=task_id,
+        message=err,
+    )
+    sys.exit(1)
+
+
 def create_subtask_files(project_dir, task_id, plan_data):
     """
     planner 결과에서 subtask JSON 파일들을 생성한다.
@@ -1331,6 +1377,7 @@ def run_pipeline(args):
 
     # plan 저장 및 subtask 파일 생성
     save_plan_file(project_dir, task_id, plan_data)
+    _reject_plan_if_invalid(project_dir, task_file, task_id, plan_data)
     subtasks = create_subtask_files(project_dir, task_id, plan_data)
 
     # task_type이 "memory_refresh"이면 subtask=[]가 정상 동작이다.
@@ -1390,6 +1437,7 @@ def run_pipeline(args):
                 update_project_state(project_dir, status="idle", last_error=task_id)
                 sys.exit(1)
             save_plan_file(project_dir, task_id, plan_data)
+            _reject_plan_if_invalid(project_dir, task_file, task_id, plan_data, stage_label="Re-plan")
             subtasks = create_subtask_files(project_dir, task_id, plan_data)
             if not subtasks and task_type != "memory_refresh":
                 log_error("Re-plan 후 subtask가 없습니다.")
@@ -1526,6 +1574,7 @@ def run_pipeline(args):
                     sys.exit(1)
 
                 save_plan_file(project_dir, task_id, plan_data)
+                _reject_plan_if_invalid(project_dir, task_file, task_id, plan_data, stage_label="Re-plan")
                 new_subtasks = create_subtask_files(project_dir, task_id, plan_data)
 
                 # ─── Human Review: Replan 승인 대기 ───
@@ -2289,7 +2338,17 @@ def finalize_task(agent_hub_root, project_name, task_id, task_file,
         git_provider = git_config.get("provider", "github")
         finalize_auth_token = git_config.get("auth_token", "")
         if not finalize_auth_token:
-            finalize_auth_token = config.get("machines", {}).get("executor", {}).get("github_token", "")
+            # finalize_task 시그니처에 config가 포함되지 않으므로 config.yaml을 직접 재로드한다.
+            # run_pipeline_from_subtasks(line 2193~)의 동일 패턴과 맞춘다.
+            try:
+                cfg_path = os.path.join(agent_hub_root, "config.yaml")
+                with open(cfg_path) as _cfg_f:
+                    _sys_config = yaml.safe_load(_cfg_f) or {}
+                finalize_auth_token = (_sys_config.get("machines", {})
+                                       .get("executor", {})
+                                       .get("github_token", "")) or ""
+            except Exception:
+                finalize_auth_token = ""
         if git_provider == "github":
             ensure_gh_auth(finalize_auth_token, codebase_path=codebase_path)
 
