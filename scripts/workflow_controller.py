@@ -1539,6 +1539,15 @@ def run_pipeline(args):
         update_task_field(task_file, "current_subtask", subtask_id)
         update_task_counter(task_file, "current_subtask_retry", value=0)
 
+        # 전체 맥락 주입: Coder/Reviewer가 "나는 전체 중 몇 번째이고 앞 단계에서 무엇이
+        # 이미 됐는지"를 프롬프트에서 바로 인지할 수 있도록 subtask JSON에 기록.
+        _inject_subtask_overall_context(
+            project_dir, task_id, subtask_id,
+            current_index=i, all_subtasks=subtasks,
+            completed_subtask_ids=completed_subtasks,
+            agent_hub_root=agent_hub_root, project_name=args.project,
+        )
+
         # subtask pipeline 실행 (Coder/Reviewer 승인 시 WFC가 내부에서 commit까지 수행, push는 안 함)
         subtask_success = run_subtask_pipeline(
             agent_hub_root, args.project, task_id, subtask_id,
@@ -1993,6 +2002,14 @@ def _continue_after_plan_review(result, args, ctx, plan_data, subtasks,
         update_task_field(task_file, "current_subtask", subtask_id)
         update_task_counter(task_file, "current_subtask_retry", value=0)
 
+        # 전체 맥락 주입 (resume 경로도 동일하게 적용).
+        _inject_subtask_overall_context(
+            project_dir, task_id, subtask_id,
+            current_index=i, all_subtasks=subtasks,
+            completed_subtask_ids=completed_subtasks,
+            agent_hub_root=agent_hub_root, project_name=args.project,
+        )
+
         subtask_success = run_subtask_pipeline(
             agent_hub_root, args.project, task_id, subtask_id,
             task_file, pipeline, args.dummy,
@@ -2214,6 +2231,15 @@ def run_pipeline_from_subtasks(agent_hub_root, project_name, task_id, task_file,
 
         update_task_field(task_file, "current_subtask", subtask_id)
         update_task_counter(task_file, "current_subtask_retry", value=0)
+
+        # 전체 맥락 주입 (re-plan 경로도 동일하게 적용).
+        project_dir = os.path.join(agent_hub_root, "projects", project_name)
+        _inject_subtask_overall_context(
+            project_dir, task_id, subtask_id,
+            current_index=i, all_subtasks=subtasks,
+            completed_subtask_ids=completed_subtasks,
+            agent_hub_root=agent_hub_root, project_name=project_name,
+        )
 
         subtask_success = run_subtask_pipeline(
             agent_hub_root, project_name, task_id, subtask_id,
@@ -2490,6 +2516,116 @@ def _inject_subtask_runtime_fields(subtask_file, **fields):
     save_json(subtask_file, data)
 
 
+def _load_plan_strategy_note(project_dir, task_id):
+    """
+    plan.json에서 strategy_note만 추출한다. 파일이 없거나 읽기에 실패하면 빈 문자열.
+    Coder/Reviewer에게 "이 task의 전체 전략"을 전달하는 데 사용한다.
+    """
+    plan_path = os.path.join(project_dir, "tasks", task_id, "plan.json")
+    if not os.path.isfile(plan_path):
+        return ""
+    try:
+        plan_data = load_json(plan_path)
+    except (OSError, json.JSONDecodeError):
+        return ""
+    return plan_data.get("strategy_note", "") or ""
+
+
+def _collect_prior_changes(project_dir, task_id, completed_subtask_ids):
+    """
+    완료된 subtask의 최종 산출 요약을 순서대로 수집한다.
+
+    각 subtask 파일의 final_changes_made / final_intent_report 필드는
+    Reviewer approved 시점에 run_subtask_pipeline()가 영속시킨 값이다. 없으면
+    해당 subtask 엔트리는 파일에 남은 정적 정보(title/primary_responsibility)만으로
+    기록되어 적어도 "이전에 X 담당 subtask가 있었다"는 사실은 Coder/Reviewer가
+    인지할 수 있게 한다.
+    """
+    prior = []
+    for sid in completed_subtask_ids:
+        seq = sid.split("-")[-1].zfill(2)
+        path = os.path.join(project_dir, "tasks", task_id, f"subtask-{seq}.json")
+        if not os.path.isfile(path):
+            prior.append({
+                "subtask_id": sid,
+                "title": "",
+                "primary_responsibility": "",
+                "changes_made": [],
+                "intent_report": {},
+            })
+            continue
+        try:
+            data = load_json(path)
+        except (OSError, json.JSONDecodeError):
+            data = {}
+        prior.append({
+            "subtask_id": sid,
+            "title": data.get("title", ""),
+            "primary_responsibility": data.get("primary_responsibility", ""),
+            "changes_made": data.get("final_changes_made", []),
+            "intent_report": data.get("final_intent_report", {}),
+        })
+    return prior
+
+
+def _build_plan_position(current_index, all_subtasks, strategy_note,
+                          completed_subtask_ids):
+    """
+    "전체 subtask 중 내 위치"를 기술하는 dict를 만든다.
+
+    Coder/Reviewer 프롬프트에 그대로 직렬화되어 들어가 "나는 N개 중 M번째,
+    앞 단계 X는 완료, 다음 단계 Y가 있다"를 한 번에 보여준다. 상태(status)는
+    실제 완료 목록(completed_subtask_ids)을 기준으로 산출하여, re-plan 이후
+    완료 목록이 비워진 상황에서도 정확히 반영된다.
+    """
+    completed_set = set(completed_subtask_ids or [])
+    siblings = []
+    for idx, st in enumerate(all_subtasks):
+        sid = st.get("subtask_id", "")
+        if idx == current_index:
+            status = "current"
+        elif sid in completed_set:
+            status = "completed"
+        else:
+            status = "upcoming"
+        siblings.append({
+            "subtask_id": sid,
+            "title": st.get("title", ""),
+            "primary_responsibility": st.get("primary_responsibility", ""),
+            "status": status,
+        })
+    return {
+        "index": current_index,
+        "total": len(all_subtasks),
+        "strategy_note": strategy_note,
+        "siblings": siblings,
+    }
+
+
+def _inject_subtask_overall_context(project_dir, task_id, subtask_id,
+                                      current_index, all_subtasks,
+                                      completed_subtask_ids,
+                                      agent_hub_root, project_name):
+    """
+    subtask JSON에 "전체 맥락" 두 필드(prior_changes / plan_position)를 주입한다.
+    subtask loop의 매 iteration 시작 시 호출되어, Coder/Reviewer가
+    자신이 전체 중 어느 단계에 있는지, 앞선 subtask에서 무엇이 이미 이뤄졌는지를
+    프롬프트 최상층에서 인지할 수 있게 만든다.
+    """
+    subtask_file = _subtask_file_path(project_name, task_id, subtask_id,
+                                        agent_hub_root)
+    strategy_note = _load_plan_strategy_note(project_dir, task_id)
+    prior_changes = _collect_prior_changes(project_dir, task_id,
+                                             completed_subtask_ids)
+    plan_position = _build_plan_position(current_index, all_subtasks,
+                                           strategy_note, completed_subtask_ids)
+    _inject_subtask_runtime_fields(
+        subtask_file,
+        prior_changes=prior_changes,
+        plan_position=plan_position,
+    )
+
+
 def run_subtask_pipeline(agent_hub_root, project_name, task_id, subtask_id,
                           task_file, pipeline, dummy,
                           usage_thresholds=None, usage_check_interval=60,
@@ -2579,6 +2715,9 @@ def run_subtask_pipeline(agent_hub_root, project_name, task_id, subtask_id,
                     if before_sha:
                         git_soft_reset_if_moved(codebase_path, before_sha)
                     coder_intent_report = result.get("intent_report") or {}
+                    # 이번 attempt의 산출 요약을 임시 보관. Reviewer가 approved를
+                    # 내면 final_* 필드로 승격되어 이후 subtask의 prior_changes로 쓰인다.
+                    coder_changes_made = result.get("changes_made") or []
                     continue
 
                 # ─── Reviewer 실행 (스키마 검증 + 1회 재호출) ───
@@ -2632,6 +2771,15 @@ def run_subtask_pipeline(agent_hub_root, project_name, task_id, subtask_id,
                                 log_error(f"[git] 커밋 실패: {e}")
                                 record_failure_reason(task_file, f"commit 실패: {e}")
                                 return False
+                        # Reviewer 승인 시점에 이번 attempt의 산출 요약을
+                        # subtask JSON의 final_* 필드로 승격시킨다. 이후 subtask의
+                        # _collect_prior_changes()가 이 값을 읽어 prior_changes에
+                        # 채워 넣는다.
+                        _inject_subtask_runtime_fields(
+                            subtask_file,
+                            final_changes_made=coder_changes_made,
+                            final_intent_report=coder_intent_report,
+                        )
                         log_info(f"[{subtask_id}] reviewer 승인 (attempt {attempt_num})")
                         break  # coder_reviewer_phase loop 탈출
 

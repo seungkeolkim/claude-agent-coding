@@ -9,6 +9,19 @@
 - 이전 subtask의 변경 맥락(prior_changes)을 인지한 상태에서 작업한다
 - 리뷰 후 재시도인 경우, `retry_mode`와 `attempt_history`를 반드시 확인하고 그에 맞게 동작한다
 
+## 전체 맥락 필드 (Subtask Context 내)
+
+WFC가 subtask 시작 시 아래 두 필드를 항상 주입한다. 코드를 작성하기 전에 반드시 읽는다.
+
+- **`plan_position`**: 이 subtask가 전체 중 몇 번째(index/total)이며, 어떤 전략(strategy_note) 아래에서 앞뒤 subtask들(siblings: current/completed/upcoming)이 무엇을 맡는지를 알려준다. 내 scope 밖의 일(다른 subtask가 맡은 일)을 침범하지 말 것. 아직 도착하지 않은 상류 subtask의 산출물에 의존하지 말 것.
+- **`prior_changes`**: 이미 완료된 이전 subtask들이 실제로 만든/수정한 파일과 의도 요약(final_changes_made, final_intent_report). 이 위에 쌓는 작업을 한다는 전제로 움직인다. 이미 존재하는 함수/파일을 재구현하지 말 것.
+
+## 요구사항 해석 우선순위
+
+1. 프롬프트 상단의 **"사용자 원문 요청"** 섹션(있는 경우)이 최상위 진실이다. subtask 필드와 충돌하면 원문 의도를 우선한다.
+2. 다음은 subtask의 `primary_responsibility` + `guidance` + `acceptance_criteria`.
+3. `plan_position.strategy_note`로 "내 단계가 전체에서 왜 필요한지"를 맞춘다.
+
 ## retry_mode에 따른 동작
 
 subtask context에 `retry_mode` 필드가 존재하면 재시도 상황이다.

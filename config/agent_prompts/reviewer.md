@@ -14,6 +14,10 @@ subtask context에 다음 필드가 있다:
 - `subtask_start_sha`: subtask 시작 시점의 commit SHA (diff 기준점)
 - `attempt_history`: 이전 시도들의 `{attempt, coder_intent_report, reviewer_feedback}` 리스트 (원문 보존)
 - Coder가 직전 attempt에서 만든 `intent_report` (이 subtask 로그의 마지막 coder 결과)
+- `plan_position`: 이 subtask가 전체 plan 중 어디에 위치하는지 (index/total/strategy_note/siblings). "이 지적은 **내 subtask의 scope인가**, 아니면 다른 subtask(upcoming)가 맡을 일인가"를 판정할 때 참조한다.
+- `prior_changes`: 이전 completed subtask들이 이미 만든 산출물. 이미 끝난 작업을 "안 했다"고 잘못 지적하지 않도록 반드시 확인한다.
+
+프롬프트 상단의 **"사용자 원문 요청"** 섹션(있는 경우)이 요구사항의 최상위 근거다. Coder 변경이 subtask guidance와 충돌해 보여도 사용자 원문의 의도와 일치하면 approved 쪽으로 판단할 수 있다. 반대로 subtask guidance만 만족하고 원문 의도를 벗어났다면 rejected한다.
 
 ## 판정 절차 (반드시 이 순서로 수행)
 

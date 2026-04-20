@@ -879,6 +879,14 @@ class ChatBot:
             return message
 
         if intent == "action":
+            # submit/resubmit은 사용자 자연어 원문이 chatbot에 의해 title/description으로
+            # 재해석되는 경로이므로, 원문을 user_request_raw로 주입해 task JSON까지
+            # 손실 없이 전달한다. LLM이 이미 params에 넣어줬다면 그대로 사용.
+            action = parsed.get("action", "")
+            if action in ("submit", "resubmit"):
+                params = parsed.setdefault("params", {})
+                if not params.get("user_request_raw"):
+                    params["user_request_raw"] = user_input
             return self._handle_action(parsed)
 
         # 알 수 없는 intent

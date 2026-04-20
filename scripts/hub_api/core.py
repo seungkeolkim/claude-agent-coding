@@ -312,7 +312,8 @@ class HubAPI:
                source: str = "cli",
                priority: str = "default",
                requested_by: Optional[str] = None,
-               task_type: str = "feature") -> SubmitResult:
+               task_type: str = "feature",
+               user_request_raw: Optional[str] = None) -> SubmitResult:
         """
         새 task를 생성하고 priority queue에 등록한다.
 
@@ -327,6 +328,11 @@ class HubAPI:
             task_type: task 종류. 기본 "feature" (일반 개발).
                 "memory_refresh"는 PROJECT_NOTES.md 장기 메모리 재생성용 특수 task로,
                 Planner가 subtasks=[]를 반환하고 MemoryUpdater가 codebase 전체를 스캔한다.
+            user_request_raw: 사용자의 원문 요청 문자열. chatbot/web_chat 등
+                자연어 해석 단계를 거치는 경로에서 **재해석되지 않은 원문**을 보존해
+                Planner/Coder까지 전달하기 위한 필드. CLI처럼 사용자가 title/description을
+                직접 입력한 경로에서는 None을 넘기고, 프롬프트 조립 시 title+description이
+                원문 역할을 대신한다.
         """
         from hub_api import queue_helpers
         if priority not in queue_helpers.PRIORITIES:
@@ -380,6 +386,12 @@ class HubAPI:
             "project_name": project,
             "title": title,
             "description": description,
+            # 사용자 원문 요청. chatbot이 자연어를 title/description으로 재해석하기 전의
+            # 원본 문자열을 그대로 보존. Planner/Coder가 이 필드를 1차 참조하여
+            # chatbot 해석 과정에서 의도가 왜곡되는 것을 방지한다.
+            # CLI 등 자연어 해석이 없는 경로에서는 None이며, 이 경우 프롬프트는
+            # title + description을 원문으로 간주한다.
+            "user_request_raw": user_request_raw,
             "submitted_via": source,
             "requested_by": requested_by,
             "submitted_at": now,
@@ -613,7 +625,7 @@ class HubAPI:
                 f"재제출 가능 상태: {', '.join(sorted(resubmittable_statuses))}"
             )
 
-        # 원본의 title, description, attachments를 복사하여 새 task 생성
+        # 원본의 title, description, attachments, user_request_raw를 복사하여 새 task 생성
         return self.submit(
             project=project,
             title=original_task.get("title", ""),
@@ -622,6 +634,7 @@ class HubAPI:
             config_override=config_override or original_task.get("config_override", {}),
             source=original_task.get("submitted_via", "cli"),
             requested_by=original_task.get("requested_by"),
+            user_request_raw=original_task.get("user_request_raw"),
         )
 
     # ═══════════════════════════════════════════════════════════

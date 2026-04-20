@@ -399,6 +399,13 @@ class ChatProcessor:
 
             elif intent == "action":
                 action = parsed.get("action", "")
+                # submit/resubmit은 chatbot이 자연어를 title/description으로 재해석하는
+                # 경로이므로 원문(merged)을 user_request_raw로 넣어 task JSON까지 보존.
+                # confirmation 경로와 즉시 실행 경로 양쪽에서 동일하게 쓰이도록 여기서 주입.
+                if action in ("submit", "resubmit"):
+                    params = parsed.setdefault("params", {})
+                    if not params.get("user_request_raw"):
+                        params["user_request_raw"] = merged
                 if needs_confirmation(action, self._confirmation_mode):
                     # 확인 필요 — plain text 한 건으로 확인 요청
                     explanation = parsed.get("explanation", "")

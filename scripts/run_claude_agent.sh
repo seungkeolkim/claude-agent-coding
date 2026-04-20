@@ -274,8 +274,36 @@ if attachments:
         print(f'- {path}: {desc}')
 ")
 
+# ─── 사용자 원문 요청 추출 ───
+# chatbot/web이 title/description으로 재해석하기 전에 사용자가 자연어로
+# 말한 원문. submit 시 함께 저장되며, 재해석 과정에서 잃어버린 의도를
+# 복원하는 "최우선 근거"로 모든 agent의 프롬프트 상단에 그대로 노출된다.
+USER_REQUEST_RAW=$(python3 -c "
+import json
+with open('${TASK_FILE}') as f:
+    task = json.load(f)
+raw = task.get('user_request_raw') or ''
+print(raw)
+")
+
 # ─── 프롬프트 조합 ───
 PROMPT="$(cat "$PROMPT_FILE")"
+
+# 사용자 원문 요청을 role 프롬프트 바로 다음에 배치 (가장 먼저 눈에 띄도록)
+if [[ -n "$USER_REQUEST_RAW" ]]; then
+    PROMPT="${PROMPT}
+
+---
+## 사용자 원문 요청 (최우선 근거)
+아래는 사용자가 chatbot/Web에게 말한 **자연어 원문**입니다.
+이후 나오는 title/description/subtask는 chatbot 또는 Planner가 이 원문을
+재구성한 2차 가공물이므로, 해석 차이가 있다면 **아래 원문의 의도를 우선**합니다.
+원문에서 읽히지 않는 요구사항을 임의로 추가하지 마세요.
+
+\`\`\`
+${USER_REQUEST_RAW}
+\`\`\`"
+fi
 
 # 프로젝트 설명 추가
 if [[ -n "$PROJECT_DESCRIPTION" ]]; then

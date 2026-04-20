@@ -200,6 +200,7 @@ def _handle_submit(api, request: Request) -> Response:
         priority=request.params.get("priority", "default"),
         requested_by=request.requested_by,
         task_type=request.params.get("task_type", "feature"),
+        user_request_raw=request.params.get("user_request_raw"),
     )
     return _ok(result, f"task {result.task_id} 제출 완료")
 
