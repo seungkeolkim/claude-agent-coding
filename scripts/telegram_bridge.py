@@ -70,6 +70,20 @@ def _commands_dir(agent_hub_root: str) -> str:
     return os.path.join(_data_dir(agent_hub_root), "telegram_commands")
 
 
+def _pending_modify_path(agent_hub_root: str) -> str:
+    """'📝 수정' 버튼을 누른 뒤 아직 피드백 텍스트를 보내지 않은 pending 상태를 보관한다.
+
+    파일 스키마: {"pending": {"<chat_id>_<thread_id>": {project, task_id,
+                                                        requested_at, prompt_message_id}}}
+    """
+    return os.path.join(_data_dir(agent_hub_root), "telegram_pending_modify.json")
+
+
+# '수정' 버튼을 눌렀지만 답장을 보내지 않고 방치한 pending의 TTL.
+# 너무 짧으면 사용자가 입력하는 사이 만료되고, 너무 길면 다른 상호작용을 방해한다.
+_PENDING_MODIFY_TTL_SECONDS = 10 * 60
+
+
 def _project_state_path(agent_hub_root: str, project: str) -> str:
     return os.path.join(agent_hub_root, "projects", project, "project_state.json")
 
@@ -155,6 +169,9 @@ class TelegramBridge:
         self._stop_event = threading.Event()
         self._reload_event = threading.Event()
         self._hub_api = HubAPI(agent_hub_root)
+        # 수정 버튼 → 피드백 입력 대기 상태의 동시성 보호용 락.
+        # 파일은 atomic write로 저장하지만 read-modify-write 구간을 한 번에 감싼다.
+        self._pending_modify_lock = threading.Lock()
 
     # ─── 진입점 ───
 
@@ -252,6 +269,23 @@ class TelegramBridge:
 
     def _handle_update(self, update: dict) -> None:
         decision = route(update, self._tg_config())
+
+        # 수정 버튼으로 피드백을 기다리는 pending state가 있으면,
+        # 해당 topic에서 들어오는 다음 자연어 메시지 1건을 피드백으로 소비한다.
+        # 슬래시 명령이 먼저 도착하면 "사용자가 의도를 바꿨다"는 신호로 보고
+        # pending만 취소하고 원래 명령을 정상 처리한다.
+        if decision.kind == "natural_message":
+            if self._try_consume_modify_feedback(decision):
+                return
+        elif decision.kind == "slash_command":
+            popped = self._pop_pending_modify(decision.chat_id, decision.thread_id)
+            if popped:
+                self._safe_send(
+                    decision.chat_id, decision.thread_id,
+                    "ℹ️ 대기 중이던 수정 요청이 취소되었습니다 (슬래시 명령 수신). "
+                    "필요하면 '📝 수정' 버튼을 다시 눌러주세요.",
+                )
+
         if decision.kind == "ignore":
             return
         if decision.kind == "reply":
@@ -269,6 +303,40 @@ class TelegramBridge:
         if decision.kind == "natural_message":
             self._handle_natural(decision)
             return
+
+    def _try_consume_modify_feedback(self, d: RoutingDecision) -> bool:
+        """수정 피드백 pending이 있으면 이 메시지의 텍스트로 hub_api.reject를 호출한다.
+
+        pending을 소비했는지(성공/실패 무관)를 True/False로 돌려준다. True인 경우
+        호출자는 기존 ChatProcessor 라우팅을 건너뛴다 — 같은 메시지를 두 경로에
+        중복 전달하지 않기 위함이다.
+        """
+        pending = self._pop_pending_modify(d.chat_id, d.thread_id)
+        if not pending:
+            return False
+
+        project = pending.get("project")
+        task_id = pending.get("task_id")
+        feedback = (d.text or "").strip()
+
+        if not feedback or not project or not task_id:
+            self._safe_send(
+                d.chat_id, d.thread_id,
+                "⚠️ 수정 요청으로 처리할 메시지가 비어 있었습니다. "
+                "버튼을 다시 눌러주세요.",
+            )
+            return True
+
+        # 같은 task가 이미 다른 채널(Web/CLI)에서 응답됐을 수 있다.
+        already = self._already_responded_notice(project, task_id)
+        if already:
+            self._safe_send(d.chat_id, d.thread_id, already)
+            return True
+
+        self._dispatch_and_reply(d, "reject", project=project,
+                                 params={"task_id": task_id,
+                                         "message": feedback})
+        return True
 
     def _handle_bind_hub(self, d: RoutingDecision) -> None:
         """/bind_hub <secret> 처리. secret 일치 시 chat_id 저장 + secret 소비."""
@@ -423,9 +491,13 @@ class TelegramBridge:
                                      params={"task_id": task_id})
             return
         if action == "reject_modify":
-            self._dispatch_and_reply(d, "reject", project=project,
-                                     params={"task_id": task_id,
-                                             "message": "수정 필요 (Telegram 버튼)"})
+            # 피드백 텍스트를 받아 replan에 반영해야 하므로 즉시 dispatch하지 않는다.
+            # force_reply 프롬프트를 띄우고, 다음 메시지를 pending 소비로 처리한다.
+            if not self._prompt_modify_feedback(d, project, task_id):
+                self._safe_send(
+                    d.chat_id, d.thread_id,
+                    "⚠️ 수정 요청 프롬프트 전송에 실패했습니다. 잠시 후 다시 시도해주세요.",
+                )
             return
         if action == "reject_cancel":
             self._dispatch_and_reply(d, "cancel", project=project,
@@ -492,6 +564,100 @@ class TelegramBridge:
             f"by {by} (via {src}){' · ' + time_str if time_str else ''}\n"
             f"현재 상태: {status or 'unknown'}"
         )
+
+    # ─── '수정 피드백 대기' pending state ───
+
+    @staticmethod
+    def _pending_modify_key(chat_id: Optional[int],
+                            thread_id: Optional[int]) -> str:
+        """pending 저장소에서 한 topic을 식별하는 키. thread_id가 없으면 0으로 정규화."""
+        return f"{chat_id}_{thread_id or 0}"
+
+    def _set_pending_modify(self, chat_id: int, thread_id: Optional[int],
+                            project: str, task_id: str,
+                            prompt_message_id: Optional[int]) -> None:
+        """'📝 수정' 버튼을 눌러 피드백 텍스트 입력을 기다리는 상태를 영속한다.
+
+        같은 topic에서 기존 pending이 있으면 덮어쓴다 (사용자가 한 번 더 수정 버튼을
+        눌렀다면 새 task가 대상이 되는 상황이므로 최신 것이 맞다).
+        """
+        path = _pending_modify_path(self._root)
+        with self._pending_modify_lock:
+            state = _load_json(path, {"pending": {}})
+            pending_map = state.setdefault("pending", {})
+            pending_map[self._pending_modify_key(chat_id, thread_id)] = {
+                "project": project,
+                "task_id": task_id,
+                "requested_at": datetime.now(timezone.utc).isoformat(),
+                "prompt_message_id": prompt_message_id,
+            }
+            _save_json_atomic(path, state)
+
+    def _pop_pending_modify(self, chat_id: int,
+                            thread_id: Optional[int]) -> Optional[dict]:
+        """pending 항목을 제거하고 돌려준다. TTL이 지났다면 제거만 하고 None 반환.
+
+        다음 메시지 도착 시 1회용으로 소비되어야 하므로 존재 여부에 관계없이 삭제한다.
+        """
+        path = _pending_modify_path(self._root)
+        key = self._pending_modify_key(chat_id, thread_id)
+        with self._pending_modify_lock:
+            state = _load_json(path, {"pending": {}})
+            pending_map = state.get("pending") or {}
+            entry = pending_map.pop(key, None)
+            state["pending"] = pending_map
+            _save_json_atomic(path, state)
+        if not entry:
+            return None
+        # TTL — 사용자가 수정 버튼을 누르고 한참 뒤 다른 메시지를 보낸 경우 소비하지 않는다.
+        requested_at_str = entry.get("requested_at", "")
+        try:
+            requested_at = datetime.fromisoformat(requested_at_str)
+            age_seconds = (datetime.now(timezone.utc) - requested_at).total_seconds()
+        except (TypeError, ValueError):
+            age_seconds = 0
+        if age_seconds > _PENDING_MODIFY_TTL_SECONDS:
+            logger.info("pending modify 만료(%.0fs 경과, key=%s) — 무시",
+                        age_seconds, key)
+            return None
+        return entry
+
+    def _prompt_modify_feedback(self, d: RoutingDecision,
+                                 project: str, task_id: str) -> bool:
+        """'수정' 버튼 클릭 시 피드백을 요청하는 force_reply 프롬프트를 띄운다.
+
+        성공 시 pending state에 (chat_id, thread_id) 키로 task 정보를 기록한다.
+        다음 메시지 도착 시 update_loop가 이 pending을 소비해 hub_api.reject로 dispatch한다.
+
+        Returns:
+            프롬프트 전송이 성공했으면 True. 실패 시 False — 호출자가 사용자에게 안내한다.
+        """
+        prompt_text = (
+            f"📝 task {task_id}에 대한 수정 요청 내용을 이 topic에 답장으로 보내주세요.\n"
+            f"이 메시지가 다음 Planner에 그대로 전달됩니다.\n"
+            f"(10분 안에 보내지 않으면 취소됩니다. 그 사이 슬래시 명령을 보내면 "
+            f"수정 요청이 취소되고 해당 명령이 실행됩니다.)"
+        )
+        force_reply_markup = {
+            "force_reply": True,
+            "input_field_placeholder": "수정 요청 내용을 입력하세요",
+            "selective": True,
+        }
+        try:
+            resp = self._client.send_message(
+                chat_id=d.chat_id,
+                text=prompt_text,
+                message_thread_id=d.thread_id,
+                reply_markup=force_reply_markup,
+            )
+        except TelegramAPIError as exc:
+            logger.warning("수정 피드백 프롬프트 전송 실패: %s", exc)
+            return False
+
+        prompt_message_id = (resp.get("result") or {}).get("message_id")
+        self._set_pending_modify(d.chat_id, d.thread_id, project, task_id,
+                                 prompt_message_id)
+        return True
 
     def _dispatch_and_reply(self, d: RoutingDecision, action: str,
                             project: Optional[str] = None,

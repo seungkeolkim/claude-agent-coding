@@ -424,6 +424,95 @@ def update_project_state(project_dir, status, current_task_id=None, last_error=N
 
 # ─── human_review_policy 헬퍼 ───
 
+# plan_summary 구성 시 사용할 길이 제한. Telegram 메시지 4096자 제한에 맞춰
+# MarkdownV2 escape 여유분을 포함하여 보수적으로 잡는다.
+_PLAN_SUMMARY_MAX_TOTAL_CHARS = 3500
+_PLAN_SUMMARY_STRATEGY_NOTE_LIMIT = 400
+_PLAN_SUMMARY_SUBTASK_TITLE_LIMIT = 120
+_PLAN_SUMMARY_SUBTASK_RESPONSIBILITY_LIMIT = 200
+
+
+def _truncate_for_summary(text, limit):
+    """문자열을 limit자로 자르고 말줄임을 덧붙인다.
+
+    None/빈 문자열은 빈 문자열로 정규화하여 이후 길이 계산이 단순해지도록 한다.
+    """
+    if not text:
+        return ""
+    text = str(text).strip()
+    if len(text) <= limit:
+        return text
+    return text[:max(limit - 1, 0)].rstrip() + "…"
+
+
+def _build_plan_summary(plan_path):
+    """plan.json을 읽어 알림 채널(Telegram/Web 공통)에 실을 요약 dict를 만든다.
+
+    반환값은 JSON-safe 구조이며, 다음 필드를 담는다:
+        strategy_note  : str, 핵심 의도 요약 (일부 생략 가능)
+        subtasks       : list[dict] — 각 subtask의 index/subtask_id/title/responsibility.
+                         메시지 길이 예산을 넘기면 꼬리 subtask들은 "… 외 N개 더"로 축약.
+        total_subtasks : int, 원본 subtask 개수
+
+    plan을 읽지 못하거나 형식이 기대와 다르면 None을 반환해 호출 측이
+    기존 경로(요약 없이 알림만 발송)를 유지할 수 있도록 한다.
+    """
+    if not plan_path or not os.path.exists(plan_path):
+        return None
+    try:
+        plan = load_json(plan_path)
+    except Exception:  # noqa: BLE001 — 어떤 파싱 오류든 요약 생략
+        return None
+    if not isinstance(plan, dict):
+        return None
+
+    strategy_note = _truncate_for_summary(
+        plan.get("strategy_note"),
+        _PLAN_SUMMARY_STRATEGY_NOTE_LIMIT,
+    )
+
+    raw_subtasks = plan.get("subtasks") or []
+    total_subtasks = len(raw_subtasks)
+
+    subtasks_summary = []
+    # strategy_note가 차지한 글자 수를 빼고 남은 예산으로 subtask들을 채운다.
+    char_budget = _PLAN_SUMMARY_MAX_TOTAL_CHARS - len(strategy_note)
+    for index, subtask in enumerate(raw_subtasks, start=1):
+        title = _truncate_for_summary(
+            subtask.get("title"),
+            _PLAN_SUMMARY_SUBTASK_TITLE_LIMIT,
+        )
+        responsibility = _truncate_for_summary(
+            subtask.get("primary_responsibility"),
+            _PLAN_SUMMARY_SUBTASK_RESPONSIBILITY_LIMIT,
+        )
+        # 항목별 렌더 오버헤드(번호/구분자/줄바꿈) 보정치
+        entry_cost = len(title) + len(responsibility) + 30
+        if subtasks_summary and char_budget - entry_cost < 0:
+            # 예산 초과 — 남은 subtask들은 하나로 묶어 말줄임 처리
+            remaining = total_subtasks - index + 1
+            subtasks_summary.append({
+                "index": index,
+                "subtask_id": "",
+                "title": f"… 외 {remaining}개 더 (Web에서 전체 확인)",
+                "responsibility": "",
+                "truncated": True,
+            })
+            break
+        char_budget -= entry_cost
+        subtasks_summary.append({
+            "index": index,
+            "subtask_id": subtask.get("subtask_id") or "",
+            "title": title,
+            "responsibility": responsibility,
+        })
+
+    return {
+        "strategy_note": strategy_note,
+        "subtasks": subtasks_summary,
+        "total_subtasks": total_subtasks,
+    }
+
 
 def request_human_review(task_file, task_id, review_type, plan_path, subtask_count,
                          project_dir=None):
@@ -447,15 +536,24 @@ def request_human_review(task_file, task_id, review_type, plan_path, subtask_cou
     save_json(task_file, task)
     log_info(f"human review 요청: type={review_type}, task={task_id}")
 
-    # 알림 발송
+    # 알림 발송 — plan 내용을 채널에서 바로 확인할 수 있도록 요약을 details에 동봉한다.
     resolved_project_dir = project_dir or os.path.dirname(os.path.dirname(task_file))
     event_type = "plan_review_requested" if review_type == "plan_review" else "replan_review_requested"
+    details = {"plan_path": plan_path}
+    # plan_path는 호출부에서 "tasks/<id>/plan.json" 상대 경로로 전달되는 경우가 많다.
+    # WFC cwd 기준으로는 파일을 못 찾으므로 project_dir로 앵커링해 절대 경로로 해석한다.
+    absolute_plan_path = plan_path
+    if absolute_plan_path and not os.path.isabs(absolute_plan_path):
+        absolute_plan_path = os.path.join(resolved_project_dir, absolute_plan_path)
+    plan_summary = _build_plan_summary(absolute_plan_path)
+    if plan_summary:
+        details["plan_summary"] = plan_summary
     emit_notification(
         project_dir=resolved_project_dir,
         event_type=event_type,
         task_id=task_id,
         message=f"Plan을 확인해주세요. subtask {subtask_count}개 생성됨.",
-        details={"plan_path": plan_path},
+        details=details,
     )
 
 
@@ -566,12 +664,26 @@ def wait_for_human_response(task_file, project_dir, task_id, timeout_hours,
                 event_type = ("plan_review_requested" if review_type == "plan_review"
                               else "replan_review_requested")
                 hours_waiting = elapsed / 3600
+                # 재알림에도 plan 요약을 동봉해 사용자가 맥락을 잃지 않도록 한다.
+                renotify_details = {"is_re_notification": True}
+                renotify_plan_path = hi_for_renotify.get("payload_path")
+                if renotify_plan_path:
+                    renotify_details["plan_path"] = renotify_plan_path
+                    # 저장된 payload_path가 프로젝트 디렉토리 기준 상대 경로일 수 있으므로
+                    # project_dir로 앵커링해서 요약을 읽는다.
+                    absolute_renotify_path = renotify_plan_path
+                    if not os.path.isabs(absolute_renotify_path):
+                        absolute_renotify_path = os.path.join(
+                            project_dir, absolute_renotify_path)
+                    renotify_summary = _build_plan_summary(absolute_renotify_path)
+                    if renotify_summary:
+                        renotify_details["plan_summary"] = renotify_summary
                 emit_notification(
                     project_dir=project_dir,
                     event_type=event_type,
                     task_id=task_id,
                     message=f"재알림: 승인 대기 중 ({hours_waiting:.1f}시간 경과)",
-                    details={"is_re_notification": True},
+                    details=renotify_details,
                 )
                 last_re_notification_time = time.time()
                 log_info(f"재알림 발송 ({hours_waiting:.1f}시간 경과)")
