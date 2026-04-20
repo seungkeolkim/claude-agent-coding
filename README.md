@@ -141,6 +141,22 @@ source activate_venv.sh
 대화형으로 프로젝트 이름, 설명, 코드베이스 경로, git 연동 여부를 입력하면
 `projects/{name}/` 디렉토리와 `project.yaml`, `project_state.json`이 자동 생성됩니다.
 
+> ⚠️ **git 연동을 켰다면 반드시 codebase에서 `git config user.email`/`user.name`을 설정하세요.**
+> Agent Hub는 subtask 단위로 commit을 만들기 때문에 identity가 비어 있으면
+> 첫 번째 task가 `git branch` 단계에서 즉시 실패합니다 (실제 반복 재현된 사고).
+> `init-project`가 미설정을 감지하면 완료 메시지 아래에 경고를 출력합니다.
+>
+> ```bash
+> # codebase 전용 (권장)
+> cd <codebase_path> \
+>   && git config user.email "you@example.com" \
+>   && git config user.name  "Your Name"
+>
+> # 또는 시스템 전역
+> git config --global user.email "you@example.com"
+> git config --global user.name  "Your Name"
+> ```
+
 ### 3. Task Manager 시작
 
 ```bash

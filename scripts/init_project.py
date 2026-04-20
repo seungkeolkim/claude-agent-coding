@@ -400,6 +400,69 @@ def main() -> None:
     print("  다음 단계: task JSON을 작성하고 run_agent.sh run으로 실행하세요.")
     print("=" * 60)
 
+    # git 연동 시 user.email / user.name 확인 — 미설정이면 task 00001이
+    # "git branch" 단계에서 커밋 실패로 즉시 실패하므로 눈에 띄게 안내한다.
+    if git_settings.get("enabled"):
+        _warn_if_git_identity_missing(codebase_path)
+
+
+def _warn_if_git_identity_missing(codebase_path: str) -> None:
+    """codebase에서 git user.email / user.name 이 해석 가능한지 점검하고,
+    한 쪽이라도 비어 있으면 task 실패 원인임을 강조 출력한다.
+
+    global 설정에 폴백되므로 local 미설정이어도 global 값이 있으면 통과한다.
+    """
+    import subprocess
+
+    def _resolved(key: str) -> str:
+        try:
+            completed = subprocess.run(
+                ["git", "config", "--get", key],
+                cwd=codebase_path, capture_output=True, text=True,
+            )
+            return completed.stdout.strip() if completed.returncode == 0 else ""
+        except Exception:
+            return ""
+
+    email = _resolved("user.email")
+    name = _resolved("user.name")
+
+    if email and name:
+        print()
+        print(f"  ℹ git identity 확인됨: {name} <{email}>")
+        return
+
+    missing = []
+    if not name:
+        missing.append("user.name")
+    if not email:
+        missing.append("user.email")
+
+    print()
+    print("!" * 60)
+    print("  ⚠️  git identity 미설정 — 첫 번째 task가 실패할 수 있습니다.")
+    print("!" * 60)
+    print(f"  codebase 경로: {codebase_path}")
+    print(f"  누락된 설정: {', '.join(missing)}")
+    print()
+    print("  Agent Hub는 subtask 단위로 git commit을 만들기 때문에,")
+    print("  user.email / user.name 이 없으면 초기 branch 단계에서 실패해")
+    print("  task 00001부터 바로 죽습니다. 실제로 반복 재현된 사고입니다.")
+    print()
+    print("  다음 중 한 가지를 지금 실행해주세요:")
+    print()
+    print("  [1] 이 codebase 전용으로만 설정 (권장)")
+    print(f"      cd {codebase_path} \\")
+    print("        && git config user.email \"you@example.com\" \\")
+    print("        && git config user.name \"Your Name\"")
+    print()
+    print("  [2] 시스템 전역으로 설정")
+    print("      git config --global user.email \"you@example.com\"")
+    print("      git config --global user.name \"Your Name\"")
+    print()
+    print("  설정 후 ./run_agent.sh submit 로 task 를 넣으세요.")
+    print("!" * 60)
+
 
 if __name__ == "__main__":
     try:
